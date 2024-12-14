@@ -1,0 +1,11 @@
+[package]
+name = "soundsift"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+env_logger = "0.11.5"
+log = "0.4.22"
+pollster = "0.4.0"
+wgpu = "23"
+winit = "0.30"

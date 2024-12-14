@@ -1,3 +1,4 @@
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::{borrow::Cow, sync::Arc};
 use winit::{
     application::ApplicationHandler,
@@ -182,22 +183,23 @@ impl ApplicationHandler for LoopState {
                         .device
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
                     {
-                        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: None,
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: &view,
-                                resolve_target: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
-                                    store: wgpu::StoreOp::Store,
-                                },
-                            })],
-                            depth_stencil_attachment: None,
-                            timestamp_writes: None,
-                            occlusion_query_set: None,
-                        });
-                        rpass.set_pipeline(&state.render_pipeline);
-                        rpass.draw(0..3, 0..1);
+                        let mut render_pass =
+                            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: None,
+                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                    view: &view,
+                                    resolve_target: None,
+                                    ops: wgpu::Operations {
+                                        load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
+                                        store: wgpu::StoreOp::Store,
+                                    },
+                                })],
+                                depth_stencil_attachment: None,
+                                timestamp_writes: None,
+                                occlusion_query_set: None,
+                            });
+                        render_pass.set_pipeline(&state.render_pipeline);
+                        render_pass.draw(0..3, 0..1);
                     }
 
                     state.queue.submit(Some(encoder.finish()));
@@ -213,9 +215,46 @@ impl ApplicationHandler for LoopState {
 pub fn main() {
     env_logger::init();
 
-    let mut loop_state = LoopState::new();
-    let event_loop = EventLoop::new().unwrap();
+    // List all cpal input sources
+    let host = cpal::default_host();
+    let devices = host.input_devices().unwrap();
+    for device in devices {
+        println!("Input device: {}", device.name().unwrap());
+    }
 
-    log::info!("Entering event loop...");
-    event_loop.run_app(&mut loop_state).unwrap();
+    // Print all input configs for the default input device
+    if let Some(default_input_device) = host.default_input_device() {
+        println!(
+            "Default input device: {}",
+            default_input_device.name().unwrap()
+        );
+        let configs = default_input_device.supported_input_configs().unwrap();
+        for config in configs {
+            println!("Supported input config: {:?}", config);
+        }
+
+        // Open the default device with the default config and dump samples to stdout
+        let default_config = default_input_device.default_input_config().unwrap();
+        let stream = default_input_device
+            .build_input_stream(
+                &default_config.into(),
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    for sample in data {
+                        println!("Sample: {}", sample);
+                    }
+                },
+                move |err| {
+                    eprintln!("Error: {}", err);
+                },
+                None,
+            )
+            .unwrap();
+        stream.play().unwrap();
+
+        let mut loop_state = LoopState::new();
+        let event_loop = EventLoop::new().unwrap();
+
+        log::info!("Entering event loop...");
+        event_loop.run_app(&mut loop_state).unwrap();
+    }
 }

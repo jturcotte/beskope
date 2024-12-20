@@ -1,5 +1,6 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::{borrow::Cow, sync::Arc};
+use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -32,7 +33,28 @@ struct InitializedLoopState {
     _shader: wgpu::ShaderModule,
     _pipeline_layout: wgpu::PipelineLayout,
     render_pipeline: wgpu::RenderPipeline,
+    vertex_buffer: wgpu::Buffer,
     config: wgpu::SurfaceConfiguration,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct Vertex {
+    position: [f32; 2],
+}
+
+impl Vertex {
+    fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[wgpu::VertexAttribute {
+                offset: 0,
+                shader_location: 0,
+                format: wgpu::VertexFormat::Float32x2,
+            }],
+        }
+    }
 }
 
 impl InitializedLoopState {
@@ -89,7 +111,7 @@ impl InitializedLoopState {
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
+            label: Some("Pipeline Layout"),
             bind_group_layouts: &[],
             push_constant_ranges: &[],
         });
@@ -97,13 +119,41 @@ impl InitializedLoopState {
         let swapchain_capabilities = surface.get_capabilities(&adapter);
         let swapchain_format = swapchain_capabilities.formats[0];
 
+        let vertices = [
+            Vertex {
+                position: [-0.5, -0.5],
+            },
+            Vertex {
+                position: [-0.5, 0.5],
+            },
+            Vertex {
+                position: [0.5, 0.5],
+            },
+            Vertex {
+                position: [0.5, -0.5],
+            },
+            Vertex {
+                position: [-0.5, -0.5],
+            },
+            Vertex {
+                position: [0.5, 0.5],
+            },
+        ];
+
+        let vertex_buffer: wgpu::Buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Vertex Buffer"),
+                contents: bytemuck::cast_slice(&vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: None,
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[],
+                buffers: &[Vertex::desc()],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -112,7 +162,15 @@ impl InitializedLoopState {
                 compilation_options: Default::default(),
                 targets: &[Some(swapchain_format.into())],
             }),
-            primitive: wgpu::PrimitiveState::default(),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
@@ -134,6 +192,7 @@ impl InitializedLoopState {
             _shader: shader,
             _pipeline_layout: pipeline_layout,
             render_pipeline,
+            vertex_buffer,
             config,
         }
     }
@@ -190,7 +249,12 @@ impl ApplicationHandler for LoopState {
                                     view: &view,
                                     resolve_target: None,
                                     ops: wgpu::Operations {
-                                        load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
+                                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                                            r: 0.9,
+                                            g: 0.9,
+                                            b: 0.9,
+                                            a: 1.0,
+                                        }),
                                         store: wgpu::StoreOp::Store,
                                     },
                                 })],
@@ -199,7 +263,8 @@ impl ApplicationHandler for LoopState {
                                 occlusion_query_set: None,
                             });
                         render_pass.set_pipeline(&state.render_pipeline);
-                        render_pass.draw(0..3, 0..1);
+                        render_pass.set_vertex_buffer(0, state.vertex_buffer.slice(..));
+                        render_pass.draw(0..6 /* vertices.len() as u32 */, 0..1);
                     }
 
                     state.queue.submit(Some(encoder.finish()));
@@ -240,7 +305,7 @@ pub fn main() {
                 &default_config.into(),
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
                     for sample in data {
-                        println!("Sample: {}", sample);
+                        // println!("Sample: {}", sample);
                     }
                 },
                 move |err| {

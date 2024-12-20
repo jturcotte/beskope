@@ -133,7 +133,7 @@ impl InitializedLoopState {
                 contents: bytemuck::cast_slice(
                     &[Vertex {
                         position: [0.0, 0.0],
-                    }; 1024],
+                    }; 512],
                 ),
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             });
@@ -154,7 +154,7 @@ impl InitializedLoopState {
                 targets: &[Some(swapchain_format.into())],
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::LineList,
+                topology: wgpu::PrimitiveTopology::LineStrip,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
                 cull_mode: None,
@@ -168,9 +168,16 @@ impl InitializedLoopState {
             cache: None,
         });
 
-        let config = surface
-            .get_default_config(&adapter, size.width, size.height)
-            .unwrap();
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: swapchain_format,
+            width: size.width,
+            height: size.height,
+            present_mode: wgpu::PresentMode::AutoVsync,
+            desired_maximum_frame_latency: 1,
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            view_formats: vec![],
+        };
         surface.configure(&device, &config);
 
         let arc_queue = Arc::new(queue);
@@ -317,7 +324,7 @@ impl ApplicationHandler for LoopState {
                             });
                         render_pass.set_pipeline(&state.render_pipeline);
                         render_pass.set_vertex_buffer(0, state.vertex_buffer.slice(..));
-                        render_pass.draw(0..1024 /* vertices.len() as u32 */, 0..1);
+                        render_pass.draw(0..512 /* vertices.len() as u32 */, 0..1);
                     }
 
                     state.queue.submit(Some(encoder.finish()));

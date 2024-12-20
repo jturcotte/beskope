@@ -1,4 +1,5 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use std::time::{Duration, Instant};
 use std::{borrow::Cow, sync::Arc};
 use wgpu::util::DeviceExt;
 use winit::{
@@ -15,11 +16,17 @@ struct LoopState {
     // The actual state is in an Option because its initialization is now delayed to after
     // the even loop starts running.
     state: Option<InitializedLoopState>,
+    last_frame_time: Instant,
+    frame_count: u32,
 }
 
 impl LoopState {
     fn new() -> LoopState {
-        LoopState { state: None }
+        LoopState {
+            state: None,
+            last_frame_time: Instant::now(),
+            frame_count: 0,
+        }
     }
 }
 
@@ -170,6 +177,7 @@ impl InitializedLoopState {
         let arc_queue_clone = arc_queue.clone();
         let arc_vertex_buffer = Arc::new(vertex_buffer);
         let arc_vertex_buffer_clone = arc_vertex_buffer.clone();
+        let window_clone = window.clone();
 
         // List all cpal input sources
         let host = cpal::default_host();
@@ -189,7 +197,7 @@ impl InitializedLoopState {
                 println!("Supported input config: {:?}", config);
             }
 
-            // Modify the data_callback to update the vertex buffer directly
+            // Modify the data_callback to update the vertex buffer directly and trigger a redraw
             let default_config = default_input_device.default_input_config().unwrap();
             let stream: cpal::Stream = default_input_device
                 .build_input_stream(
@@ -210,6 +218,7 @@ impl InitializedLoopState {
                             0,
                             bytemuck::cast_slice(&vertices),
                         );
+                        window_clone.request_redraw();
                     },
                     move |err| {
                         eprintln!("Error: {}", err);
@@ -311,6 +320,15 @@ impl ApplicationHandler for LoopState {
 
                     state.queue.submit(Some(encoder.finish()));
                     frame.present();
+
+                    // FPS calculation
+                    self.frame_count += 1;
+                    let now = Instant::now();
+                    if now.duration_since(self.last_frame_time) >= Duration::from_secs(1) {
+                        println!("FPS: {}", self.frame_count);
+                        self.frame_count = 0;
+                        self.last_frame_time = now;
+                    }
                 }
                 WindowEvent::CloseRequested => event_loop.exit(),
                 _ => {}

@@ -29,12 +29,13 @@ struct InitializedLoopState {
     surface: wgpu::Surface<'static>,
     _adapter: wgpu::Adapter,
     device: wgpu::Device,
-    queue: wgpu::Queue,
+    queue: Arc<wgpu::Queue>,
     _shader: wgpu::ShaderModule,
     _pipeline_layout: wgpu::PipelineLayout,
     render_pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
+    vertex_buffer: Arc<wgpu::Buffer>,
     config: wgpu::SurfaceConfiguration,
+    stream: Option<cpal::Stream>,
 }
 
 #[repr(C)]
@@ -119,32 +120,15 @@ impl InitializedLoopState {
         let swapchain_capabilities = surface.get_capabilities(&adapter);
         let swapchain_format = swapchain_capabilities.formats[0];
 
-        let vertices = [
-            Vertex {
-                position: [-0.5, -0.5],
-            },
-            Vertex {
-                position: [-0.5, 0.5],
-            },
-            Vertex {
-                position: [0.5, 0.5],
-            },
-            Vertex {
-                position: [0.5, -0.5],
-            },
-            Vertex {
-                position: [-0.5, -0.5],
-            },
-            Vertex {
-                position: [0.5, 0.5],
-            },
-        ];
-
         let vertex_buffer: wgpu::Buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Vertex Buffer"),
-                contents: bytemuck::cast_slice(&vertices),
-                usage: wgpu::BufferUsages::VERTEX,
+                contents: bytemuck::cast_slice(
+                    &[Vertex {
+                        position: [0.0, 0.0],
+                    }; 1024],
+                ),
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             });
 
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -182,18 +166,76 @@ impl InitializedLoopState {
             .unwrap();
         surface.configure(&device, &config);
 
+        let arc_queue = Arc::new(queue);
+        let arc_queue_clone = arc_queue.clone();
+        let arc_vertex_buffer = Arc::new(vertex_buffer);
+        let arc_vertex_buffer_clone = arc_vertex_buffer.clone();
+
+        // List all cpal input sources
+        let host = cpal::default_host();
+        let devices = host.input_devices().unwrap();
+        for device in devices {
+            println!("Input device: {}", device.name().unwrap());
+        }
+
+        // Print all input configs for the default input device
+        let stream = if let Some(default_input_device) = host.default_input_device() {
+            println!(
+                "Default input device: {}",
+                default_input_device.name().unwrap()
+            );
+            let configs = default_input_device.supported_input_configs().unwrap();
+            for config in configs {
+                println!("Supported input config: {:?}", config);
+            }
+
+            // Modify the data_callback to update the vertex buffer directly
+            let default_config = default_input_device.default_input_config().unwrap();
+            let stream: cpal::Stream = default_input_device
+                .build_input_stream(
+                    &default_config.into(),
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        let vertices: Vec<Vertex> = data
+                            .iter()
+                            .enumerate()
+                            .map(|(i, &sample)| {
+                                let position = [i as f32 / 1024.0 * 2.0 - 1.0, sample];
+                                // println!("Sample: {:?}", position);
+                                Vertex { position }
+                            })
+                            .take(1024)
+                            .collect();
+                        arc_queue_clone.write_buffer(
+                            &arc_vertex_buffer_clone,
+                            0,
+                            bytemuck::cast_slice(&vertices),
+                        );
+                    },
+                    move |err| {
+                        eprintln!("Error: {}", err);
+                    },
+                    None,
+                )
+                .unwrap();
+            stream.play().unwrap();
+            Some(stream)
+        } else {
+            None
+        };
+
         InitializedLoopState {
             window,
             _instance: instance,
             surface,
             _adapter: adapter,
             device,
-            queue,
+            queue: arc_queue,
             _shader: shader,
             _pipeline_layout: pipeline_layout,
             render_pipeline,
-            vertex_buffer,
+            vertex_buffer: arc_vertex_buffer,
             config,
+            stream,
         }
     }
 }
@@ -264,7 +306,7 @@ impl ApplicationHandler for LoopState {
                             });
                         render_pass.set_pipeline(&state.render_pipeline);
                         render_pass.set_vertex_buffer(0, state.vertex_buffer.slice(..));
-                        render_pass.draw(0..6 /* vertices.len() as u32 */, 0..1);
+                        render_pass.draw(0..1024 /* vertices.len() as u32 */, 0..1);
                     }
 
                     state.queue.submit(Some(encoder.finish()));
@@ -280,46 +322,9 @@ impl ApplicationHandler for LoopState {
 pub fn main() {
     env_logger::init();
 
-    // List all cpal input sources
-    let host = cpal::default_host();
-    let devices = host.input_devices().unwrap();
-    for device in devices {
-        println!("Input device: {}", device.name().unwrap());
-    }
+    let mut loop_state = LoopState::new();
+    let event_loop = EventLoop::new().unwrap();
 
-    // Print all input configs for the default input device
-    if let Some(default_input_device) = host.default_input_device() {
-        println!(
-            "Default input device: {}",
-            default_input_device.name().unwrap()
-        );
-        let configs = default_input_device.supported_input_configs().unwrap();
-        for config in configs {
-            println!("Supported input config: {:?}", config);
-        }
-
-        // Open the default device with the default config and dump samples to stdout
-        let default_config = default_input_device.default_input_config().unwrap();
-        let stream = default_input_device
-            .build_input_stream(
-                &default_config.into(),
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    for sample in data {
-                        // println!("Sample: {}", sample);
-                    }
-                },
-                move |err| {
-                    eprintln!("Error: {}", err);
-                },
-                None,
-            )
-            .unwrap();
-        stream.play().unwrap();
-
-        let mut loop_state = LoopState::new();
-        let event_loop = EventLoop::new().unwrap();
-
-        log::info!("Entering event loop...");
-        event_loop.run_app(&mut loop_state).unwrap();
-    }
+    log::info!("Entering event loop...");
+    event_loop.run_app(&mut loop_state).unwrap();
 }

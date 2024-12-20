@@ -42,7 +42,7 @@ struct InitializedLoopState {
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: Arc<wgpu::Buffer>,
     config: wgpu::SurfaceConfiguration,
-    stream: Option<cpal::Stream>,
+    _stream: Option<cpal::Stream>,
 }
 
 #[repr(C)]
@@ -201,17 +201,19 @@ impl InitializedLoopState {
             let default_config = default_input_device.default_input_config().unwrap();
             let stream: cpal::Stream = default_input_device
                 .build_input_stream(
-                    &default_config.into(),
+                    &cpal::StreamConfig {
+                        buffer_size: cpal::BufferSize::Fixed(512), // Shrink buffer size to 512
+                        ..default_config.into()
+                    },
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
                         let vertices: Vec<Vertex> = data
                             .iter()
                             .enumerate()
                             .map(|(i, &sample)| {
-                                let position = [i as f32 / 1024.0 * 2.0 - 1.0, sample];
-                                // println!("Sample: {:?}", position);
+                                let position = [i as f32 / 512.0 * 2.0 - 1.0, sample]; // Adjust scaling factor
                                 Vertex { position }
                             })
-                            .take(1024)
+                            .take(512) // Adjust number of vertices
                             .collect();
                         arc_queue_clone.write_buffer(
                             &arc_vertex_buffer_clone,
@@ -244,7 +246,7 @@ impl InitializedLoopState {
             render_pipeline,
             vertex_buffer: arc_vertex_buffer,
             config,
-            stream,
+            _stream: stream,
         }
     }
 }

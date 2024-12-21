@@ -1,13 +1,19 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use std::{borrow::Cow, sync::Arc};
 use wgpu::util::DeviceExt;
+use wgpu::BufferUsages;
+use wgpu::ShaderStages;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
     event_loop::{ActiveEventLoop, EventLoop},
     window::{Window, WindowId},
 };
+
+const AUDIO_BUFFER_SIZE: usize = 512;
+const VERTEX_BUFFER_SIZE: usize = AUDIO_BUFFER_SIZE * 16;
 
 struct LoopState {
     // See https://docs.rs/winit/latest/winit/changelog/v0_30/index.html#removed
@@ -41,6 +47,10 @@ struct InitializedLoopState {
     _pipeline_layout: wgpu::PipelineLayout,
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: Arc<wgpu::Buffer>,
+    _y_value_buffer: Arc<wgpu::Buffer>,
+    y_value_offset: Arc<Mutex<usize>>,
+    y_value_offset_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
     config: wgpu::SurfaceConfiguration,
     _stream: Option<cpal::Stream>,
 }
@@ -49,6 +59,12 @@ struct InitializedLoopState {
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
     position: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct YValue {
+    y: f32,
 }
 
 impl Vertex {
@@ -60,6 +76,20 @@ impl Vertex {
                 offset: 0,
                 shader_location: 0,
                 format: wgpu::VertexFormat::Float32x2,
+            }],
+        }
+    }
+}
+
+impl YValue {
+    fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<YValue>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[wgpu::VertexAttribute {
+                offset: 0,
+                shader_location: 1,
+                format: wgpu::VertexFormat::Float32,
             }],
         }
     }
@@ -103,8 +133,7 @@ impl InitializedLoopState {
                     label: None,
                     required_features: wgpu::Features::empty(),
                     // Make sure we use the texture resolution limits from the adapter, so we can support images the size of the swapchain.
-                    required_limits: wgpu::Limits::downlevel_webgl2_defaults()
-                        .using_resolution(adapter.limits()),
+                    required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
                     memory_hints: wgpu::MemoryHints::MemoryUsage,
                 },
                 None,
@@ -127,20 +156,84 @@ impl InitializedLoopState {
         let swapchain_capabilities = surface.get_capabilities(&adapter);
         let swapchain_format = swapchain_capabilities.formats[0];
 
-        let vertex_buffer: wgpu::Buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Vertex Buffer"),
-                contents: bytemuck::cast_slice(
-                    &[Vertex {
-                        position: [0.0, 0.0],
-                    }; 512],
-                ),
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            });
+        let vertices: Vec<Vertex> = (0..VERTEX_BUFFER_SIZE)
+            .map(|i| Vertex {
+                position: [i as f32 / VERTEX_BUFFER_SIZE as f32 * 2.0 - 1.0, 0.0],
+            })
+            .collect();
+        let y_values: Vec<YValue> = vec![YValue { y: 0.0 }; VERTEX_BUFFER_SIZE];
+
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let y_value_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Y Value Buffer"),
+            contents: bytemuck::cast_slice(&y_values),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
+        // Create the y_value_offset buffer
+        let y_value_offset_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Y Value Offset Buffer"),
+            size: std::mem::size_of::<u32>() as wgpu::BufferAddress,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Create the bind group layout and bind group for the uniform
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+            label: None,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: y_value_offset_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: y_value_buffer.as_entire_binding(),
+                },
+            ],
+            label: Some("Bind Group"),
+        });
 
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: None,
-            layout: Some(&pipeline_layout),
+            layout: Some(
+                &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Pipeline Layout"),
+                    bind_group_layouts: &[&bind_group_layout],
+                    push_constant_ranges: &[],
+                }),
+            ),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
@@ -183,8 +276,11 @@ impl InitializedLoopState {
         let arc_queue = Arc::new(queue);
         let arc_queue_clone = arc_queue.clone();
         let arc_vertex_buffer = Arc::new(vertex_buffer);
-        let arc_vertex_buffer_clone = arc_vertex_buffer.clone();
+        let arc_y_value_buffer = Arc::new(y_value_buffer);
+        let arc_y_value_buffer_clone = arc_y_value_buffer.clone();
         let window_clone = window.clone();
+        let y_value_offset = Arc::new(Mutex::new(0));
+        let y_value_offset_clone = y_value_offset.clone();
 
         // List all cpal input sources
         let host = cpal::default_host();
@@ -209,24 +305,36 @@ impl InitializedLoopState {
             let stream: cpal::Stream = default_input_device
                 .build_input_stream(
                     &cpal::StreamConfig {
-                        buffer_size: cpal::BufferSize::Fixed(512), // Shrink buffer size to 512
+                        buffer_size: cpal::BufferSize::Fixed(AUDIO_BUFFER_SIZE as u32),
                         ..default_config.into()
                     },
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        let vertices: Vec<Vertex> = data
-                            .iter()
-                            .enumerate()
-                            .map(|(i, &sample)| {
-                                let position = [i as f32 / 512.0 * 2.0 - 1.0, sample]; // Adjust scaling factor
-                                Vertex { position }
-                            })
-                            .take(512) // Adjust number of vertices
-                            .collect();
+                        let y_values: Vec<YValue> =
+                            data.iter().map(|&sample| YValue { y: sample }).collect();
+                        let mut y_value_offset = y_value_offset_clone.lock().unwrap();
+                        let offset = (*y_value_offset + y_values.len()) % VERTEX_BUFFER_SIZE;
+
+                        // First pass: write to the end of the buffer
+                        let first_pass_len = VERTEX_BUFFER_SIZE - *y_value_offset;
+                        let first_pass_data = &y_values[..first_pass_len.min(y_values.len())];
                         arc_queue_clone.write_buffer(
-                            &arc_vertex_buffer_clone,
-                            0,
-                            bytemuck::cast_slice(&vertices),
+                            &arc_y_value_buffer_clone,
+                            (*y_value_offset * std::mem::size_of::<YValue>())
+                                as wgpu::BufferAddress,
+                            bytemuck::cast_slice(first_pass_data),
                         );
+
+                        // Second pass: write to the beginning of the buffer
+                        if first_pass_data.len() < y_values.len() {
+                            let second_pass_data = &y_values[first_pass_data.len()..];
+                            arc_queue_clone.write_buffer(
+                                &arc_y_value_buffer_clone,
+                                0,
+                                bytemuck::cast_slice(second_pass_data),
+                            );
+                        }
+
+                        *y_value_offset = offset;
                         window_clone.request_redraw();
                     },
                     move |err| {
@@ -252,6 +360,10 @@ impl InitializedLoopState {
             _pipeline_layout: pipeline_layout,
             render_pipeline,
             vertex_buffer: arc_vertex_buffer,
+            _y_value_buffer: arc_y_value_buffer,
+            y_value_offset,
+            y_value_offset_buffer,
+            bind_group,
             config,
             _stream: stream,
         }
@@ -324,7 +436,9 @@ impl ApplicationHandler for LoopState {
                             });
                         render_pass.set_pipeline(&state.render_pipeline);
                         render_pass.set_vertex_buffer(0, state.vertex_buffer.slice(..));
-                        render_pass.draw(0..512 /* vertices.len() as u32 */, 0..1);
+                        // render_pass.set_vertex_buffer(1, state.y_value_buffer.slice(..));
+                        render_pass.set_bind_group(0, &state.bind_group, &[]);
+                        render_pass.draw(0..VERTEX_BUFFER_SIZE as u32, 0..1);
                     }
 
                     state.queue.submit(Some(encoder.finish()));

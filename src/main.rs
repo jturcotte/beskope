@@ -13,7 +13,7 @@ use winit::{
 };
 
 const AUDIO_BUFFER_SIZE: usize = 512;
-const VERTEX_BUFFER_SIZE: usize = AUDIO_BUFFER_SIZE * 16;
+const VERTEX_BUFFER_SIZE: usize = AUDIO_BUFFER_SIZE * 512;
 
 struct LoopState {
     // See https://docs.rs/winit/latest/winit/changelog/v0_30/index.html#removed
@@ -49,7 +49,7 @@ struct InitializedLoopState {
     vertex_buffer: Arc<wgpu::Buffer>,
     _y_value_buffer: Arc<wgpu::Buffer>,
     y_value_offset: Arc<Mutex<usize>>,
-    y_value_offset_buffer: wgpu::Buffer,
+    y_value_offset_buffer: Arc<wgpu::Buffer>,
     bind_group: wgpu::BindGroup,
     config: wgpu::SurfaceConfiguration,
     _stream: Option<cpal::Stream>,
@@ -281,6 +281,8 @@ impl InitializedLoopState {
         let window_clone = window.clone();
         let y_value_offset = Arc::new(Mutex::new(0));
         let y_value_offset_clone = y_value_offset.clone();
+        let arc_y_value_offset_buffer = Arc::new(y_value_offset_buffer);
+        let arc_y_value_offset_buffer_clone = arc_y_value_offset_buffer.clone();
 
         // List all cpal input sources
         let host = cpal::default_host();
@@ -334,7 +336,14 @@ impl InitializedLoopState {
                             );
                         }
 
+                        // Update y_value_offset and write the offset to the uniform buffer
                         *y_value_offset = offset;
+                        arc_queue_clone.write_buffer(
+                            &arc_y_value_offset_buffer_clone,
+                            0,
+                            bytemuck::cast_slice(&[offset as u32]),
+                        );
+
                         window_clone.request_redraw();
                     },
                     move |err| {
@@ -362,7 +371,7 @@ impl InitializedLoopState {
             vertex_buffer: arc_vertex_buffer,
             _y_value_buffer: arc_y_value_buffer,
             y_value_offset,
-            y_value_offset_buffer,
+            y_value_offset_buffer: arc_y_value_offset_buffer,
             bind_group,
             config,
             _stream: stream,

@@ -11,8 +11,7 @@ use winit::{
     window::{Window, WindowId},
 };
 
-const AUDIO_BUFFER_SIZE: usize = 512;
-const VERTEX_BUFFER_SIZE: usize = AUDIO_BUFFER_SIZE * 128;
+const VERTEX_BUFFER_SIZE: usize = 44100 * 3 / 2;
 
 struct LoopState {
     // See https://docs.rs/winit/latest/winit/changelog/v0_30/index.html#removed
@@ -51,6 +50,7 @@ struct InitializedLoopState {
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: Arc<wgpu::Buffer>,
     _y_value_buffer: Arc<wgpu::Buffer>,
+    y_value_write_offset: Arc<Mutex<usize>>,
     y_value_offset: Arc<Mutex<usize>>,
     y_value_offset_buffer: Arc<wgpu::Buffer>,
     bind_group: wgpu::BindGroup,
@@ -276,8 +276,9 @@ impl InitializedLoopState {
         let arc_y_value_buffer_clone = arc_y_value_buffer.clone();
         let window_clone = window.clone();
         let y_value_offset = Arc::new(Mutex::new(0));
-        let y_value_offset_clone = y_value_offset.clone();
         let arc_y_value_offset_buffer = Arc::new(y_value_offset_buffer);
+        let y_value_write_offset = Arc::new(Mutex::new(0));
+        let y_value_write_offset_clone = y_value_write_offset.clone();
         let arc_process_audio = process_audio.clone();
         let latest_data = Arc::new(Mutex::new(Vec::new()));
         let latest_data_clone = latest_data.clone();
@@ -332,72 +333,85 @@ impl InitializedLoopState {
         // }
 
         // Print all input configs for the default input device
-        let (stream, audio_sample_rate) = if let Some(default_input_device) =
-            host.default_input_device()
-        {
-            println!(
-                "Default input device: {}",
-                default_input_device.name().unwrap()
-            );
-            // let configs = default_input_device.supported_input_configs().unwrap();
-            // for config in configs {
-            //     println!("Supported input config: {:?}", config);
-            // }
+        let (stream, audio_sample_rate) =
+            if let Some(default_input_device) = host.default_input_device() {
+                println!(
+                    "Default input device: {}",
+                    default_input_device.name().unwrap()
+                );
+                // let configs = default_input_device.supported_input_configs().unwrap();
+                // for config in configs {
+                //     println!("Supported input config: {:?}", config);
+                // }
 
-            // Modify the data_callback to update the vertex buffer directly and trigger a redraw
-            let default_config = default_input_device.default_input_config().unwrap();
-            let audio_sample_rate = default_config.sample_rate().0 as f32;
-            let stream: cpal::Stream = default_input_device
-                .build_input_stream(
-                    &cpal::StreamConfig {
-                        buffer_size: cpal::BufferSize::Fixed(AUDIO_BUFFER_SIZE as u32),
-                        ..default_config.into()
-                    },
-                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        let process_audio = arc_process_audio.lock().unwrap();
-                        if *process_audio {
-                            let y_values: Vec<YValue> =
-                                data.iter().map(|&sample| YValue { y: sample }).collect();
-                            // FIXME: This is the "read" offset, but the sample callback and the rendering won't always
-                            // be in sync. So we'd also need a separate "write" offset here to avoid visibly cutting the sound wave
-                            // where we'll be writing.
-                            let y_value_offset = y_value_offset_clone.lock().unwrap();
+                // Modify the data_callback to update the vertex buffer directly and trigger a redraw
+                let default_config = default_input_device.default_input_config().unwrap();
+                println!("Default input config: {:?}", default_config);
+                let audio_sample_rate = default_config.sample_rate().0 as f32;
+                let stream: cpal::Stream = default_input_device
+                    .build_input_stream(
+                        &cpal::StreamConfig {
+                            buffer_size: cpal::BufferSize::Fixed(512),
+                            ..default_config.into()
+                        },
+                        move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                            let process_audio = *arc_process_audio.lock().unwrap();
+                            if process_audio {
+                                let y_values: Vec<YValue> = data
+                                    .iter()
+                                    .step_by(2) // Keep only the left channel for now
+                                    .map(|&sample| YValue { y: sample })
+                                    .collect();
 
-                            // First pass: write to the end of the buffer
-                            let first_pass_len = VERTEX_BUFFER_SIZE - *y_value_offset;
-                            let first_pass_data = &y_values[..first_pass_len.min(y_values.len())];
-                            arc_queue_clone.write_buffer(
-                                &arc_y_value_buffer_clone,
-                                (*y_value_offset * std::mem::size_of::<YValue>())
-                                    as wgpu::BufferAddress,
-                                bytemuck::cast_slice(first_pass_data),
-                            );
+                                // First pass: write to the end of the buffer
+                                let first_pass_len = {
+                                    let mut y_value_write_offset_lock =
+                                        y_value_write_offset_clone.lock().unwrap();
+                                    let first_pass_len =
+                                        VERTEX_BUFFER_SIZE - *y_value_write_offset_lock;
+                                    let first_pass_data =
+                                        &y_values[..first_pass_len.min(y_values.len())];
+                                    arc_queue_clone.write_buffer(
+                                        &arc_y_value_buffer_clone,
+                                        (*y_value_write_offset_lock * std::mem::size_of::<YValue>())
+                                            as wgpu::BufferAddress,
+                                        bytemuck::cast_slice(first_pass_data),
+                                    );
 
-                            // Second pass: write to the beginning of the buffer
-                            if first_pass_data.len() < y_values.len() {
-                                let second_pass_data = &y_values[first_pass_data.len()..];
-                                arc_queue_clone.write_buffer(
-                                    &arc_y_value_buffer_clone,
-                                    0,
-                                    bytemuck::cast_slice(second_pass_data),
-                                );
+                                    // Update the write offset
+                                    *y_value_write_offset_lock = (*y_value_write_offset_lock
+                                        + y_values.len())
+                                        % VERTEX_BUFFER_SIZE;
+                                    *latest_data_clone.lock().unwrap() =
+                                        data.iter().step_by(2).copied().collect();
+
+                                    first_pass_len
+                                };
+
+                                // Second pass: write to the beginning of the buffer
+                                if first_pass_len < y_values.len() {
+                                    let second_pass_data = &y_values[first_pass_len..];
+                                    arc_queue_clone.write_buffer(
+                                        &arc_y_value_buffer_clone,
+                                        0,
+                                        bytemuck::cast_slice(second_pass_data),
+                                    );
+                                }
+
+                                window_clone.request_redraw();
                             }
-                            *latest_data_clone.lock().unwrap() = data.to_vec();
-
-                            window_clone.request_redraw();
-                        }
-                    },
-                    move |err| {
-                        eprintln!("Error: {}", err);
-                    },
-                    None,
-                )
-                .unwrap();
-            stream.play().unwrap();
-            (Some(stream), audio_sample_rate)
-        } else {
-            (None, 0.0)
-        };
+                        },
+                        move |err| {
+                            eprintln!("Error: {}", err);
+                        },
+                        None,
+                    )
+                    .unwrap();
+                stream.play().unwrap();
+                (Some(stream), audio_sample_rate)
+            } else {
+                (None, 0.0)
+            };
 
         InitializedLoopState {
             window,
@@ -411,6 +425,7 @@ impl InitializedLoopState {
             render_pipeline,
             vertex_buffer: arc_vertex_buffer,
             _y_value_buffer: arc_y_value_buffer,
+            y_value_write_offset,
             y_value_offset,
             y_value_offset_buffer: arc_y_value_offset_buffer,
             bind_group,
@@ -466,12 +481,28 @@ impl ApplicationHandler for LoopState {
                         self.last_frame_time = now;
 
                         // Scroll how the y_values are applied onto vertices based on the time between frames.
+                        let last_y_value_write_offset = *state.y_value_write_offset.lock().unwrap();
                         let mut y_value_offset = state.y_value_offset.lock().unwrap();
-                        *y_value_offset = (*y_value_offset
-                            + (state.audio_sample_rate
-                                * (frame_duration.as_micros() as f32 / 1000000.0))
-                                as usize)
-                            % VERTEX_BUFFER_SIZE;
+
+                        // The frame_duration isn't 100% accurate so snap them back together when they drifted too far apart.
+                        let diff = (*y_value_offset as isize
+                            - last_y_value_write_offset as isize
+                            - VERTEX_BUFFER_SIZE as isize)
+                            % VERTEX_BUFFER_SIZE as isize;
+                        if diff.abs() > VERTEX_BUFFER_SIZE as isize / 64 {
+                            // FIXME: Why is this happening all the time with 60Hz unless the audio buffer size is 1024?
+                            println!(
+                                "Snapping back read and write offsets (read {} write {} diff {} maybe {})",
+                                *y_value_offset, last_y_value_write_offset, diff, (*y_value_offset as isize - last_y_value_write_offset as isize)
+                            );
+                            *y_value_offset = last_y_value_write_offset;
+                        } else {
+                            *y_value_offset = (*y_value_offset
+                                + (state.audio_sample_rate
+                                    * (frame_duration.as_micros() as f32 / 1_000_000.0))
+                                    as usize)
+                                % VERTEX_BUFFER_SIZE;
+                        }
                         state.queue.write_buffer(
                             &state.y_value_offset_buffer,
                             0,

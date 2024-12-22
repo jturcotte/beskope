@@ -24,6 +24,7 @@ struct LoopState {
     last_frame_time: Instant,
     last_fps_dump_time: Instant,
     frame_count: u32,
+    process_audio: Arc<Mutex<bool>>,
 }
 
 impl LoopState {
@@ -33,6 +34,7 @@ impl LoopState {
             last_frame_time: Instant::now(),
             last_fps_dump_time: Instant::now(),
             frame_count: 0,
+            process_audio: Arc::new(Mutex::new(true)),
         }
     }
 }
@@ -84,7 +86,10 @@ impl Vertex {
 }
 
 impl InitializedLoopState {
-    async fn new(event_loop: &ActiveEventLoop) -> InitializedLoopState {
+    async fn new(
+        event_loop: &ActiveEventLoop,
+        process_audio: Arc<Mutex<bool>>,
+    ) -> InitializedLoopState {
         #[allow(unused_mut)]
         let mut attributes = Window::default_attributes();
         #[cfg(target_arch = "wasm32")]
@@ -270,6 +275,7 @@ impl InitializedLoopState {
         let y_value_offset = Arc::new(Mutex::new(0));
         let y_value_offset_clone = y_value_offset.clone();
         let arc_y_value_offset_buffer = Arc::new(y_value_offset_buffer);
+        let arc_process_audio = process_audio.clone();
 
         // List all cpal input sources
         let host = cpal::default_host();
@@ -279,27 +285,30 @@ impl InitializedLoopState {
         // }
 
         // Print all input configs for the default input device
-        let (stream, audio_sample_rate) =
-            if let Some(default_input_device) = host.default_input_device() {
-                println!(
-                    "Default input device: {}",
-                    default_input_device.name().unwrap()
-                );
-                // let configs = default_input_device.supported_input_configs().unwrap();
-                // for config in configs {
-                //     println!("Supported input config: {:?}", config);
-                // }
+        let (stream, audio_sample_rate) = if let Some(default_input_device) =
+            host.default_input_device()
+        {
+            println!(
+                "Default input device: {}",
+                default_input_device.name().unwrap()
+            );
+            // let configs = default_input_device.supported_input_configs().unwrap();
+            // for config in configs {
+            //     println!("Supported input config: {:?}", config);
+            // }
 
-                // Modify the data_callback to update the vertex buffer directly and trigger a redraw
-                let default_config = default_input_device.default_input_config().unwrap();
-                let audio_sample_rate = default_config.sample_rate().0 as f32;
-                let stream: cpal::Stream = default_input_device
-                    .build_input_stream(
-                        &cpal::StreamConfig {
-                            buffer_size: cpal::BufferSize::Fixed(AUDIO_BUFFER_SIZE as u32),
-                            ..default_config.into()
-                        },
-                        move |data: &[f32], _: &cpal::InputCallbackInfo| {
+            // Modify the data_callback to update the vertex buffer directly and trigger a redraw
+            let default_config = default_input_device.default_input_config().unwrap();
+            let audio_sample_rate = default_config.sample_rate().0 as f32;
+            let stream: cpal::Stream = default_input_device
+                .build_input_stream(
+                    &cpal::StreamConfig {
+                        buffer_size: cpal::BufferSize::Fixed(AUDIO_BUFFER_SIZE as u32),
+                        ..default_config.into()
+                    },
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        let process_audio = arc_process_audio.lock().unwrap();
+                        if *process_audio {
                             let y_values: Vec<YValue> =
                                 data.iter().map(|&sample| YValue { y: sample }).collect();
                             // FIXME: This is the "read" offset, but the sample callback and the rendering won't always
@@ -328,18 +337,19 @@ impl InitializedLoopState {
                             }
 
                             window_clone.request_redraw();
-                        },
-                        move |err| {
-                            eprintln!("Error: {}", err);
-                        },
-                        None,
-                    )
-                    .unwrap();
-                stream.play().unwrap();
-                (Some(stream), audio_sample_rate)
-            } else {
-                (None, 0.0)
-            };
+                        }
+                    },
+                    move |err| {
+                        eprintln!("Error: {}", err);
+                    },
+                    None,
+                )
+                .unwrap();
+            stream.play().unwrap();
+            (Some(stream), audio_sample_rate)
+        } else {
+            (None, 0.0)
+        };
 
         InitializedLoopState {
             window,
@@ -368,12 +378,15 @@ impl ApplicationHandler for LoopState {
         if self.state.is_none() {
             #[cfg(not(target_arch = "wasm32"))]
             {
-                self.state = Some(pollster::block_on(InitializedLoopState::new(event_loop)));
+                self.state = Some(pollster::block_on(InitializedLoopState::new(
+                    event_loop,
+                    self.process_audio.clone(),
+                )));
             }
             #[cfg(target_arch = "wasm32")]
             {
                 self.state = Some(wasm_bindgen_futures::spawn_local(async move {
-                    InitializedLoopState::new(event_loop).await
+                    InitializedLoopState::new(event_loop, self.process_audio.clone()).await
                 }));
             }
         }
@@ -397,21 +410,23 @@ impl ApplicationHandler for LoopState {
                 }
                 WindowEvent::RedrawRequested => {
                     let now = Instant::now();
-                    let frame_duration = now.duration_since(self.last_frame_time);
-                    self.last_frame_time = now;
+                    if *self.process_audio.lock().unwrap() {
+                        let frame_duration = now.duration_since(self.last_frame_time);
+                        self.last_frame_time = now;
 
-                    // Scroll how the y_values are applied onto vertices based on the time between frames.
-                    let mut y_value_offset = state.y_value_offset.lock().unwrap();
-                    *y_value_offset = (*y_value_offset
-                        + (state.audio_sample_rate
-                            * (frame_duration.as_micros() as f32 / 1000000.0))
-                            as usize)
-                        % VERTEX_BUFFER_SIZE;
-                    state.queue.write_buffer(
-                        &state.y_value_offset_buffer,
-                        0,
-                        bytemuck::cast_slice(&[*y_value_offset as u32]),
-                    );
+                        // Scroll how the y_values are applied onto vertices based on the time between frames.
+                        let mut y_value_offset = state.y_value_offset.lock().unwrap();
+                        *y_value_offset = (*y_value_offset
+                            + (state.audio_sample_rate
+                                * (frame_duration.as_micros() as f32 / 1000000.0))
+                                as usize)
+                            % VERTEX_BUFFER_SIZE;
+                        state.queue.write_buffer(
+                            &state.y_value_offset_buffer,
+                            0,
+                            bytemuck::cast_slice(&[*y_value_offset as u32]),
+                        );
+                    }
 
                     let frame = state
                         .surface
@@ -462,6 +477,16 @@ impl ApplicationHandler for LoopState {
                     }
                 }
                 WindowEvent::CloseRequested => event_loop.exit(),
+                WindowEvent::KeyboardInput { event, .. } => {
+                    if let winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Space) =
+                        event.physical_key
+                    {
+                        if event.state == winit::event::ElementState::Pressed {
+                            let mut process_audio = self.process_audio.lock().unwrap();
+                            *process_audio = !*process_audio;
+                        }
+                    }
+                }
                 _ => {}
             }
         }

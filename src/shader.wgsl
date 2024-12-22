@@ -21,9 +21,14 @@ struct VertexOutput {
 fn vs_main( @builtin(vertex_index) my_index: u32, input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
     let y_index = (my_index + y_value_offset.offset) % arrayLength(&y_values);
-    output.position = vec4<f32>(input.position.x, y_values[y_index], 0.0, 1.0);
+    output.position = vec4<f32>(input.position.x, y_values[y_index] * 0.5 + 0.5, 0.0, 1.0);
     output.color = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     return output;
+}
+
+@vertex
+fn vs_straight(@location(0) position: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(position.x, position.y * 0.5 - 0.5, 0.0, 1.0);
 }
 
 @fragment

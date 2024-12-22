@@ -57,6 +57,9 @@ struct InitializedLoopState {
     config: wgpu::SurfaceConfiguration,
     _stream: Option<cpal::Stream>,
     audio_sample_rate: f32,
+    latest_data: Arc<Mutex<Vec<f32>>>,
+    straight_vertex_buffer: Arc<wgpu::Buffer>,
+    straight_render_pipeline: wgpu::RenderPipeline,
 }
 
 #[repr(C)]
@@ -276,6 +279,50 @@ impl InitializedLoopState {
         let y_value_offset_clone = y_value_offset.clone();
         let arc_y_value_offset_buffer = Arc::new(y_value_offset_buffer);
         let arc_process_audio = process_audio.clone();
+        let latest_data = Arc::new(Mutex::new(Vec::new()));
+        let latest_data_clone = latest_data.clone();
+
+        // Create the straight vertex buffer
+        let straight_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Straight Vertex Buffer"),
+            size: (VERTEX_BUFFER_SIZE * std::mem::size_of::<Vertex>()) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Create the straight render pipeline
+        let straight_render_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Straight Render Pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_straight"),
+                    buffers: &[Vertex::desc()],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(swapchain_format.into())],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::LineStrip,
+                    // ...existing code...
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                // ...existing code...
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
 
         // List all cpal input sources
         let host = cpal::default_host();
@@ -335,6 +382,7 @@ impl InitializedLoopState {
                                     bytemuck::cast_slice(second_pass_data),
                                 );
                             }
+                            *latest_data_clone.lock().unwrap() = data.to_vec();
 
                             window_clone.request_redraw();
                         }
@@ -369,6 +417,9 @@ impl InitializedLoopState {
             config,
             _stream: stream,
             audio_sample_rate,
+            latest_data,
+            straight_vertex_buffer: Arc::new(straight_vertex_buffer),
+            straight_render_pipeline,
         }
     }
 }
@@ -438,6 +489,23 @@ impl ApplicationHandler for LoopState {
                     let mut encoder = state
                         .device
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+                    // Update the straight vertex buffer with latest data
+                    let latest_data = state.latest_data.lock().unwrap();
+                    let straight_vertices: Vec<Vertex> = latest_data
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &y)| Vertex {
+                            position: [i as f32 / latest_data.len() as f32 * 2.0 - 1.0, y],
+                        })
+                        .collect();
+                    state.queue.write_buffer(
+                        &state.straight_vertex_buffer,
+                        0,
+                        bytemuck::cast_slice(&straight_vertices),
+                    );
+
+                    // First render pass
                     {
                         let mut render_pass =
                             encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -463,6 +531,28 @@ impl ApplicationHandler for LoopState {
                         render_pass.set_vertex_buffer(0, state.vertex_buffer.slice(..));
                         render_pass.set_bind_group(0, &state.bind_group, &[]);
                         render_pass.draw(0..VERTEX_BUFFER_SIZE as u32, 0..1);
+                    }
+
+                    // Second render pass
+                    {
+                        let mut render_pass =
+                            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: Some("Straight Render Pass"),
+                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                    view: &view,
+                                    resolve_target: None,
+                                    ops: wgpu::Operations {
+                                        load: wgpu::LoadOp::Load,
+                                        store: wgpu::StoreOp::Store,
+                                    },
+                                })],
+                                depth_stencil_attachment: None,
+                                timestamp_writes: None,
+                                occlusion_query_set: None,
+                            });
+                        render_pass.set_pipeline(&state.straight_render_pipeline);
+                        render_pass.set_vertex_buffer(0, state.straight_vertex_buffer.slice(..));
+                        render_pass.draw(0..straight_vertices.len() as u32, 0..1);
                     }
 
                     state.queue.submit(Some(encoder.finish()));

@@ -1,4 +1,8 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use num_complex::Complex;
+use ringbuf::traits::{Consumer, Observer, RingBuffer};
+use ringbuf::HeapRb;
+use rustfft::{Fft, FftDirection, FftPlanner};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use std::{borrow::Cow, sync::Arc};
@@ -57,8 +61,10 @@ struct InitializedLoopState {
     config: wgpu::SurfaceConfiguration,
     _stream: Option<cpal::Stream>,
     audio_sample_rate: f32,
-    latest_data: Arc<Mutex<Vec<f32>>>,
-    straight_vertex_buffer: Arc<wgpu::Buffer>,
+    audio_ringbuf: Arc<Mutex<HeapRb<f32>>>,
+    fft_input_vertex_buffer: (wgpu::Buffer, usize),
+    spectrogram_vertex_buffer: (wgpu::Buffer, usize),
+    fft_output_vertex_buffer: (wgpu::Buffer, usize),
     straight_render_pipeline: wgpu::RenderPipeline,
 }
 
@@ -280,18 +286,37 @@ impl InitializedLoopState {
         let y_value_write_offset = Arc::new(Mutex::new(0));
         let y_value_write_offset_clone = y_value_write_offset.clone();
         let arc_process_audio = process_audio.clone();
-        let latest_data = Arc::new(Mutex::new(Vec::new()));
-        let latest_data_clone = latest_data.clone();
+        let audio_ringbuf = Arc::new(Mutex::new(HeapRb::<f32>::new(1024)));
+        let audio_ringbuf_clone = audio_ringbuf.clone();
 
-        // Create the straight vertex buffer
-        let straight_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Straight Vertex Buffer"),
-            size: (VERTEX_BUFFER_SIZE * std::mem::size_of::<Vertex>()) as wgpu::BufferAddress,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let latest_data_vertex_buffer = (
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: (VERTEX_BUFFER_SIZE * std::mem::size_of::<Vertex>()) as wgpu::BufferAddress,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            0,
+        );
+        let spectrogram_vertex_buffer = (
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: (VERTEX_BUFFER_SIZE * std::mem::size_of::<Vertex>()) as wgpu::BufferAddress,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            0,
+        );
+        let inverse_fft_vertex_buffer = (
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: (VERTEX_BUFFER_SIZE * std::mem::size_of::<Vertex>()) as wgpu::BufferAddress,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            0,
+        );
 
-        // Create the straight render pipeline
         let straight_render_pipeline =
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("Straight Render Pipeline"),
@@ -382,8 +407,13 @@ impl InitializedLoopState {
                                     *y_value_write_offset_lock = (*y_value_write_offset_lock
                                         + y_values.len())
                                         % VERTEX_BUFFER_SIZE;
-                                    *latest_data_clone.lock().unwrap() =
-                                        data.iter().step_by(2).copied().collect();
+
+                                    // Overwrite the latest data's ring buffer with the latest audio data to
+                                    // let the render thread process it before rendering.
+                                    audio_ringbuf_clone
+                                        .lock()
+                                        .unwrap()
+                                        .push_iter_overwrite(data.iter().step_by(2).copied());
 
                                     first_pass_len
                                 };
@@ -432,8 +462,10 @@ impl InitializedLoopState {
             config,
             _stream: stream,
             audio_sample_rate,
-            latest_data,
-            straight_vertex_buffer: Arc::new(straight_vertex_buffer),
+            audio_ringbuf,
+            fft_input_vertex_buffer: latest_data_vertex_buffer,
+            spectrogram_vertex_buffer,
+            fft_output_vertex_buffer: inverse_fft_vertex_buffer,
             straight_render_pipeline,
         }
     }
@@ -521,20 +553,112 @@ impl ApplicationHandler for LoopState {
                         .device
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-                    // Update the straight vertex buffer with latest data
-                    let latest_data = state.latest_data.lock().unwrap();
-                    let straight_vertices: Vec<Vertex> = latest_data
-                        .iter()
-                        .enumerate()
-                        .map(|(i, &y)| Vertex {
-                            position: [i as f32 / latest_data.len() as f32 * 2.0 - 1.0, y],
-                        })
-                        .collect();
-                    state.queue.write_buffer(
-                        &state.straight_vertex_buffer,
-                        0,
-                        bytemuck::cast_slice(&straight_vertices),
-                    );
+                    if let Some((mut fft_inout_buffer, fft_size)) = {
+                        let audio_ringbuf_guard = state.audio_ringbuf.lock().unwrap();
+                        if audio_ringbuf_guard.is_full() {
+                            let (first, second) = audio_ringbuf_guard.as_slices();
+                            let audio_data_iter = first.iter().chain(second.iter());
+                            Some((
+                                audio_data_iter
+                                    .map(|&y| Complex::new(y, 0.))
+                                    .collect::<Vec<Complex<f32>>>(),
+                                audio_ringbuf_guard.capacity().get() as usize,
+                            ))
+                        } else {
+                            None
+                        }
+                    } {
+                        {
+                            let vertices: Vec<Vertex> = fft_inout_buffer
+                                .iter()
+                                .enumerate()
+                                .map(|(i, &y)| Vertex {
+                                    position: [i as f32 / fft_size as f32 * 2.0 - 1.0, y.re],
+                                })
+                                .collect();
+                            state.queue.write_buffer(
+                                &state.fft_input_vertex_buffer.0,
+                                0,
+                                bytemuck::cast_slice(&vertices),
+                            );
+                            state.fft_input_vertex_buffer.1 = vertices.len();
+                        }
+
+                        // FIXME: Don't create a new planner every time
+                        let fft_forward: Arc<dyn Fft<f32>> =
+                            FftPlanner::new().plan_fft(fft_size, FftDirection::Forward);
+                        let fft_inverse: Arc<dyn Fft<f32>> =
+                            FftPlanner::new().plan_fft(fft_size, FftDirection::Inverse);
+
+                        fft_forward.process(&mut fft_inout_buffer);
+
+                        {
+                            let vertices: Vec<Vertex> = fft_inout_buffer
+                                .iter()
+                                .take(fft_inout_buffer.len() / 2)
+                                .enumerate()
+                                .map(|(i, &y)| Vertex {
+                                    position: [
+                                        i as f32 / (fft_inout_buffer.len() / 2) as f32 * 2.0 - 1.0,
+                                        y.norm().log10() * 0.5,
+                                    ],
+                                })
+                                .collect();
+                            state.queue.write_buffer(
+                                &state.spectrogram_vertex_buffer.0,
+                                0,
+                                bytemuck::cast_slice(&vertices),
+                            );
+                            state.spectrogram_vertex_buffer.1 = vertices.len();
+                        }
+
+                        // Find the peak frequency
+                        let peak_frequency_index = fft_inout_buffer
+                            .iter()
+                            .take(fft_inout_buffer.len() / 2)
+                            .enumerate()
+                            .max_by(|(_, a), (_, b)| {
+                                a.norm()
+                                    .partial_cmp(&b.norm())
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                            .map(|(i, _)| i)
+                            .unwrap_or(0);
+
+                        fn phase_to_samples(phase: f32, k: usize, fft_size: usize) -> usize {
+                            ((phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI)
+                                * fft_size as f32
+                                / k as f32) as usize
+                        }
+
+                        let phase_shift = -fft_inout_buffer[peak_frequency_index].arg();
+                        let phase_samples = phase_to_samples(
+                            phase_shift,
+                            peak_frequency_index,
+                            fft_inout_buffer.len(),
+                        );
+
+                        fft_inverse.process(&mut fft_inout_buffer);
+
+                        let ifft_normalize_factor = fft_size as f32;
+                        let vertices: Vec<Vertex> = fft_inout_buffer
+                            .iter()
+                            .skip(phase_samples)
+                            .enumerate()
+                            .map(|(i, &y)| Vertex {
+                                position: [
+                                    i as f32 / fft_inout_buffer.len() as f32 * 2.0 - 1.0,
+                                    y.re / ifft_normalize_factor,
+                                ],
+                            })
+                            .collect();
+                        state.queue.write_buffer(
+                            &state.fft_output_vertex_buffer.0,
+                            0,
+                            bytemuck::cast_slice(&vertices),
+                        );
+                        state.fft_output_vertex_buffer.1 = vertices.len();
+                    }
 
                     // First render pass
                     {
@@ -565,10 +689,17 @@ impl ApplicationHandler for LoopState {
                     }
 
                     // Second render pass
+                    for (i, (vertex_buffer, len)) in [
+                        &state.spectrogram_vertex_buffer,
+                        &state.fft_input_vertex_buffer,
+                        &state.fft_output_vertex_buffer,
+                    ]
+                    .iter()
+                    .enumerate()
                     {
                         let mut render_pass =
                             encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                                label: Some("Straight Render Pass"),
+                                label: None,
                                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                                     view: &view,
                                     resolve_target: None,
@@ -582,8 +713,19 @@ impl ApplicationHandler for LoopState {
                                 occlusion_query_set: None,
                             });
                         render_pass.set_pipeline(&state.straight_render_pipeline);
-                        render_pass.set_vertex_buffer(0, state.straight_vertex_buffer.slice(..));
-                        render_pass.draw(0..straight_vertices.len() as u32, 0..1);
+                        render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+
+                        let height = state.window.inner_size().height as f32 / 4.0;
+                        render_pass.set_viewport(
+                            0.0,
+                            (i + 1) as f32 * height,
+                            state.window.inner_size().width as f32,
+                            height,
+                            0.0,
+                            1.0,
+                        );
+
+                        render_pass.draw(0..*len as u32, 0..1);
                     }
 
                     state.queue.submit(Some(encoder.finish()));
@@ -596,6 +738,8 @@ impl ApplicationHandler for LoopState {
                         self.frame_count = 0;
                         self.last_fps_dump_time = now;
                     }
+
+                    state.window.request_redraw();
                 }
                 WindowEvent::CloseRequested => event_loop.exit(),
                 WindowEvent::KeyboardInput { event, .. } => {

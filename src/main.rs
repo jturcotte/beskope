@@ -50,8 +50,10 @@ struct InitializedLoopState {
     queue: Arc<wgpu::Queue>,
     _shader: wgpu::ShaderModule,
     _pipeline_layout: wgpu::PipelineLayout,
-    render_pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
+    fill_render_pipeline: wgpu::RenderPipeline,
+    fill_vertex_buffer: wgpu::Buffer,
+    stroke_render_pipeline: wgpu::RenderPipeline,
+    stroke_vertex_buffer: wgpu::Buffer,
     _y_value_buffer: Arc<wgpu::Buffer>,
     y_value_write_offset: Arc<Mutex<usize>>,
     y_value_offset_buffer: wgpu::Buffer,
@@ -199,7 +201,24 @@ impl InitializedLoopState {
         );
 
         // Sample the spline for every waveform vertex so that the position of older samples are closer together
-        let vertices: Vec<Vertex> = (0..VERTEX_BUFFER_SIZE)
+        let fill_vertices: Vec<Vertex> = (0..VERTEX_BUFFER_SIZE)
+            .flat_map(|i| {
+                let x = spline.sample(i as f32).unwrap() * 2.0 - 1.0;
+                vec![
+                    Vertex {
+                        position: [x, -1.0],
+                        waveform_index: i as u32,
+                        should_offset: 0.0,
+                    },
+                    Vertex {
+                        position: [x, 0.0],
+                        waveform_index: i as u32,
+                        should_offset: 1.0,
+                    },
+                ]
+            })
+            .collect();
+        let stroke_vertices: Vec<Vertex> = (0..VERTEX_BUFFER_SIZE)
             .map(|i| Vertex {
                 position: [spline.sample(i as f32).unwrap() * 2.0 - 1.0, 0.0],
                 waveform_index: i as u32,
@@ -208,9 +227,15 @@ impl InitializedLoopState {
             .collect();
         let y_values: Vec<YValue> = vec![YValue { y: 0.0 }; VERTEX_BUFFER_SIZE];
 
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(&vertices),
+        let fill_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Fill Vertex Buffer"),
+            contents: bytemuck::cast_slice(&fill_vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let stroke_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Stroke Vertex Buffer"),
+            contents: bytemuck::cast_slice(&stroke_vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
 
@@ -270,7 +295,7 @@ impl InitializedLoopState {
             label: Some("Bind Group"),
         });
 
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let fill_render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: None,
             layout: Some(
                 &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -287,12 +312,12 @@ impl InitializedLoopState {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: Some("fs_main"),
+                entry_point: Some("fs_fill_main"),
                 compilation_options: Default::default(),
                 targets: &[Some(swapchain_format.into())],
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::LineStrip,
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
                 cull_mode: None,
@@ -305,6 +330,43 @@ impl InitializedLoopState {
             multiview: None,
             cache: None,
         });
+
+        let stroke_render_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: None,
+                layout: Some(
+                    &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("Pipeline Layout"),
+                        bind_group_layouts: &[&bind_group_layout],
+                        push_constant_ranges: &[],
+                    }),
+                ),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[Vertex::desc()],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_stroke_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(swapchain_format.into())],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::LineStrip,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -505,8 +567,10 @@ impl InitializedLoopState {
             queue: arc_queue,
             _shader: shader,
             _pipeline_layout: pipeline_layout,
-            render_pipeline,
-            vertex_buffer,
+            fill_render_pipeline,
+            fill_vertex_buffer,
+            stroke_render_pipeline,
+            stroke_vertex_buffer,
             _y_value_buffer: arc_y_value_buffer,
             y_value_write_offset,
             y_value_offset_buffer,
@@ -595,8 +659,31 @@ impl ApplicationHandler for LoopState {
                                 timestamp_writes: None,
                                 occlusion_query_set: None,
                             });
-                        render_pass.set_pipeline(&state.render_pipeline);
-                        render_pass.set_vertex_buffer(0, state.vertex_buffer.slice(..));
+                        render_pass.set_pipeline(&state.fill_render_pipeline);
+                        render_pass.set_vertex_buffer(0, state.fill_vertex_buffer.slice(..));
+                        render_pass.set_bind_group(0, &state.bind_group, &[]);
+                        render_pass.draw(0..(VERTEX_BUFFER_SIZE * 2) as u32, 0..1);
+                    }
+
+                    {
+                        let mut render_pass =
+                            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: None,
+                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                    view: &view,
+                                    resolve_target: None,
+                                    ops: wgpu::Operations {
+                                        load: wgpu::LoadOp::Load,
+                                        // Last pass
+                                        store: wgpu::StoreOp::Discard,
+                                    },
+                                })],
+                                depth_stencil_attachment: None,
+                                timestamp_writes: None,
+                                occlusion_query_set: None,
+                            });
+                        render_pass.set_pipeline(&state.stroke_render_pipeline);
+                        render_pass.set_vertex_buffer(0, state.stroke_vertex_buffer.slice(..));
                         render_pass.set_bind_group(0, &state.bind_group, &[]);
                         render_pass.draw(0..VERTEX_BUFFER_SIZE as u32, 0..1);
                     }
@@ -611,8 +698,6 @@ impl ApplicationHandler for LoopState {
                         self.frame_count = 0;
                         self.last_fps_dump_time = now;
                     }
-
-                    state.window.request_redraw();
                 }
                 WindowEvent::CloseRequested => event_loop.exit(),
                 WindowEvent::KeyboardInput { event, .. } => {

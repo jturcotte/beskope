@@ -16,23 +16,26 @@ struct VertexInput {
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
-    @location(0) color: vec4<f32>,
 };
 
 @vertex
-fn vs_main( @builtin(vertex_index) my_index: u32, input: VertexInput) -> VertexOutput {
+fn vs_main(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
 
     let y_index = (input.waveform_index + y_value_offset.offset) % arrayLength(&y_values);
-    let offset = input.should_offset * y_values[y_index] * 0.25 + 0.75;
+    let offset = input.should_offset * (y_values[y_index] * 0.5);
     output.position = vec4(input.position, 0.0, 1.0);
     output.position.y += offset;
 
-    output.color = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     return output;
 }
 
 @fragment
-fn fs_main() -> @location(0) vec4<f32> {
+fn fs_fill_main() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0, 1.0, 1.0, 1.0);
+}
+
+@fragment
+fn fs_stroke_main() -> @location(0) vec4<f32> {
     return vec4<f32>(0.0, 0.0, 0.0, 1.0);
 }

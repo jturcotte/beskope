@@ -41,88 +41,30 @@ impl LoopState {
     }
 }
 
-struct InitializedLoopState {
-    window: Arc<Window>,
+struct WaveformWindow {
+    pub window: Arc<Window>,
+    pub queue: Arc<wgpu::Queue>,
+    pub y_value_buffer: Arc<wgpu::Buffer>,
+    pub y_value_write_offset: Arc<Mutex<usize>>,
     _instance: wgpu::Instance,
     surface: wgpu::Surface<'static>,
     _adapter: wgpu::Adapter,
     device: wgpu::Device,
-    queue: Arc<wgpu::Queue>,
     _shader: wgpu::ShaderModule,
     _pipeline_layout: wgpu::PipelineLayout,
     fill_render_pipeline: wgpu::RenderPipeline,
     fill_vertex_buffer: wgpu::Buffer,
     stroke_render_pipeline: wgpu::RenderPipeline,
     stroke_vertex_buffer: wgpu::Buffer,
-    _y_value_buffer: Arc<wgpu::Buffer>,
-    y_value_write_offset: Arc<Mutex<usize>>,
     y_value_offset_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     config: wgpu::SurfaceConfiguration,
-    _stream: Option<cpal::Stream>,
 }
 
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
-    position: [f32; 2],
-    waveform_index: u32,
-    should_offset: f32,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct YValue {
-    y: f32,
-}
-
-impl Vertex {
-    fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x2,
-                },
-                wgpu::VertexAttribute {
-                    offset: 8,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Uint32,
-                },
-                wgpu::VertexAttribute {
-                    offset: 12,
-                    shader_location: 2,
-                    format: wgpu::VertexFormat::Float32,
-                },
-            ],
-        }
-    }
-}
-
-impl InitializedLoopState {
-    async fn new(
-        event_loop: &ActiveEventLoop,
-        process_audio: Arc<Mutex<bool>>,
-    ) -> InitializedLoopState {
+impl WaveformWindow {
+    async fn new(event_loop: &ActiveEventLoop) -> WaveformWindow {
         #[allow(unused_mut)]
         let mut attributes = Window::default_attributes();
-        #[cfg(target_arch = "wasm32")]
-        {
-            use wasm_bindgen::JsCast;
-            use winit::platform::web::WindowAttributesExtWebSys;
-            let canvas = web_sys::window()
-                .unwrap()
-                .document()
-                .unwrap()
-                .get_element_by_id("canvas")
-                .unwrap()
-                .dyn_into::<web_sys::HtmlCanvasElement>()
-                .unwrap();
-            builder = builder.with_canvas(Some(canvas));
-        }
         let window = Arc::new(event_loop.create_window(attributes).unwrap());
 
         let mut size = window.inner_size();
@@ -381,12 +323,167 @@ impl InitializedLoopState {
         surface.configure(&device, &config);
 
         let arc_queue = Arc::new(queue);
-        let arc_queue_clone = arc_queue.clone();
         let arc_y_value_buffer = Arc::new(y_value_buffer);
-        let arc_y_value_buffer_clone = arc_y_value_buffer.clone();
-        let window_clone = window.clone();
         let y_value_write_offset = Arc::new(Mutex::new(0));
-        let y_value_write_offset_clone = y_value_write_offset.clone();
+
+        WaveformWindow {
+            window,
+            queue: arc_queue,
+            y_value_buffer: arc_y_value_buffer,
+            y_value_write_offset,
+            _instance: instance,
+            surface,
+            _adapter: adapter,
+            device,
+            _shader: shader,
+            _pipeline_layout: pipeline_layout,
+            fill_render_pipeline,
+            fill_vertex_buffer,
+            stroke_render_pipeline,
+            stroke_vertex_buffer,
+            y_value_offset_buffer,
+            bind_group,
+            config,
+        }
+    }
+
+    fn reconfigure(&mut self, size: winit::dpi::PhysicalSize<u32>) {
+        // Reconfigure the surface with the new size
+        self.config.width = size.width.max(1);
+        self.config.height = size.height.max(1);
+        self.surface.configure(&self.device, &self.config);
+        // On macos the window needs to be redrawn manually after resizing
+        self.window.request_redraw();
+    }
+
+    fn render(&self) {
+        let frame = self
+            .surface
+            .get_current_texture()
+            .expect("Failed to acquire next swap chain texture");
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+        // Tell the shader how to read the audio data ring buffer
+        let last_y_value_write_offset = *self.y_value_write_offset.lock().unwrap();
+        self.queue.write_buffer(
+            &self.y_value_offset_buffer,
+            0,
+            bytemuck::cast_slice(&[last_y_value_write_offset as u32]),
+        );
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.6,
+                            g: 0.6,
+                            b: 0.6,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            render_pass.set_pipeline(&self.fill_render_pipeline);
+            render_pass.set_vertex_buffer(0, self.fill_vertex_buffer.slice(..));
+            render_pass.set_bind_group(0, &self.bind_group, &[]);
+            render_pass.draw(0..(VERTEX_BUFFER_SIZE * 2) as u32, 0..1);
+        }
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        // Last pass
+                        store: wgpu::StoreOp::Discard,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            render_pass.set_pipeline(&self.stroke_render_pipeline);
+            render_pass.set_vertex_buffer(0, self.stroke_vertex_buffer.slice(..));
+            render_pass.set_bind_group(0, &self.bind_group, &[]);
+            render_pass.draw(0..VERTEX_BUFFER_SIZE as u32, 0..1);
+        }
+
+        self.queue.submit(Some(encoder.finish()));
+        frame.present();
+    }
+}
+struct InitializedLoopState {
+    left_waveform_window: WaveformWindow,
+    _stream: Option<cpal::Stream>,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct Vertex {
+    position: [f32; 2],
+    waveform_index: u32,
+    should_offset: f32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct YValue {
+    y: f32,
+}
+
+impl Vertex {
+    fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: 8,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Uint32,
+                },
+                wgpu::VertexAttribute {
+                    offset: 12,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32,
+                },
+            ],
+        }
+    }
+}
+
+impl InitializedLoopState {
+    async fn new(
+        event_loop: &ActiveEventLoop,
+        process_audio: Arc<Mutex<bool>>,
+    ) -> InitializedLoopState {
+        let left_waveform_window = WaveformWindow::new(event_loop).await;
+        let window_clone = left_waveform_window.window.clone();
+        let arc_queue_clone = left_waveform_window.queue.clone();
+        let arc_y_value_buffer_clone = left_waveform_window.y_value_buffer.clone();
+        let y_value_write_offset_clone = left_waveform_window.y_value_write_offset.clone();
         let arc_process_audio = process_audio.clone();
         let audio_ringbuf = Arc::new(Mutex::new(HeapRb::<f32>::new(1024)));
         let audio_ringbuf_clone = audio_ringbuf.clone();
@@ -559,23 +656,7 @@ impl InitializedLoopState {
         };
 
         InitializedLoopState {
-            window,
-            _instance: instance,
-            surface,
-            _adapter: adapter,
-            device,
-            queue: arc_queue,
-            _shader: shader,
-            _pipeline_layout: pipeline_layout,
-            fill_render_pipeline,
-            fill_vertex_buffer,
-            stroke_render_pipeline,
-            stroke_vertex_buffer,
-            _y_value_buffer: arc_y_value_buffer,
-            y_value_write_offset,
-            y_value_offset_buffer,
-            bind_group,
-            config,
+            left_waveform_window,
             _stream: stream,
         }
     }
@@ -584,19 +665,10 @@ impl InitializedLoopState {
 impl ApplicationHandler for LoopState {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_none() {
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                self.state = Some(pollster::block_on(InitializedLoopState::new(
-                    event_loop,
-                    self.process_audio.clone(),
-                )));
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
-                self.state = Some(wasm_bindgen_futures::spawn_local(async move {
-                    InitializedLoopState::new(event_loop, self.process_audio.clone()).await
-                }));
-            }
+            self.state = Some(pollster::block_on(InitializedLoopState::new(
+                event_loop,
+                self.process_audio.clone(),
+            )));
         }
     }
 
@@ -609,89 +681,13 @@ impl ApplicationHandler for LoopState {
         if let Some(state) = self.state.as_mut() {
             match event {
                 WindowEvent::Resized(new_size) => {
-                    // Reconfigure the surface with the new size
-                    state.config.width = new_size.width.max(1);
-                    state.config.height = new_size.height.max(1);
-                    state.surface.configure(&state.device, &state.config);
-                    // On macos the window needs to be redrawn manually after resizing
-                    state.window.request_redraw();
+                    state.left_waveform_window.reconfigure(new_size);
                 }
                 WindowEvent::RedrawRequested => {
-                    let now = Instant::now();
-                    let frame = state
-                        .surface
-                        .get_current_texture()
-                        .expect("Failed to acquire next swap chain texture");
-                    let view = frame
-                        .texture
-                        .create_view(&wgpu::TextureViewDescriptor::default());
-
-                    let mut encoder = state
-                        .device
-                        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
-                    // Tell the shader how to read the audio data ring buffer
-                    let last_y_value_write_offset = *state.y_value_write_offset.lock().unwrap();
-                    state.queue.write_buffer(
-                        &state.y_value_offset_buffer,
-                        0,
-                        bytemuck::cast_slice(&[last_y_value_write_offset as u32]),
-                    );
-
-                    {
-                        let mut render_pass =
-                            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                                label: None,
-                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                    view: &view,
-                                    resolve_target: None,
-                                    ops: wgpu::Operations {
-                                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                                            r: 0.6,
-                                            g: 0.6,
-                                            b: 0.6,
-                                            a: 1.0,
-                                        }),
-                                        store: wgpu::StoreOp::Store,
-                                    },
-                                })],
-                                depth_stencil_attachment: None,
-                                timestamp_writes: None,
-                                occlusion_query_set: None,
-                            });
-                        render_pass.set_pipeline(&state.fill_render_pipeline);
-                        render_pass.set_vertex_buffer(0, state.fill_vertex_buffer.slice(..));
-                        render_pass.set_bind_group(0, &state.bind_group, &[]);
-                        render_pass.draw(0..(VERTEX_BUFFER_SIZE * 2) as u32, 0..1);
-                    }
-
-                    {
-                        let mut render_pass =
-                            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                                label: None,
-                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                    view: &view,
-                                    resolve_target: None,
-                                    ops: wgpu::Operations {
-                                        load: wgpu::LoadOp::Load,
-                                        // Last pass
-                                        store: wgpu::StoreOp::Discard,
-                                    },
-                                })],
-                                depth_stencil_attachment: None,
-                                timestamp_writes: None,
-                                occlusion_query_set: None,
-                            });
-                        render_pass.set_pipeline(&state.stroke_render_pipeline);
-                        render_pass.set_vertex_buffer(0, state.stroke_vertex_buffer.slice(..));
-                        render_pass.set_bind_group(0, &state.bind_group, &[]);
-                        render_pass.draw(0..VERTEX_BUFFER_SIZE as u32, 0..1);
-                    }
-
-                    state.queue.submit(Some(encoder.finish()));
-                    frame.present();
+                    state.left_waveform_window.render();
 
                     // FPS calculation
+                    let now = Instant::now();
                     self.frame_count += 1;
                     if now.duration_since(self.last_fps_dump_time) >= Duration::from_secs(1) {
                         println!("FPS: {}", self.frame_count);

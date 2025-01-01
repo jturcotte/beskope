@@ -1,7 +1,9 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use num_complex::Complex;
-use ringbuf::traits::{Consumer, Observer, RingBuffer};
-use ringbuf::HeapRb;
+use ringbuf::storage::Heap;
+use ringbuf::traits::{Consumer, Observer, Producer, RingBuffer, Split};
+use ringbuf::wrap::caching::Caching;
+use ringbuf::{HeapRb, SharedRb};
 use rustfft::{Fft, FftDirection, FftPlanner};
 use splines::Interpolation;
 use std::sync::Mutex;
@@ -17,35 +19,14 @@ use winit::{
 };
 
 const VERTEX_BUFFER_SIZE: usize = 44100 * 3;
-
-struct LoopState {
-    // See https://docs.rs/winit/latest/winit/changelog/v0_30/index.html#removed
-    // for the recommended practice regarding Window creation (from which everything depends)
-    // in winit >= 0.30.0.
-    // The actual state is in an Option because its initialization is now delayed to after
-    // the even loop starts running.
-    state: Option<InitializedLoopState>,
-    last_fps_dump_time: Instant,
-    frame_count: u32,
-    process_audio: Arc<Mutex<bool>>,
-}
-
-impl LoopState {
-    fn new() -> LoopState {
-        LoopState {
-            state: None,
-            last_fps_dump_time: Instant::now(),
-            frame_count: 0,
-            process_audio: Arc::new(Mutex::new(true)),
-        }
-    }
-}
+const FFT_SIZE: usize = 2048;
+const NUM_CHANNELS: usize = 2;
 
 struct WaveformWindow {
     pub window: Arc<Window>,
     pub queue: Arc<wgpu::Queue>,
     pub y_value_buffer: Arc<wgpu::Buffer>,
-    pub y_value_write_offset: Arc<Mutex<usize>>,
+    pub y_value_write_offset_buffer: Arc<wgpu::Buffer>,
     _instance: wgpu::Instance,
     surface: wgpu::Surface<'static>,
     _adapter: wgpu::Adapter,
@@ -56,13 +37,15 @@ struct WaveformWindow {
     fill_vertex_buffer: wgpu::Buffer,
     stroke_render_pipeline: wgpu::RenderPipeline,
     stroke_vertex_buffer: wgpu::Buffer,
-    y_value_offset_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     config: wgpu::SurfaceConfiguration,
+    audio_sample_skip: usize,
+    fft_input_ringbuf: HeapRb<f32>,
+    y_value_write_offset: usize,
 }
 
 impl WaveformWindow {
-    async fn new(event_loop: &ActiveEventLoop) -> WaveformWindow {
+    async fn new(event_loop: &ActiveEventLoop, audio_sample_skip: usize) -> WaveformWindow {
         #[allow(unused_mut)]
         let mut attributes = Window::default_attributes();
         let window = Arc::new(event_loop.create_window(attributes).unwrap());
@@ -326,13 +309,13 @@ impl WaveformWindow {
 
         let arc_queue = Arc::new(queue);
         let arc_y_value_buffer = Arc::new(y_value_buffer);
-        let y_value_write_offset = Arc::new(Mutex::new(0));
+        let arc_y_value_offset_buffer = Arc::new(y_value_offset_buffer);
 
         WaveformWindow {
             window,
             queue: arc_queue,
             y_value_buffer: arc_y_value_buffer,
-            y_value_write_offset,
+            y_value_write_offset_buffer: arc_y_value_offset_buffer,
             _instance: instance,
             surface,
             _adapter: adapter,
@@ -343,9 +326,11 @@ impl WaveformWindow {
             fill_vertex_buffer,
             stroke_render_pipeline,
             stroke_vertex_buffer,
-            y_value_offset_buffer,
             bind_group,
             config,
+            audio_sample_skip,
+            fft_input_ringbuf: HeapRb::<f32>::new(FFT_SIZE),
+            y_value_write_offset: 0,
         }
     }
 
@@ -370,14 +355,6 @@ impl WaveformWindow {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
-        // Tell the shader how to read the audio data ring buffer
-        let last_y_value_write_offset = *self.y_value_write_offset.lock().unwrap();
-        self.queue.write_buffer(
-            &self.y_value_offset_buffer,
-            0,
-            bytemuck::cast_slice(&[last_y_value_write_offset as u32]),
-        );
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -430,10 +407,140 @@ impl WaveformWindow {
         self.queue.submit(Some(encoder.finish()));
         frame.present();
     }
+
+    pub fn process_audio(
+        self: &mut Self,
+        data: &[f32],
+        fft: &dyn Fft<f32>,
+        fft_inout_buffer: &mut [Complex<f32>],
+        fft_scratch: &mut [Complex<f32>],
+    ) {
+        // Keep track of the last FFT size samples.
+        self.fft_input_ringbuf
+            .push_iter_overwrite(data.iter().skip(self.audio_sample_skip).step_by(2).copied());
+
+        let phase_samples = if !self.fft_input_ringbuf.is_full() {
+            0
+        } else {
+            // Run an FFT on the accumulated latest FFT length samples as a way to find the peak frequency
+            // and align the end of our waveform at the end of the vertex attribute buffer so that the eye
+            // isn't totally lost frame over frame.
+            let (first, second) = self.fft_input_ringbuf.as_slices();
+            fft_inout_buffer
+                .iter_mut()
+                .zip(first.iter().chain(second.iter()))
+                .for_each(|(dst, &y)| *dst = Complex::new(y, 0.));
+
+            fft.process_with_scratch(fft_inout_buffer, fft_scratch);
+
+            // Find the peak frequency
+            let peak_frequency_index = fft_inout_buffer
+                .iter()
+                .take(fft_inout_buffer.len() / 2)
+                .enumerate()
+                // Skipping k=0 makes sense as it doesn't really capture oscillations, but until where does it make sense?
+                .skip(2)
+                .max_by(|(_, a), (_, b)| {
+                    a.norm()
+                        .partial_cmp(&b.norm())
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+
+            fn phase_to_samples(phase: f32, k: usize, fft_size: usize) -> usize {
+                // When e.g. k=2, the FFT identifies an oscillation that repeats 2 times in the FFT window.
+                // To find the phase shift in samples, find where the phase in radians corresponds vs the FFT buffer size.
+                ((phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI) * fft_size as f32
+                    / k as f32) as usize
+            }
+
+            // To be able to perform the inverse FFT, each frequency bin also has a phase.
+            // Use this phase to align the waveform to the end of the buffer.
+            // This here is the sine phase shift in radians.
+            let phase_shift = fft_inout_buffer[peak_frequency_index].arg();
+
+            phase_to_samples(phase_shift, peak_frequency_index, fft_inout_buffer.len())
+        };
+
+        let data_iter = data.iter().skip(self.audio_sample_skip).step_by(2).copied();
+        let y_values: Vec<YValue> = data_iter.map(|sample| YValue { y: sample }).collect();
+
+        // First pass: write to the end of the buffer
+        let first_pass_len = {
+            let first_pass_len = VERTEX_BUFFER_SIZE - self.y_value_write_offset;
+            let first_pass_data = &y_values[..first_pass_len.min(y_values.len())];
+            self.queue.write_buffer(
+                &self.y_value_buffer,
+                (self.y_value_write_offset * std::mem::size_of::<YValue>()) as wgpu::BufferAddress,
+                bytemuck::cast_slice(first_pass_data),
+            );
+
+            first_pass_len
+        };
+
+        // Update the write offset, subtracting the phase so that the vertex shader aligns the
+        // last peak frequency cycle with the end of the waveform.
+        let aligned_write_offset =
+            (VERTEX_BUFFER_SIZE + self.y_value_write_offset + y_values.len() - phase_samples)
+                % VERTEX_BUFFER_SIZE;
+        self.y_value_write_offset =
+            (self.y_value_write_offset + y_values.len()) % VERTEX_BUFFER_SIZE;
+
+        // Second pass: write to the beginning of the buffer
+        if first_pass_len < y_values.len() {
+            let second_pass_data = &y_values[first_pass_len..];
+            self.queue.write_buffer(
+                &self.y_value_buffer,
+                0,
+                bytemuck::cast_slice(second_pass_data),
+            );
+        }
+
+        // Tell the shader how to read the audio data ring buffer
+        self.queue.write_buffer(
+            &self.y_value_write_offset_buffer,
+            0,
+            bytemuck::cast_slice(&[aligned_write_offset as u32]),
+        );
+    }
 }
+
+struct LoopState {
+    // See https://docs.rs/winit/latest/winit/changelog/v0_30/index.html#removed
+    // for the recommended practice regarding Window creation (from which everything depends)
+    // in winit >= 0.30.0.
+    // The actual state is in an Option because its initialization is now delayed to after
+    // the even loop starts running.
+    state: Option<InitializedLoopState>,
+    last_fps_dump_time: Instant,
+    frame_count: u32,
+    process_audio: Arc<Mutex<bool>>,
+    fft: Arc<dyn Fft<f32>>,
+    fft_inout_buffer: Vec<Complex<f32>>,
+    fft_scratch: Vec<Complex<f32>>,
+}
+
+impl LoopState {
+    fn new() -> LoopState {
+        let fft = FftPlanner::new().plan_fft(FFT_SIZE, FftDirection::Forward);
+        let scratch_len = fft.get_inplace_scratch_len();
+        LoopState {
+            state: None,
+            last_fps_dump_time: Instant::now(),
+            frame_count: 0,
+            process_audio: Arc::new(Mutex::new(true)),
+            fft,
+            fft_inout_buffer: vec![Complex::default(); FFT_SIZE],
+            fft_scratch: vec![Complex::default(); scratch_len],
+        }
+    }
+}
+
 struct InitializedLoopState {
     left_waveform_window: WaveformWindow,
     right_waveform_window: WaveformWindow,
+    audio_input_ringbuf_cons: Caching<Arc<SharedRb<Heap<f32>>>, false, true>,
     _stream: Option<cpal::Stream>,
 }
 
@@ -482,32 +589,20 @@ impl InitializedLoopState {
         event_loop: &ActiveEventLoop,
         process_audio: Arc<Mutex<bool>>,
     ) -> InitializedLoopState {
-        let left_waveform_window = WaveformWindow::new(event_loop).await;
-        let right_waveform_window = WaveformWindow::new(event_loop).await;
+        let left_waveform_window = WaveformWindow::new(event_loop, 0).await;
+        let right_waveform_window = WaveformWindow::new(event_loop, 1).await;
 
-        const FFT_SIZE: usize = 1024;
+        let (mut audio_input_ringbuf_prod, audio_input_ringbuf_cons) =
+            HeapRb::<f32>::new(44100 * NUM_CHANNELS).split();
 
         let left_window = left_waveform_window.window.clone();
-        let left_wgpu_queue = left_waveform_window.queue.clone();
-        let left_y_value_buffer = left_waveform_window.y_value_buffer.clone();
-        let left_y_value_write_offset = left_waveform_window.y_value_write_offset.clone();
-        let mut left_fft_input_ringbuf = HeapRb::<f32>::new(FFT_SIZE);
-        let mut left_audio_ringbuf_local_unused = HeapRb::<f32>::new(FFT_SIZE);
-
         let right_window = right_waveform_window.window.clone();
-        let right_wgpu_queue = right_waveform_window.queue.clone();
-        let right_y_value_buffer = right_waveform_window.y_value_buffer.clone();
-        let right_y_value_write_offset = right_waveform_window.y_value_write_offset.clone();
-        let mut right_fft_input_ringbuf = HeapRb::<f32>::new(FFT_SIZE);
-        let mut right_audio_ringbuf_local_unused = HeapRb::<f32>::new(FFT_SIZE);
+        let request_redraw = move || {
+            left_window.request_redraw();
+            right_window.request_redraw();
+        };
 
         let arc_process_audio = process_audio.clone();
-        let audio_ringbuf = Arc::new(Mutex::new(HeapRb::<f32>::new(FFT_SIZE)));
-        let audio_ringbuf_clone = audio_ringbuf.clone();
-
-        let fft: Arc<dyn Fft<f32>> = FftPlanner::new().plan_fft(FFT_SIZE, FftDirection::Forward);
-        let mut fft_inout_buffer = vec![Complex::default(); FFT_SIZE];
-        let mut fft_scratch = vec![Complex::default(); fft.get_inplace_scratch_len()];
 
         // List all cpal input sources
         let host = cpal::default_host();
@@ -539,178 +634,9 @@ impl InitializedLoopState {
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
                         let process_audio = *arc_process_audio.lock().unwrap();
                         if process_audio {
-                            fn process_channel(
-                                data: &[f32],
-                                data_skip: usize,
-                                fft: &dyn Fft<f32>,
-                                fft_inout_buffer: &mut [Complex<f32>],
-                                fft_scratch: &mut [Complex<f32>],
-                                left_fft_input_ringbuf: &mut HeapRb<f32>,
-                                left_audio_ringbuf_local_unused: &mut HeapRb<f32>,
-                                left_y_value_write_offset: &Mutex<usize>,
-                                left_wgpu_queue: &wgpu::Queue,
-                                left_y_value_buffer: &wgpu::Buffer,
-                                audio_ringbuf_clone: &Mutex<HeapRb<f32>>,
-                                left_window: &winit::window::Window,
-                            ) {
-                                // Keep track of the last FFT size samples.
-                                // Append them in reverse because phase_to_samples currently finds the samples phase from the beginning of the input buffer.
-                                const NUM_CHANNELS: usize = 2;
-                                left_fft_input_ringbuf.push_iter_overwrite(
-                                    data.iter()
-                                        .rev()
-                                        .skip(NUM_CHANNELS - data_skip)
-                                        .step_by(2)
-                                        .copied(),
-                                );
+                            audio_input_ringbuf_prod.push_slice(data);
 
-                                let phase_samples = if !left_fft_input_ringbuf.is_full() {
-                                    0
-                                } else {
-                                    // Run an FFT on the accumulated latest FFT length samples as a way to find the peak frequency
-                                    // and align the end of our waveform at the end of the vertex attribute buffer so that the eye
-                                    // isn't totally lost frame over frame.
-                                    // FIXME: It's wasteful to run this on every audio callback, but it keeps things a bit simpler for now.
-                                    let (first, second) = left_fft_input_ringbuf.as_slices();
-                                    fft_inout_buffer
-                                        .iter_mut()
-                                        .zip(first.iter().chain(second.iter()))
-                                        .for_each(|(dst, &y)| *dst = Complex::new(y, 0.));
-
-                                    fft.process_with_scratch(fft_inout_buffer, fft_scratch);
-
-                                    // Find the peak frequency
-                                    let peak_frequency_index = fft_inout_buffer
-                                        .iter()
-                                        .take(fft_inout_buffer.len() / 2)
-                                        .enumerate()
-                                        // Skipping k=0 makes sense as it doesn't really capture oscillations, but until where does it make sense?
-                                        .skip(4)
-                                        .max_by(|(_, a), (_, b)| {
-                                            a.norm()
-                                                .partial_cmp(&b.norm())
-                                                .unwrap_or(std::cmp::Ordering::Equal)
-                                        })
-                                        .map(|(i, _)| i)
-                                        .unwrap_or(0);
-
-                                    fn phase_to_samples(
-                                        phase: f32,
-                                        k: usize,
-                                        fft_size: usize,
-                                    ) -> usize {
-                                        // When e.g. k=2, the FFT identifies an oscillation that repeats 2 times in the FFT window.
-                                        // To find the phase shift in samples, find where the phase in radians corresponds vs the FFT buffer size.
-                                        ((phase + std::f32::consts::PI)
-                                            / (2.0 * std::f32::consts::PI)
-                                            * fft_size as f32
-                                            / k as f32)
-                                            as usize
-                                    }
-
-                                    // To be able to perform the inverse FFT, each frequency bin also has a phase.
-                                    // Use this phase to align the waveform to the end of the buffer.
-                                    // This here is the sine phase shift in radians.
-                                    let phase_shift = -fft_inout_buffer[peak_frequency_index].arg();
-
-                                    phase_to_samples(
-                                        phase_shift,
-                                        peak_frequency_index,
-                                        fft_inout_buffer.len(),
-                                    )
-                                };
-
-                                let mut data_iter = data.iter().skip(data_skip).step_by(2).copied();
-                                let data_iter_len = data_iter.len();
-                                let unused_data_iter_len =
-                                    data_iter_len + left_audio_ringbuf_local_unused.occupied_len();
-                                let y_values: Vec<YValue> = if phase_samples > unused_data_iter_len
-                                {
-                                    Vec::new()
-                                } else {
-                                    left_audio_ringbuf_local_unused
-                                        .pop_iter()
-                                        .chain(data_iter.by_ref())
-                                        .take(unused_data_iter_len - phase_samples)
-                                        .map(|sample| YValue { y: sample })
-                                        .collect()
-                                };
-                                left_audio_ringbuf_local_unused.push_iter_overwrite(data_iter);
-
-                                // First pass: write to the end of the buffer
-                                let first_pass_len = {
-                                    let mut y_value_write_offset_lock =
-                                        left_y_value_write_offset.lock().unwrap();
-                                    let first_pass_len =
-                                        VERTEX_BUFFER_SIZE - *y_value_write_offset_lock;
-                                    let first_pass_data =
-                                        &y_values[..first_pass_len.min(y_values.len())];
-                                    left_wgpu_queue.write_buffer(
-                                        &left_y_value_buffer,
-                                        (*y_value_write_offset_lock * std::mem::size_of::<YValue>())
-                                            as wgpu::BufferAddress,
-                                        bytemuck::cast_slice(first_pass_data),
-                                    );
-
-                                    // Update the write offset
-                                    *y_value_write_offset_lock = (*y_value_write_offset_lock
-                                        + y_values.len())
-                                        % VERTEX_BUFFER_SIZE;
-
-                                    // Overwrite the latest data's ring buffer with the latest audio data to
-                                    // let the render thread process it before rendering.
-                                    audio_ringbuf_clone
-                                        .lock()
-                                        .unwrap()
-                                        .push_iter_overwrite(data.iter().step_by(2).copied());
-
-                                    first_pass_len
-                                };
-
-                                // Second pass: write to the beginning of the buffer
-                                if first_pass_len < y_values.len() {
-                                    let second_pass_data = &y_values[first_pass_len..];
-                                    left_wgpu_queue.write_buffer(
-                                        &left_y_value_buffer,
-                                        0,
-                                        bytemuck::cast_slice(second_pass_data),
-                                    );
-                                }
-
-                                left_window.request_redraw();
-                            }
-
-                            // Example call for the left channel
-                            process_channel(
-                                &data,
-                                0,
-                                fft.as_ref(),
-                                &mut fft_inout_buffer,
-                                &mut fft_scratch,
-                                &mut left_fft_input_ringbuf,
-                                &mut left_audio_ringbuf_local_unused,
-                                &left_y_value_write_offset,
-                                &left_wgpu_queue,
-                                &left_y_value_buffer,
-                                &audio_ringbuf_clone,
-                                &left_window,
-                            );
-
-                            // Example call for the right channel (assuming you have similar variables for the right channel)
-                            process_channel(
-                                &data,
-                                1,
-                                fft.as_ref(),
-                                &mut fft_inout_buffer,
-                                &mut fft_scratch,
-                                &mut right_fft_input_ringbuf,
-                                &mut right_audio_ringbuf_local_unused,
-                                &right_y_value_write_offset,
-                                &right_wgpu_queue,
-                                &right_y_value_buffer,
-                                &audio_ringbuf_clone,
-                                &right_window,
-                            );
+                            request_redraw();
                         }
                     },
                     move |err| {
@@ -728,6 +654,7 @@ impl InitializedLoopState {
         InitializedLoopState {
             left_waveform_window,
             right_waveform_window,
+            audio_input_ringbuf_cons,
             _stream: stream,
         }
     }
@@ -752,10 +679,25 @@ impl ApplicationHandler for LoopState {
         if let Some(state) = self.state.as_mut() {
             match event {
                 WindowEvent::Resized(new_size) => {
+                    // FIXME: Check the window ID
                     state.left_waveform_window.reconfigure(new_size);
                     state.right_waveform_window.reconfigure(new_size);
                 }
                 WindowEvent::RedrawRequested => {
+                    let data: Vec<f32> = state.audio_input_ringbuf_cons.pop_iter().collect();
+                    state.left_waveform_window.process_audio(
+                        &data,
+                        self.fft.as_ref(),
+                        &mut self.fft_inout_buffer,
+                        &mut self.fft_scratch,
+                    );
+                    state.right_waveform_window.process_audio(
+                        &data,
+                        self.fft.as_ref(),
+                        &mut self.fft_inout_buffer,
+                        &mut self.fft_scratch,
+                    );
+
                     state.left_waveform_window.render();
                     state.right_waveform_window.render();
 
@@ -776,6 +718,8 @@ impl ApplicationHandler for LoopState {
                         if event.state == winit::event::ElementState::Pressed {
                             let mut process_audio = self.process_audio.lock().unwrap();
                             *process_audio = !*process_audio;
+                            state.left_waveform_window.window.request_redraw();
+                            state.right_waveform_window.window.request_redraw();
                         }
                     }
                 }

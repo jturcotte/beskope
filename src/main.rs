@@ -3,6 +3,7 @@ use num_complex::Complex;
 use ringbuf::traits::{Consumer, Observer, RingBuffer};
 use ringbuf::HeapRb;
 use rustfft::{Fft, FftDirection, FftPlanner};
+use splines::Interpolation;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use std::{borrow::Cow, sync::Arc};
@@ -15,7 +16,7 @@ use winit::{
     window::{Window, WindowId},
 };
 
-const VERTEX_BUFFER_SIZE: usize = 44100 * 3 / 2;
+const VERTEX_BUFFER_SIZE: usize = 44100 * 3;
 
 struct LoopState {
     // See https://docs.rs/winit/latest/winit/changelog/v0_30/index.html#removed
@@ -24,7 +25,6 @@ struct LoopState {
     // The actual state is in an Option because its initialization is now delayed to after
     // the even loop starts running.
     state: Option<InitializedLoopState>,
-    last_frame_time: Instant,
     last_fps_dump_time: Instant,
     frame_count: u32,
     process_audio: Arc<Mutex<bool>>,
@@ -34,7 +34,6 @@ impl LoopState {
     fn new() -> LoopState {
         LoopState {
             state: None,
-            last_frame_time: Instant::now(),
             last_fps_dump_time: Instant::now(),
             frame_count: 0,
             process_audio: Arc::new(Mutex::new(true)),
@@ -52,20 +51,13 @@ struct InitializedLoopState {
     _shader: wgpu::ShaderModule,
     _pipeline_layout: wgpu::PipelineLayout,
     render_pipeline: wgpu::RenderPipeline,
-    vertex_buffer: Arc<wgpu::Buffer>,
+    vertex_buffer: wgpu::Buffer,
     _y_value_buffer: Arc<wgpu::Buffer>,
     y_value_write_offset: Arc<Mutex<usize>>,
-    y_value_offset: Arc<Mutex<usize>>,
-    y_value_offset_buffer: Arc<wgpu::Buffer>,
+    y_value_offset_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     config: wgpu::SurfaceConfiguration,
     _stream: Option<cpal::Stream>,
-    audio_sample_rate: f32,
-    audio_ringbuf: Arc<Mutex<HeapRb<f32>>>,
-    fft_input_vertex_buffer: (wgpu::Buffer, usize),
-    spectrogram_vertex_buffer: (wgpu::Buffer, usize),
-    fft_output_vertex_buffer: (wgpu::Buffer, usize),
-    straight_render_pipeline: wgpu::RenderPipeline,
 }
 
 #[repr(C)]
@@ -120,6 +112,7 @@ impl InitializedLoopState {
         let mut size = window.inner_size();
         size.width = size.width.max(1);
         size.height = size.height.max(1);
+        println!("Window size: {:?}", size);
 
         let instance = wgpu::Instance::default();
 
@@ -158,9 +151,43 @@ impl InitializedLoopState {
         let swapchain_capabilities = surface.get_capabilities(&adapter);
         let swapchain_format = swapchain_capabilities.formats[0];
 
+        // Define control points for the spline used to make the waveform look more compressed for older samples.
+        let cps = vec![
+            (0.0, 0.0, Interpolation::Linear),
+            (
+                VERTEX_BUFFER_SIZE as f32 - 44100.0,
+                0.15,
+                Interpolation::CatmullRom,
+            ),
+            (
+                VERTEX_BUFFER_SIZE as f32 - 44100.0 / 5.0,
+                0.3,
+                Interpolation::CatmullRom,
+            ),
+            (
+                VERTEX_BUFFER_SIZE as f32 - 44100.0 / 30.0,
+                0.5,
+                Interpolation::CatmullRom,
+            ),
+            (
+                VERTEX_BUFFER_SIZE as f32 - 44100.0 / 60.0,
+                0.6,
+                Interpolation::Linear,
+            ),
+            (VERTEX_BUFFER_SIZE as f32, 1.0, Interpolation::Linear),
+        ];
+
+        // Create the spline
+        let spline = splines::Spline::from_vec(
+            cps.iter()
+                .map(|(x, y, interpolation)| splines::Key::new(*x, *y, *interpolation))
+                .collect(),
+        );
+
+        // Sample the spline for every waveform vertex so that the position of older samples are closer together
         let vertices: Vec<Vertex> = (0..VERTEX_BUFFER_SIZE)
             .map(|i| Vertex {
-                position: [i as f32 / VERTEX_BUFFER_SIZE as f32 * 2.0 - 1.0, 0.0],
+                position: [spline.sample(i as f32).unwrap() * 2.0 - 1.0, 0.0],
             })
             .collect();
         let y_values: Vec<YValue> = vec![YValue { y: 0.0 }; VERTEX_BUFFER_SIZE];
@@ -277,78 +304,21 @@ impl InitializedLoopState {
 
         let arc_queue = Arc::new(queue);
         let arc_queue_clone = arc_queue.clone();
-        let arc_vertex_buffer = Arc::new(vertex_buffer);
         let arc_y_value_buffer = Arc::new(y_value_buffer);
         let arc_y_value_buffer_clone = arc_y_value_buffer.clone();
         let window_clone = window.clone();
-        let y_value_offset = Arc::new(Mutex::new(0));
-        let arc_y_value_offset_buffer = Arc::new(y_value_offset_buffer);
         let y_value_write_offset = Arc::new(Mutex::new(0));
         let y_value_write_offset_clone = y_value_write_offset.clone();
         let arc_process_audio = process_audio.clone();
         let audio_ringbuf = Arc::new(Mutex::new(HeapRb::<f32>::new(1024)));
         let audio_ringbuf_clone = audio_ringbuf.clone();
+        let mut fft_input_ringbuf = HeapRb::<f32>::new(1024);
+        let mut audio_ringbuf_local_unused = HeapRb::<f32>::new(1024);
 
-        let latest_data_vertex_buffer = (
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: None,
-                size: (VERTEX_BUFFER_SIZE * std::mem::size_of::<Vertex>()) as wgpu::BufferAddress,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }),
-            0,
-        );
-        let spectrogram_vertex_buffer = (
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: None,
-                size: (VERTEX_BUFFER_SIZE * std::mem::size_of::<Vertex>()) as wgpu::BufferAddress,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }),
-            0,
-        );
-        let inverse_fft_vertex_buffer = (
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: None,
-                size: (VERTEX_BUFFER_SIZE * std::mem::size_of::<Vertex>()) as wgpu::BufferAddress,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }),
-            0,
-        );
-
-        let straight_render_pipeline =
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Straight Render Pipeline"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_straight"),
-                    buffers: &[Vertex::desc()],
-                    compilation_options: Default::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(swapchain_format.into())],
-                    compilation_options: Default::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::LineStrip,
-                    // ...existing code...
-                    strip_index_format: None,
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: None,
-                    unclipped_depth: false,
-                    polygon_mode: wgpu::PolygonMode::Fill,
-                    conservative: false,
-                },
-                // ...existing code...
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview: None,
-                cache: None,
-            });
+        let fft: Arc<dyn Fft<f32>> =
+            FftPlanner::new().plan_fft(fft_input_ringbuf.capacity().get(), FftDirection::Forward);
+        let mut fft_inout_buffer = vec![Complex::default(); fft.len()];
+        let mut fft_scratch = vec![Complex::default(); fft.get_inplace_scratch_len()];
 
         // List all cpal input sources
         let host = cpal::default_host();
@@ -358,90 +328,157 @@ impl InitializedLoopState {
         // }
 
         // Print all input configs for the default input device
-        let (stream, audio_sample_rate) =
-            if let Some(default_input_device) = host.default_input_device() {
-                println!(
-                    "Default input device: {}",
-                    default_input_device.name().unwrap()
-                );
-                // let configs = default_input_device.supported_input_configs().unwrap();
-                // for config in configs {
-                //     println!("Supported input config: {:?}", config);
-                // }
+        let stream = if let Some(default_input_device) = host.default_input_device() {
+            println!(
+                "Default input device: {}",
+                default_input_device.name().unwrap()
+            );
+            // let configs = default_input_device.supported_input_configs().unwrap();
+            // for config in configs {
+            //     println!("Supported input config: {:?}", config);
+            // }
 
-                // Modify the data_callback to update the vertex buffer directly and trigger a redraw
-                let default_config = default_input_device.default_input_config().unwrap();
-                println!("Default input config: {:?}", default_config);
-                let audio_sample_rate = default_config.sample_rate().0 as f32;
-                let stream: cpal::Stream = default_input_device
-                    .build_input_stream(
-                        &cpal::StreamConfig {
-                            buffer_size: cpal::BufferSize::Fixed(512),
-                            ..default_config.into()
-                        },
-                        move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                            let process_audio = *arc_process_audio.lock().unwrap();
-                            if process_audio {
-                                let y_values: Vec<YValue> = data
+            // Modify the data_callback to update the vertex buffer directly and trigger a redraw
+            let default_config = default_input_device.default_input_config().unwrap();
+            println!("Default input config: {:?}", default_config);
+            let stream: cpal::Stream = default_input_device
+                .build_input_stream(
+                    &cpal::StreamConfig {
+                        buffer_size: cpal::BufferSize::Fixed(512),
+                        ..default_config.into()
+                    },
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        let process_audio = *arc_process_audio.lock().unwrap();
+                        if process_audio {
+                            // Keep track of the last FFT size samples.
+                            // Append them in reverse because phase_to_samples currently finds the samples phase from the beginning of the input buffer.
+                            fft_input_ringbuf
+                                .push_iter_overwrite(data.iter().rev().step_by(2).copied());
+
+                            let phase_samples = if !fft_input_ringbuf.is_full() {
+                                0
+                            } else {
+                                // Run an FFT on the accumulated latest FFT length samples as a way to find the peak frequency
+                                // and align the end of our waveform at the end of the vertex attribute buffer so that the eye
+                                // isn't totally lost frame over frame.
+                                // FIXME: It's wasteful to run this on every audio callback, but it keeps things a bit simpler for now.
+                                let (first, second) = fft_input_ringbuf.as_slices();
+                                fft_inout_buffer
+                                    .iter_mut()
+                                    .zip(first.iter().chain(second.iter()))
+                                    .for_each(|(dst, &y)| *dst = Complex::new(y, 0.));
+
+                                fft.process_with_scratch(&mut fft_inout_buffer, &mut fft_scratch);
+
+                                // Find the peak frequency
+                                let peak_frequency_index = fft_inout_buffer
                                     .iter()
-                                    .step_by(2) // Keep only the left channel for now
-                                    .map(|&sample| YValue { y: sample })
-                                    .collect();
+                                    .take(fft_inout_buffer.len() / 2)
+                                    .enumerate()
+                                    // Skipping k=0 makes sense as it doesn't really capture oscillations, but until where does it make sense?
+                                    .skip(4)
+                                    .max_by(|(_, a), (_, b)| {
+                                        a.norm()
+                                            .partial_cmp(&b.norm())
+                                            .unwrap_or(std::cmp::Ordering::Equal)
+                                    })
+                                    .map(|(i, _)| i)
+                                    .unwrap_or(0);
 
-                                // First pass: write to the end of the buffer
-                                let first_pass_len = {
-                                    let mut y_value_write_offset_lock =
-                                        y_value_write_offset_clone.lock().unwrap();
-                                    let first_pass_len =
-                                        VERTEX_BUFFER_SIZE - *y_value_write_offset_lock;
-                                    let first_pass_data =
-                                        &y_values[..first_pass_len.min(y_values.len())];
-                                    arc_queue_clone.write_buffer(
-                                        &arc_y_value_buffer_clone,
-                                        (*y_value_write_offset_lock * std::mem::size_of::<YValue>())
-                                            as wgpu::BufferAddress,
-                                        bytemuck::cast_slice(first_pass_data),
-                                    );
-
-                                    // Update the write offset
-                                    *y_value_write_offset_lock = (*y_value_write_offset_lock
-                                        + y_values.len())
-                                        % VERTEX_BUFFER_SIZE;
-
-                                    // Overwrite the latest data's ring buffer with the latest audio data to
-                                    // let the render thread process it before rendering.
-                                    audio_ringbuf_clone
-                                        .lock()
-                                        .unwrap()
-                                        .push_iter_overwrite(data.iter().step_by(2).copied());
-
-                                    first_pass_len
-                                };
-
-                                // Second pass: write to the beginning of the buffer
-                                if first_pass_len < y_values.len() {
-                                    let second_pass_data = &y_values[first_pass_len..];
-                                    arc_queue_clone.write_buffer(
-                                        &arc_y_value_buffer_clone,
-                                        0,
-                                        bytemuck::cast_slice(second_pass_data),
-                                    );
+                                fn phase_to_samples(
+                                    phase: f32,
+                                    k: usize,
+                                    fft_size: usize,
+                                ) -> usize {
+                                    // When e.g. k=2, the FFT identifies an oscillation that repeats 2 times in the FFT window.
+                                    // To find the phase shift in samples, find where the phase in radians corresponds vs the FFT buffer size.
+                                    ((phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI)
+                                        * fft_size as f32
+                                        / k as f32) as usize
                                 }
 
-                                window_clone.request_redraw();
+                                // To be able to perform the inverse FFT, each frequency bin also has a phase.
+                                // Use this phase to align the waveform to the end of the buffer.
+                                // This here is the sine phase shift in radians.
+                                let phase_shift = -fft_inout_buffer[peak_frequency_index].arg();
+
+                                phase_to_samples(
+                                    phase_shift,
+                                    peak_frequency_index,
+                                    fft_inout_buffer.len(),
+                                )
+                            };
+
+                            let mut data_iter = data.iter().step_by(2).copied();
+                            let data_iter_len = data_iter.len();
+                            let unused_data_iter_len =
+                                data_iter_len + audio_ringbuf_local_unused.occupied_len();
+                            let y_values: Vec<YValue> = if phase_samples > unused_data_iter_len {
+                                Vec::new()
+                            } else {
+                                audio_ringbuf_local_unused
+                                    .pop_iter()
+                                    .chain(data_iter.by_ref())
+                                    .take(unused_data_iter_len - phase_samples)
+                                    .map(|sample| YValue { y: sample })
+                                    .collect()
+                            };
+                            audio_ringbuf_local_unused.push_iter_overwrite(data_iter);
+
+                            // First pass: write to the end of the buffer
+                            let first_pass_len = {
+                                let mut y_value_write_offset_lock =
+                                    y_value_write_offset_clone.lock().unwrap();
+                                let first_pass_len =
+                                    VERTEX_BUFFER_SIZE - *y_value_write_offset_lock;
+                                let first_pass_data =
+                                    &y_values[..first_pass_len.min(y_values.len())];
+                                arc_queue_clone.write_buffer(
+                                    &arc_y_value_buffer_clone,
+                                    (*y_value_write_offset_lock * std::mem::size_of::<YValue>())
+                                        as wgpu::BufferAddress,
+                                    bytemuck::cast_slice(first_pass_data),
+                                );
+
+                                // Update the write offset
+                                *y_value_write_offset_lock = (*y_value_write_offset_lock
+                                    + y_values.len())
+                                    % VERTEX_BUFFER_SIZE;
+
+                                // Overwrite the latest data's ring buffer with the latest audio data to
+                                // let the render thread process it before rendering.
+                                audio_ringbuf_clone
+                                    .lock()
+                                    .unwrap()
+                                    .push_iter_overwrite(data.iter().step_by(2).copied());
+
+                                first_pass_len
+                            };
+
+                            // Second pass: write to the beginning of the buffer
+                            if first_pass_len < y_values.len() {
+                                let second_pass_data = &y_values[first_pass_len..];
+                                arc_queue_clone.write_buffer(
+                                    &arc_y_value_buffer_clone,
+                                    0,
+                                    bytemuck::cast_slice(second_pass_data),
+                                );
                             }
-                        },
-                        move |err| {
-                            eprintln!("Error: {}", err);
-                        },
-                        None,
-                    )
-                    .unwrap();
-                stream.play().unwrap();
-                (Some(stream), audio_sample_rate)
-            } else {
-                (None, 0.0)
-            };
+
+                            window_clone.request_redraw();
+                        }
+                    },
+                    move |err| {
+                        eprintln!("Error: {}", err);
+                    },
+                    None,
+                )
+                .unwrap();
+            stream.play().unwrap();
+            Some(stream)
+        } else {
+            None
+        };
 
         InitializedLoopState {
             window,
@@ -453,20 +490,13 @@ impl InitializedLoopState {
             _shader: shader,
             _pipeline_layout: pipeline_layout,
             render_pipeline,
-            vertex_buffer: arc_vertex_buffer,
+            vertex_buffer,
             _y_value_buffer: arc_y_value_buffer,
             y_value_write_offset,
-            y_value_offset,
-            y_value_offset_buffer: arc_y_value_offset_buffer,
+            y_value_offset_buffer,
             bind_group,
             config,
             _stream: stream,
-            audio_sample_rate,
-            audio_ringbuf,
-            fft_input_vertex_buffer: latest_data_vertex_buffer,
-            spectrogram_vertex_buffer,
-            fft_output_vertex_buffer: inverse_fft_vertex_buffer,
-            straight_render_pipeline,
         }
     }
 }
@@ -508,40 +538,6 @@ impl ApplicationHandler for LoopState {
                 }
                 WindowEvent::RedrawRequested => {
                     let now = Instant::now();
-                    if *self.process_audio.lock().unwrap() {
-                        let frame_duration = now.duration_since(self.last_frame_time);
-                        self.last_frame_time = now;
-
-                        // Scroll how the y_values are applied onto vertices based on the time between frames.
-                        let last_y_value_write_offset = *state.y_value_write_offset.lock().unwrap();
-                        let mut y_value_offset = state.y_value_offset.lock().unwrap();
-
-                        // The frame_duration isn't 100% accurate so snap them back together when they drifted too far apart.
-                        let diff = (*y_value_offset as isize
-                            - last_y_value_write_offset as isize
-                            - VERTEX_BUFFER_SIZE as isize)
-                            % VERTEX_BUFFER_SIZE as isize;
-                        if diff.abs() > VERTEX_BUFFER_SIZE as isize / 64 {
-                            // FIXME: Why is this happening all the time with 60Hz unless the audio buffer size is 1024?
-                            println!(
-                                "Snapping back read and write offsets (read {} write {} diff {} maybe {})",
-                                *y_value_offset, last_y_value_write_offset, diff, (*y_value_offset as isize - last_y_value_write_offset as isize)
-                            );
-                            *y_value_offset = last_y_value_write_offset;
-                        } else {
-                            *y_value_offset = (*y_value_offset
-                                + (state.audio_sample_rate
-                                    * (frame_duration.as_micros() as f32 / 1_000_000.0))
-                                    as usize)
-                                % VERTEX_BUFFER_SIZE;
-                        }
-                        state.queue.write_buffer(
-                            &state.y_value_offset_buffer,
-                            0,
-                            bytemuck::cast_slice(&[*y_value_offset as u32]),
-                        );
-                    }
-
                     let frame = state
                         .surface
                         .get_current_texture()
@@ -549,118 +545,19 @@ impl ApplicationHandler for LoopState {
                     let view = frame
                         .texture
                         .create_view(&wgpu::TextureViewDescriptor::default());
+
                     let mut encoder = state
                         .device
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-                    if let Some((mut fft_inout_buffer, fft_size)) = {
-                        let audio_ringbuf_guard = state.audio_ringbuf.lock().unwrap();
-                        if audio_ringbuf_guard.is_full() {
-                            let (first, second) = audio_ringbuf_guard.as_slices();
-                            let audio_data_iter = first.iter().chain(second.iter());
-                            Some((
-                                audio_data_iter
-                                    .map(|&y| Complex::new(y, 0.))
-                                    .collect::<Vec<Complex<f32>>>(),
-                                audio_ringbuf_guard.capacity().get() as usize,
-                            ))
-                        } else {
-                            None
-                        }
-                    } {
-                        {
-                            let vertices: Vec<Vertex> = fft_inout_buffer
-                                .iter()
-                                .enumerate()
-                                .map(|(i, &y)| Vertex {
-                                    position: [i as f32 / fft_size as f32 * 2.0 - 1.0, y.re],
-                                })
-                                .collect();
-                            state.queue.write_buffer(
-                                &state.fft_input_vertex_buffer.0,
-                                0,
-                                bytemuck::cast_slice(&vertices),
-                            );
-                            state.fft_input_vertex_buffer.1 = vertices.len();
-                        }
+                    // Tell the shader how to read the audio data ring buffer
+                    let last_y_value_write_offset = *state.y_value_write_offset.lock().unwrap();
+                    state.queue.write_buffer(
+                        &state.y_value_offset_buffer,
+                        0,
+                        bytemuck::cast_slice(&[last_y_value_write_offset as u32]),
+                    );
 
-                        // FIXME: Don't create a new planner every time
-                        let fft_forward: Arc<dyn Fft<f32>> =
-                            FftPlanner::new().plan_fft(fft_size, FftDirection::Forward);
-                        let fft_inverse: Arc<dyn Fft<f32>> =
-                            FftPlanner::new().plan_fft(fft_size, FftDirection::Inverse);
-
-                        fft_forward.process(&mut fft_inout_buffer);
-
-                        {
-                            let vertices: Vec<Vertex> = fft_inout_buffer
-                                .iter()
-                                .take(fft_inout_buffer.len() / 2)
-                                .enumerate()
-                                .map(|(i, &y)| Vertex {
-                                    position: [
-                                        i as f32 / (fft_inout_buffer.len() / 2) as f32 * 2.0 - 1.0,
-                                        y.norm().log10() * 0.5,
-                                    ],
-                                })
-                                .collect();
-                            state.queue.write_buffer(
-                                &state.spectrogram_vertex_buffer.0,
-                                0,
-                                bytemuck::cast_slice(&vertices),
-                            );
-                            state.spectrogram_vertex_buffer.1 = vertices.len();
-                        }
-
-                        // Find the peak frequency
-                        let peak_frequency_index = fft_inout_buffer
-                            .iter()
-                            .take(fft_inout_buffer.len() / 2)
-                            .enumerate()
-                            .max_by(|(_, a), (_, b)| {
-                                a.norm()
-                                    .partial_cmp(&b.norm())
-                                    .unwrap_or(std::cmp::Ordering::Equal)
-                            })
-                            .map(|(i, _)| i)
-                            .unwrap_or(0);
-
-                        fn phase_to_samples(phase: f32, k: usize, fft_size: usize) -> usize {
-                            ((phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI)
-                                * fft_size as f32
-                                / k as f32) as usize
-                        }
-
-                        let phase_shift = -fft_inout_buffer[peak_frequency_index].arg();
-                        let phase_samples = phase_to_samples(
-                            phase_shift,
-                            peak_frequency_index,
-                            fft_inout_buffer.len(),
-                        );
-
-                        fft_inverse.process(&mut fft_inout_buffer);
-
-                        let ifft_normalize_factor = fft_size as f32;
-                        let vertices: Vec<Vertex> = fft_inout_buffer
-                            .iter()
-                            .skip(phase_samples)
-                            .enumerate()
-                            .map(|(i, &y)| Vertex {
-                                position: [
-                                    i as f32 / fft_inout_buffer.len() as f32 * 2.0 - 1.0,
-                                    y.re / ifft_normalize_factor,
-                                ],
-                            })
-                            .collect();
-                        state.queue.write_buffer(
-                            &state.fft_output_vertex_buffer.0,
-                            0,
-                            bytemuck::cast_slice(&vertices),
-                        );
-                        state.fft_output_vertex_buffer.1 = vertices.len();
-                    }
-
-                    // First render pass
                     {
                         let mut render_pass =
                             encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -670,9 +567,9 @@ impl ApplicationHandler for LoopState {
                                     resolve_target: None,
                                     ops: wgpu::Operations {
                                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                                            r: 0.9,
-                                            g: 0.9,
-                                            b: 0.9,
+                                            r: 0.6,
+                                            g: 0.6,
+                                            b: 0.6,
                                             a: 1.0,
                                         }),
                                         store: wgpu::StoreOp::Store,
@@ -686,46 +583,6 @@ impl ApplicationHandler for LoopState {
                         render_pass.set_vertex_buffer(0, state.vertex_buffer.slice(..));
                         render_pass.set_bind_group(0, &state.bind_group, &[]);
                         render_pass.draw(0..VERTEX_BUFFER_SIZE as u32, 0..1);
-                    }
-
-                    // Second render pass
-                    for (i, (vertex_buffer, len)) in [
-                        &state.spectrogram_vertex_buffer,
-                        &state.fft_input_vertex_buffer,
-                        &state.fft_output_vertex_buffer,
-                    ]
-                    .iter()
-                    .enumerate()
-                    {
-                        let mut render_pass =
-                            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                                label: None,
-                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                    view: &view,
-                                    resolve_target: None,
-                                    ops: wgpu::Operations {
-                                        load: wgpu::LoadOp::Load,
-                                        store: wgpu::StoreOp::Store,
-                                    },
-                                })],
-                                depth_stencil_attachment: None,
-                                timestamp_writes: None,
-                                occlusion_query_set: None,
-                            });
-                        render_pass.set_pipeline(&state.straight_render_pipeline);
-                        render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-
-                        let height = state.window.inner_size().height as f32 / 4.0;
-                        render_pass.set_viewport(
-                            0.0,
-                            (i + 1) as f32 * height,
-                            state.window.inner_size().width as f32,
-                            height,
-                            0.0,
-                            1.0,
-                        );
-
-                        render_pass.draw(0..*len as u32, 0..1);
                     }
 
                     state.queue.submit(Some(encoder.finish()));

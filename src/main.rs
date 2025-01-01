@@ -64,6 +64,8 @@ struct InitializedLoopState {
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
     position: [f32; 2],
+    waveform_index: u32,
+    should_offset: f32,
 }
 
 #[repr(C)]
@@ -77,11 +79,23 @@ impl Vertex {
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[wgpu::VertexAttribute {
-                offset: 0,
-                shader_location: 0,
-                format: wgpu::VertexFormat::Float32x2,
-            }],
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: 8,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Uint32,
+                },
+                wgpu::VertexAttribute {
+                    offset: 12,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32,
+                },
+            ],
         }
     }
 }
@@ -188,6 +202,8 @@ impl InitializedLoopState {
         let vertices: Vec<Vertex> = (0..VERTEX_BUFFER_SIZE)
             .map(|i| Vertex {
                 position: [spline.sample(i as f32).unwrap() * 2.0 - 1.0, 0.0],
+                waveform_index: i as u32,
+                should_offset: 1.0,
             })
             .collect();
         let y_values: Vec<YValue> = vec![YValue { y: 0.0 }; VERTEX_BUFFER_SIZE];

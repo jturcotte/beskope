@@ -10,6 +10,8 @@ var<storage, read> y_values: array<f32>;
 
 struct VertexInput {
     @location(0) position: vec2<f32>,
+    @location(1) waveform_index: u32,
+    @location(2) should_offset: f32,
 };
 
 struct VertexOutput {
@@ -20,8 +22,12 @@ struct VertexOutput {
 @vertex
 fn vs_main( @builtin(vertex_index) my_index: u32, input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
-    let y_index = (my_index + y_value_offset.offset) % arrayLength(&y_values);
-    output.position = vec4<f32>(input.position.x, y_values[y_index] * 0.25 + 0.75, 0.0, 1.0);
+
+    let y_index = (input.waveform_index + y_value_offset.offset) % arrayLength(&y_values);
+    let offset = input.should_offset * y_values[y_index] * 0.25 + 0.75;
+    output.position = vec4(input.position, 0.0, 1.0);
+    output.position.y += offset;
+
     output.color = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     return output;
 }

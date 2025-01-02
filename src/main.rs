@@ -112,6 +112,7 @@ impl WaveformWindow {
         // Define control points for the spline used to make the waveform look more compressed for older samples.
         let cps = vec![
             (0.0, 0.0, Interpolation::Linear),
+            (0.0, 0.0, Interpolation::CatmullRom),
             (
                 VERTEX_BUFFER_SIZE as f32 - 44100.0,
                 0.15,
@@ -130,8 +131,9 @@ impl WaveformWindow {
             (
                 VERTEX_BUFFER_SIZE as f32 - 44100.0 / 60.0,
                 0.6,
-                Interpolation::Linear,
+                Interpolation::CatmullRom,
             ),
+            (VERTEX_BUFFER_SIZE as f32, 1.0, Interpolation::Linear),
             (VERTEX_BUFFER_SIZE as f32, 1.0, Interpolation::Linear),
         ];
 

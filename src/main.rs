@@ -730,11 +730,8 @@ impl ApplicationHandler for LoopState {
 }
 
 pub fn main() {
-    env_logger::init();
-
     let mut loop_state = LoopState::new();
     let event_loop = EventLoop::new().unwrap();
 
-    log::info!("Entering event loop...");
     event_loop.run_app(&mut loop_state).unwrap();
 }

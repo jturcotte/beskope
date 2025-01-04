@@ -6,8 +6,6 @@ edition = "2021"
 [dependencies]
 bytemuck = { version = "1", features = ["derive"] }
 cpal = "0.15"
-env_logger = "0.11"
-log = "0.4"
 num-complex = "0.4"
 pollster = "0.4"
 ringbuf = "0.4"

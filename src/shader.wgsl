@@ -8,6 +8,9 @@ var<uniform> y_value_offset: YValueOffset;
 @group(0) @binding(1)
 var<storage, read> y_values: array<f32>;
 
+@group(0) @binding(2)
+var<uniform> transform: mat4x4<f32>;
+
 struct VertexInput {
     @location(0) position: vec2<f32>,
     @location(1) waveform_index: u32,
@@ -24,8 +27,11 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 
     let y_index = (input.waveform_index + y_value_offset.offset) % arrayLength(&y_values);
     let offset = input.should_offset * (y_values[y_index] * 0.75);
-    output.position = vec4(input.position, 0.0, 1.0);
-    output.position.y += offset;
+    var position = vec4(input.position, 0.0, 1.0);
+    position.y += offset;
+
+    // Apply the transformation matrix
+    output.position = transform * position;
 
     return output;
 }

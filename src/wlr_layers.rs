@@ -191,9 +191,9 @@ impl WlrLayersEventQueue {
             layer_shell.create_layer_surface(&qh, surface, Layer::Top, Some("simple_layer"), None);
         // Configure the layer surface, providing things like the anchor on screen, desired size and the keyboard
         // interactivity
-        layer.set_anchor(Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::BOTTOM);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        layer.set_size(0, 64);
+        layer.set_size(64, 0);
         // FIXME: Remove once transparency and mouse passthrough work
         layer.set_exclusive_zone(64);
 

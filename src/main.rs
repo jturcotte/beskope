@@ -1,3 +1,4 @@
+use cgmath::{Matrix4, Rad};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use num_complex::Complex;
 use ringbuf::storage::Heap;
@@ -51,7 +52,11 @@ struct WaveformWindow {
 }
 
 impl WaveformWindow {
-    fn new(wgpu: WgpuSurface, audio_sample_skip: usize) -> WaveformWindow {
+    fn new(
+        wgpu: WgpuSurface,
+        audio_sample_skip: usize,
+        transform_matrix: [[f32; 4]; 4],
+    ) -> WaveformWindow {
         // Load the shaders from disk
         let shader = wgpu
             .device
@@ -165,6 +170,14 @@ impl WaveformWindow {
             mapped_at_creation: false,
         });
 
+        let transform_buffer = wgpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Transform Buffer"),
+                contents: bytemuck::cast_slice(&transform_matrix),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+
         // Create the bind group layout and bind group for the uniform
         let bind_group_layout =
             wgpu.device
@@ -190,6 +203,16 @@ impl WaveformWindow {
                             },
                             count: None,
                         },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::VERTEX,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
                     ],
                     label: None,
                 });
@@ -204,6 +227,10 @@ impl WaveformWindow {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: y_value_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: transform_buffer.as_entire_binding(),
                 },
             ],
             label: Some("Bind Group"),
@@ -613,7 +640,9 @@ impl Vertex {
 
 impl ApplicationState {
     fn new(left_wgpu_surface: WgpuSurface, process_audio: Arc<Mutex<bool>>) -> ApplicationState {
-        let left_waveform_window = WaveformWindow::new(left_wgpu_surface, 0);
+        let rotation = Matrix4::from_angle_z(Rad(-std::f32::consts::FRAC_PI_2));
+        let transform_matrix: [[f32; 4]; 4] = rotation.into();
+        let left_waveform_window = WaveformWindow::new(left_wgpu_surface, 0, transform_matrix);
         // let right_waveform_window =
         //     WaveformWindow::new(Self::create_wgpu_surface(event_loop).await, 1).await;
 

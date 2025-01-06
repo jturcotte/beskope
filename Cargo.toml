@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 bytemuck = { version = "1", features = ["derive"] }
+cgmath = "0.18.0"
 cpal = "0.15"
 num-complex = "0.4"
 pollster = "0.4"

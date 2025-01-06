@@ -17,20 +17,26 @@ use winit::{
     event_loop::{ActiveEventLoop, EventLoop},
     window::{Window, WindowId},
 };
+use wlr_layers::WlrLayerApplicationHandler;
+
+mod wlr_layers;
 
 const VERTEX_BUFFER_SIZE: usize = 44100 * 3;
 const FFT_SIZE: usize = 2048;
 const NUM_CHANNELS: usize = 2;
 
+struct WgpuSurface {
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    surface: wgpu::Surface<'static>,
+    queue: Arc<wgpu::Queue>,
+    request_redraw: Arc<dyn Fn() + Send + Sync>,
+}
+
 struct WaveformWindow {
-    pub window: Arc<Window>,
-    pub queue: Arc<wgpu::Queue>,
     pub y_value_buffer: Arc<wgpu::Buffer>,
     pub y_value_write_offset_buffer: Arc<wgpu::Buffer>,
-    _instance: wgpu::Instance,
-    surface: wgpu::Surface<'static>,
-    _adapter: wgpu::Adapter,
-    device: wgpu::Device,
+    wgpu_surface: WgpuSurface,
     _shader: wgpu::ShaderModule,
     _pipeline_layout: wgpu::PipelineLayout,
     fill_render_pipeline: wgpu::RenderPipeline,
@@ -45,51 +51,24 @@ struct WaveformWindow {
 }
 
 impl WaveformWindow {
-    async fn new(event_loop: &ActiveEventLoop, audio_sample_skip: usize) -> WaveformWindow {
-        #[allow(unused_mut)]
-        let mut attributes = Window::default_attributes();
-        let window = Arc::new(event_loop.create_window(attributes).unwrap());
-
-        let mut size = window.inner_size();
-        size.width = size.width.max(1);
-        size.height = size.height.max(1);
-        println!("Window size: {:?}", size);
-
-        let instance = wgpu::Instance::default();
-
-        let surface = instance.create_surface(window.clone()).unwrap();
-        let adapter = wgpu::util::initialize_adapter_from_env_or_default(&instance, Some(&surface))
-            .await
-            .expect("Failed to find an appropriate adapter");
-
-        // Create the logical device and command queue
-        let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: None,
-                    required_features: wgpu::Features::empty(),
-                    // Make sure we use the texture resolution limits from the adapter, so we can support images the size of the swapchain.
-                    required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
-                    memory_hints: wgpu::MemoryHints::MemoryUsage,
-                },
-                None,
-            )
-            .await
-            .expect("Failed to create device");
-
+    fn new(wgpu: WgpuSurface, audio_sample_skip: usize) -> WaveformWindow {
         // Load the shaders from disk
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shader.wgsl"))),
-        });
+        let shader = wgpu
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shader.wgsl"))),
+            });
 
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Pipeline Layout"),
-            bind_group_layouts: &[],
-            push_constant_ranges: &[],
-        });
+        let pipeline_layout = wgpu
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Pipeline Layout"),
+                bind_group_layouts: &[],
+                push_constant_ranges: &[],
+            });
 
-        let swapchain_capabilities = surface.get_capabilities(&adapter);
+        let swapchain_capabilities = wgpu.surface.get_capabilities(&wgpu.adapter);
         let swapchain_format = swapchain_capabilities.formats[0];
 
         // Define control points for the spline used to make the waveform look more compressed for older samples.
@@ -154,26 +133,32 @@ impl WaveformWindow {
             .collect();
         let y_values: Vec<YValue> = vec![YValue { y: 0.0 }; VERTEX_BUFFER_SIZE];
 
-        let fill_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Fill Vertex Buffer"),
-            contents: bytemuck::cast_slice(&fill_vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+        let fill_vertex_buffer =
+            wgpu.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Fill Vertex Buffer"),
+                    contents: bytemuck::cast_slice(&fill_vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
 
-        let stroke_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Stroke Vertex Buffer"),
-            contents: bytemuck::cast_slice(&stroke_vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+        let stroke_vertex_buffer =
+            wgpu.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Stroke Vertex Buffer"),
+                    contents: bytemuck::cast_slice(&stroke_vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
 
-        let y_value_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Y Value Buffer"),
-            contents: bytemuck::cast_slice(&y_values),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
+        let y_value_buffer = wgpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Y Value Buffer"),
+                contents: bytemuck::cast_slice(&y_values),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
 
         // Create the y_value_offset buffer
-        let y_value_offset_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let y_value_offset_buffer = wgpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Y Value Offset Buffer"),
             size: std::mem::size_of::<u32>() as wgpu::BufferAddress,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
@@ -181,33 +166,35 @@ impl WaveformWindow {
         });
 
         // Create the bind group layout and bind group for the uniform
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-            label: None,
-        });
+        let bind_group_layout =
+            wgpu.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::VERTEX,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::VERTEX,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                    ],
+                    label: None,
+                });
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = wgpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -222,104 +209,102 @@ impl WaveformWindow {
             label: Some("Bind Group"),
         });
 
-        let fill_render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: None,
-            layout: Some(
-                &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("Pipeline Layout"),
-                    bind_group_layouts: &[&bind_group_layout],
-                    push_constant_ranges: &[],
-                }),
-            ),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[Vertex::desc()],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_fill_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(swapchain_format.into())],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
+        let fill_render_pipeline =
+            wgpu.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: None,
+                    layout: Some(&wgpu.device.create_pipeline_layout(
+                        &wgpu::PipelineLayoutDescriptor {
+                            label: Some("Pipeline Layout"),
+                            bind_group_layouts: &[&bind_group_layout],
+                            push_constant_ranges: &[],
+                        },
+                    )),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_main"),
+                        buffers: &[Vertex::desc()],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("fs_fill_main"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(swapchain_format.into())],
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleStrip,
+                        strip_index_format: None,
+                        front_face: wgpu::FrontFace::Ccw,
+                        cull_mode: None,
+                        unclipped_depth: false,
+                        polygon_mode: wgpu::PolygonMode::Fill,
+                        conservative: false,
+                    },
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview: None,
+                    cache: None,
+                });
 
         let stroke_render_pipeline =
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: None,
-                layout: Some(
-                    &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                        label: Some("Pipeline Layout"),
-                        bind_group_layouts: &[&bind_group_layout],
-                        push_constant_ranges: &[],
+            wgpu.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: None,
+                    layout: Some(&wgpu.device.create_pipeline_layout(
+                        &wgpu::PipelineLayoutDescriptor {
+                            label: Some("Pipeline Layout"),
+                            bind_group_layouts: &[&bind_group_layout],
+                            push_constant_ranges: &[],
+                        },
+                    )),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_main"),
+                        buffers: &[Vertex::desc()],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("fs_stroke_main"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(swapchain_format.into())],
                     }),
-                ),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[Vertex::desc()],
-                    compilation_options: Default::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_stroke_main"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(swapchain_format.into())],
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::LineStrip,
-                    strip_index_format: None,
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: None,
-                    unclipped_depth: false,
-                    polygon_mode: wgpu::PolygonMode::Fill,
-                    conservative: false,
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview: None,
-                cache: None,
-            });
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::LineStrip,
+                        strip_index_format: None,
+                        front_face: wgpu::FrontFace::Ccw,
+                        cull_mode: None,
+                        unclipped_depth: false,
+                        polygon_mode: wgpu::PolygonMode::Fill,
+                        conservative: false,
+                    },
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview: None,
+                    cache: None,
+                });
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: swapchain_format,
-            width: size.width,
-            height: size.height,
+            // FIXME: Init wgpu on configure?
+            width: 800,
+            height: 600,
             present_mode: wgpu::PresentMode::AutoVsync,
             desired_maximum_frame_latency: 1,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             view_formats: vec![],
         };
-        surface.configure(&device, &config);
+        wgpu.surface.configure(&wgpu.device, &config);
 
-        let arc_queue = Arc::new(queue);
         let arc_y_value_buffer = Arc::new(y_value_buffer);
         let arc_y_value_offset_buffer = Arc::new(y_value_offset_buffer);
 
         WaveformWindow {
-            window,
-            queue: arc_queue,
             y_value_buffer: arc_y_value_buffer,
             y_value_write_offset_buffer: arc_y_value_offset_buffer,
-            _instance: instance,
-            surface,
-            _adapter: adapter,
-            device,
+            wgpu_surface: wgpu,
             _shader: shader,
             _pipeline_layout: pipeline_layout,
             fill_render_pipeline,
@@ -334,17 +319,21 @@ impl WaveformWindow {
         }
     }
 
-    fn reconfigure(&mut self, size: winit::dpi::PhysicalSize<u32>) {
+    fn reconfigure(&mut self, width: u32, height: u32) {
+        println!("Reconfiguring window to {}x{}", width, height);
         // Reconfigure the surface with the new size
-        self.config.width = size.width.max(1);
-        self.config.height = size.height.max(1);
-        self.surface.configure(&self.device, &self.config);
+        self.config.width = width.max(1);
+        self.config.height = height.max(1);
+        self.wgpu_surface
+            .surface
+            .configure(&self.wgpu_surface.device, &self.config);
         // On macos the window needs to be redrawn manually after resizing
-        self.window.request_redraw();
+        (self.wgpu_surface.request_redraw)();
     }
 
     fn render(&self) {
         let frame = self
+            .wgpu_surface
             .surface
             .get_current_texture()
             .expect("Failed to acquire next swap chain texture");
@@ -353,6 +342,7 @@ impl WaveformWindow {
             .create_view(&wgpu::TextureViewDescriptor::default());
 
         let mut encoder = self
+            .wgpu_surface
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
@@ -404,7 +394,7 @@ impl WaveformWindow {
             render_pass.draw(0..VERTEX_BUFFER_SIZE as u32, 0..1);
         }
 
-        self.queue.submit(Some(encoder.finish()));
+        self.wgpu_surface.queue.submit(Some(encoder.finish()));
         frame.present();
     }
 
@@ -433,13 +423,16 @@ impl WaveformWindow {
 
             fft.process_with_scratch(fft_inout_buffer, fft_scratch);
 
+            // Skipping k=0 makes sense as it doesn't really capture oscillations, also skip frequencies low enough that
+            // aligning to them would prevent the waveform from scrolling enough to be noticeable at 120Hz refresh and 44100Hz sampling rates.
+            let k_to_skip: usize = (FFT_SIZE as f64 / (44100.0 / 120.0)).ceil() as usize;
+
             // Find the peak frequency
             let peak_frequency_index = fft_inout_buffer
                 .iter()
                 .take(fft_inout_buffer.len() / 2)
                 .enumerate()
-                // Skipping k=0 makes sense as it doesn't really capture oscillations, but until where does it make sense?
-                .skip(2)
+                .skip(k_to_skip)
                 .max_by(|(_, a), (_, b)| {
                     a.norm()
                         .partial_cmp(&b.norm())
@@ -470,7 +463,7 @@ impl WaveformWindow {
         let first_pass_len = {
             let first_pass_len = VERTEX_BUFFER_SIZE - self.y_value_write_offset;
             let first_pass_data = &y_values[..first_pass_len.min(y_values.len())];
-            self.queue.write_buffer(
+            self.wgpu_surface.queue.write_buffer(
                 &self.y_value_buffer,
                 (self.y_value_write_offset * std::mem::size_of::<YValue>()) as wgpu::BufferAddress,
                 bytemuck::cast_slice(first_pass_data),
@@ -490,7 +483,7 @@ impl WaveformWindow {
         // Second pass: write to the beginning of the buffer
         if first_pass_len < y_values.len() {
             let second_pass_data = &y_values[first_pass_len..];
-            self.queue.write_buffer(
+            self.wgpu_surface.queue.write_buffer(
                 &self.y_value_buffer,
                 0,
                 bytemuck::cast_slice(second_pass_data),
@@ -498,7 +491,7 @@ impl WaveformWindow {
         }
 
         // Tell the shader how to read the audio data ring buffer
-        self.queue.write_buffer(
+        self.wgpu_surface.queue.write_buffer(
             &self.y_value_write_offset_buffer,
             0,
             bytemuck::cast_slice(&[aligned_write_offset as u32]),
@@ -512,36 +505,70 @@ struct LoopState {
     // in winit >= 0.30.0.
     // The actual state is in an Option because its initialization is now delayed to after
     // the even loop starts running.
-    state: Option<InitializedLoopState>,
-    last_fps_dump_time: Instant,
-    frame_count: u32,
+    state: Option<ApplicationState>,
     process_audio: Arc<Mutex<bool>>,
-    fft: Arc<dyn Fft<f32>>,
-    fft_inout_buffer: Vec<Complex<f32>>,
-    fft_scratch: Vec<Complex<f32>>,
 }
 
 impl LoopState {
     fn new() -> LoopState {
-        let fft = FftPlanner::new().plan_fft(FFT_SIZE, FftDirection::Forward);
-        let scratch_len = fft.get_inplace_scratch_len();
         LoopState {
             state: None,
-            last_fps_dump_time: Instant::now(),
-            frame_count: 0,
             process_audio: Arc::new(Mutex::new(true)),
-            fft,
-            fft_inout_buffer: vec![Complex::default(); FFT_SIZE],
-            fft_scratch: vec![Complex::default(); scratch_len],
+        }
+    }
+
+    async fn create_wgpu_surface(event_loop: &ActiveEventLoop) -> WgpuSurface {
+        #[allow(unused_mut)]
+        let mut attributes = Window::default_attributes();
+        let window = Arc::new(event_loop.create_window(attributes).unwrap());
+
+        let mut size = window.inner_size();
+        size.width = size.width.max(1);
+        size.height = size.height.max(1);
+        println!("Window size: {:?}", size);
+
+        let instance = wgpu::Instance::default();
+
+        let surface = instance.create_surface(window.clone()).unwrap();
+        let adapter = wgpu::util::initialize_adapter_from_env_or_default(&instance, Some(&surface))
+            .await
+            .expect("Failed to find an appropriate adapter");
+
+        // Create the logical device and command queue
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: None,
+                    required_features: wgpu::Features::empty(),
+                    // Make sure we use the texture resolution limits from the adapter, so we can support images the size of the swapchain.
+                    required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
+                    memory_hints: wgpu::MemoryHints::MemoryUsage,
+                },
+                None,
+            )
+            .await
+            .expect("Failed to create device");
+
+        WgpuSurface {
+            adapter,
+            device,
+            surface,
+            queue: Arc::new(queue),
+            request_redraw: Arc::new(move || window.request_redraw()),
         }
     }
 }
 
-struct InitializedLoopState {
+struct ApplicationState {
     left_waveform_window: WaveformWindow,
-    right_waveform_window: WaveformWindow,
+    // right_waveform_window: WaveformWindow,
     audio_input_ringbuf_cons: Caching<Arc<SharedRb<Heap<f32>>>, false, true>,
     _stream: Option<cpal::Stream>,
+    last_fps_dump_time: Instant,
+    frame_count: u32,
+    fft: Arc<dyn Fft<f32>>,
+    fft_inout_buffer: Vec<Complex<f32>>,
+    fft_scratch: Vec<Complex<f32>>,
 }
 
 #[repr(C)]
@@ -584,22 +611,20 @@ impl Vertex {
     }
 }
 
-impl InitializedLoopState {
-    async fn new(
-        event_loop: &ActiveEventLoop,
-        process_audio: Arc<Mutex<bool>>,
-    ) -> InitializedLoopState {
-        let left_waveform_window = WaveformWindow::new(event_loop, 0).await;
-        let right_waveform_window = WaveformWindow::new(event_loop, 1).await;
+impl ApplicationState {
+    fn new(left_wgpu_surface: WgpuSurface, process_audio: Arc<Mutex<bool>>) -> ApplicationState {
+        let left_waveform_window = WaveformWindow::new(left_wgpu_surface, 0);
+        // let right_waveform_window =
+        //     WaveformWindow::new(Self::create_wgpu_surface(event_loop).await, 1).await;
 
         let (mut audio_input_ringbuf_prod, audio_input_ringbuf_cons) =
             HeapRb::<f32>::new(44100 * NUM_CHANNELS).split();
 
-        let left_window = left_waveform_window.window.clone();
-        let right_window = right_waveform_window.window.clone();
+        let left_redraw = left_waveform_window.wgpu_surface.request_redraw.clone();
+        // let right_redraw = right_waveform_window.wgpu_surface.request_redraw.clone();
         let request_redraw = move || {
-            left_window.request_redraw();
-            right_window.request_redraw();
+            left_redraw();
+            // right_redraw();
         };
 
         let arc_process_audio = process_audio.clone();
@@ -651,22 +676,79 @@ impl InitializedLoopState {
             None
         };
 
-        InitializedLoopState {
+        let fft = FftPlanner::new().plan_fft(FFT_SIZE, FftDirection::Forward);
+        let scratch_len = fft.get_inplace_scratch_len();
+        ApplicationState {
             left_waveform_window,
-            right_waveform_window,
+            // right_waveform_window,
             audio_input_ringbuf_cons,
             _stream: stream,
+            last_fps_dump_time: Instant::now(),
+            frame_count: 0,
+
+            fft,
+            fft_inout_buffer: vec![Complex::default(); FFT_SIZE],
+            fft_scratch: vec![Complex::default(); scratch_len],
         }
+    }
+
+    fn render(&mut self) {
+        let data: Vec<f32> = self.audio_input_ringbuf_cons.pop_iter().collect();
+        self.left_waveform_window.process_audio(
+            &data,
+            self.fft.as_ref(),
+            &mut self.fft_inout_buffer,
+            &mut self.fft_scratch,
+        );
+        // self.right_waveform_window.process_audio(
+        //     &data,
+        //     self.fft.as_ref(),
+        //     &mut self.fft_inout_buffer,
+        //     &mut self.fft_scratch,
+        // );
+
+        self.left_waveform_window.render();
+        // self.right_waveform_window.render();
+
+        // FPS calculation
+        let now = Instant::now();
+        self.frame_count += 1;
+        if now.duration_since(self.last_fps_dump_time) >= Duration::from_secs(1) {
+            println!("FPS: {}", self.frame_count);
+            self.frame_count = 0;
+            self.last_fps_dump_time = now;
+        }
+    }
+}
+
+impl WlrLayerApplicationHandler for LoopState {
+    fn initialize(&mut self, wgpu_surface: WgpuSurface) {
+        self.state = Some(ApplicationState::new(
+            wgpu_surface,
+            self.process_audio.clone(),
+        ));
+    }
+
+    fn resized(&mut self, width: u32, height: u32) {
+        self.state
+            .as_mut()
+            .unwrap()
+            .left_waveform_window
+            .reconfigure(width, height);
+    }
+
+    fn render(&mut self) {
+        self.state.as_mut().unwrap().render();
     }
 }
 
 impl ApplicationHandler for LoopState {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_none() {
-            self.state = Some(pollster::block_on(InitializedLoopState::new(
-                event_loop,
+            self.state = Some(ApplicationState::new(
+                pollster::block_on(Self::create_wgpu_surface(event_loop)),
                 self.process_audio.clone(),
-            )));
+            ));
         }
     }
 
@@ -680,35 +762,13 @@ impl ApplicationHandler for LoopState {
             match event {
                 WindowEvent::Resized(new_size) => {
                     // FIXME: Check the window ID
-                    state.left_waveform_window.reconfigure(new_size);
-                    state.right_waveform_window.reconfigure(new_size);
+                    state
+                        .left_waveform_window
+                        .reconfigure(new_size.width, new_size.height);
+                    // state.right_waveform_window.reconfigure(new_size);
                 }
                 WindowEvent::RedrawRequested => {
-                    let data: Vec<f32> = state.audio_input_ringbuf_cons.pop_iter().collect();
-                    state.left_waveform_window.process_audio(
-                        &data,
-                        self.fft.as_ref(),
-                        &mut self.fft_inout_buffer,
-                        &mut self.fft_scratch,
-                    );
-                    state.right_waveform_window.process_audio(
-                        &data,
-                        self.fft.as_ref(),
-                        &mut self.fft_inout_buffer,
-                        &mut self.fft_scratch,
-                    );
-
-                    state.left_waveform_window.render();
-                    state.right_waveform_window.render();
-
-                    // FPS calculation
-                    let now = Instant::now();
-                    self.frame_count += 1;
-                    if now.duration_since(self.last_fps_dump_time) >= Duration::from_secs(1) {
-                        println!("FPS: {}", self.frame_count);
-                        self.frame_count = 0;
-                        self.last_fps_dump_time = now;
-                    }
+                    state.render();
                 }
                 WindowEvent::CloseRequested => event_loop.exit(),
                 WindowEvent::KeyboardInput { event, .. } => {
@@ -718,8 +778,8 @@ impl ApplicationHandler for LoopState {
                         if event.state == winit::event::ElementState::Pressed {
                             let mut process_audio = self.process_audio.lock().unwrap();
                             *process_audio = !*process_audio;
-                            state.left_waveform_window.window.request_redraw();
-                            state.right_waveform_window.window.request_redraw();
+                            (state.left_waveform_window.wgpu_surface.request_redraw)();
+                            // (state.right_waveform_window.wgpu_surface.request_redraw)();
                         }
                     }
                 }
@@ -730,8 +790,11 @@ impl ApplicationHandler for LoopState {
 }
 
 pub fn main() {
-    let mut loop_state = LoopState::new();
-    let event_loop = EventLoop::new().unwrap();
+    let loop_state = LoopState::new();
+    let mut layers_even_queue = wlr_layers::WlrLayersEventQueue::new(loop_state);
+    layers_even_queue.run_event_loop();
 
-    event_loop.run_app(&mut loop_state).unwrap();
+    // let event_loop = EventLoop::new().unwrap();
+
+    // event_loop.run_app(&mut loop_state).unwrap();
 }

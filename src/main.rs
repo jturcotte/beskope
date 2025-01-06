@@ -588,7 +588,7 @@ impl LoopState {
 
 struct ApplicationState {
     left_waveform_window: WaveformWindow,
-    // right_waveform_window: WaveformWindow,
+    right_waveform_window: WaveformWindow,
     audio_input_ringbuf_cons: Caching<Arc<SharedRb<Heap<f32>>>, false, true>,
     _stream: Option<cpal::Stream>,
     last_fps_dump_time: Instant,
@@ -639,22 +639,31 @@ impl Vertex {
 }
 
 impl ApplicationState {
-    fn new(left_wgpu_surface: WgpuSurface, process_audio: Arc<Mutex<bool>>) -> ApplicationState {
+    fn new(
+        left_wgpu_surface: WgpuSurface,
+        right_wgpu_surface: WgpuSurface,
+        process_audio: Arc<Mutex<bool>>,
+    ) -> ApplicationState {
+        // Identity transform is a horizontal waveform scrolling from right to left.
         let rotation = Matrix4::from_angle_z(Rad(-std::f32::consts::FRAC_PI_2));
-        let mirror_x = Matrix4::from_nonuniform_scale(-1.0, 1.0, 1.0);
-        let transform_matrix: [[f32; 4]; 4] = (rotation * mirror_x).into();
-        let left_waveform_window = WaveformWindow::new(left_wgpu_surface, 0, transform_matrix);
-        // let right_waveform_window =
-        //     WaveformWindow::new(Self::create_wgpu_surface(event_loop).await, 1).await;
+        let mirror_v = Matrix4::from_nonuniform_scale(-1.0, 1.0, 1.0);
+        let mirror_h = Matrix4::from_nonuniform_scale(1.0, -1.0, 1.0);
+        let left_waveform_window =
+            WaveformWindow::new(left_wgpu_surface, 0, (rotation * mirror_v).into());
+        let right_waveform_window = WaveformWindow::new(
+            right_wgpu_surface,
+            1,
+            (rotation * mirror_v * mirror_h).into(),
+        );
 
         let (mut audio_input_ringbuf_prod, audio_input_ringbuf_cons) =
             HeapRb::<f32>::new(44100 * NUM_CHANNELS).split();
 
         let left_redraw = left_waveform_window.wgpu_surface.request_redraw.clone();
-        // let right_redraw = right_waveform_window.wgpu_surface.request_redraw.clone();
+        let right_redraw = right_waveform_window.wgpu_surface.request_redraw.clone();
         let request_redraw = move || {
             left_redraw();
-            // right_redraw();
+            right_redraw();
         };
 
         let arc_process_audio = process_audio.clone();
@@ -710,7 +719,7 @@ impl ApplicationState {
         let scratch_len = fft.get_inplace_scratch_len();
         ApplicationState {
             left_waveform_window,
-            // right_waveform_window,
+            right_waveform_window,
             audio_input_ringbuf_cons,
             _stream: stream,
             last_fps_dump_time: Instant::now(),
@@ -730,15 +739,15 @@ impl ApplicationState {
             &mut self.fft_inout_buffer,
             &mut self.fft_scratch,
         );
-        // self.right_waveform_window.process_audio(
-        //     &data,
-        //     self.fft.as_ref(),
-        //     &mut self.fft_inout_buffer,
-        //     &mut self.fft_scratch,
-        // );
+        self.right_waveform_window.process_audio(
+            &data,
+            self.fft.as_ref(),
+            &mut self.fft_inout_buffer,
+            &mut self.fft_scratch,
+        );
 
         self.left_waveform_window.render();
-        // self.right_waveform_window.render();
+        self.right_waveform_window.render();
 
         // FPS calculation
         let now = Instant::now();
@@ -752,18 +761,26 @@ impl ApplicationState {
 }
 
 impl WlrLayerApplicationHandler for LoopState {
-    fn initialize(&mut self, wgpu_surface: WgpuSurface) {
+    fn initialize(&mut self, left_wgpu_surface: WgpuSurface, right_wgpu_surface: WgpuSurface) {
         self.state = Some(ApplicationState::new(
-            wgpu_surface,
+            left_wgpu_surface,
+            right_wgpu_surface,
             self.process_audio.clone(),
         ));
     }
 
-    fn resized(&mut self, width: u32, height: u32) {
+    fn left_resized(&mut self, width: u32, height: u32) {
         self.state
             .as_mut()
             .unwrap()
             .left_waveform_window
+            .reconfigure(width, height);
+    }
+    fn right_resized(&mut self, width: u32, height: u32) {
+        self.state
+            .as_mut()
+            .unwrap()
+            .right_waveform_window
             .reconfigure(width, height);
     }
 
@@ -776,6 +793,7 @@ impl ApplicationHandler for LoopState {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_none() {
             self.state = Some(ApplicationState::new(
+                pollster::block_on(Self::create_wgpu_surface(event_loop)),
                 pollster::block_on(Self::create_wgpu_surface(event_loop)),
                 self.process_audio.clone(),
             ));

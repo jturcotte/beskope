@@ -38,10 +38,10 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_fill_main() -> @location(0) vec4<f32> {
-    return vec4<f32>(1.0, 1.0, 1.0, 1.0);
+    return vec4<f32>(0.077, 0.077, 0.077, 0.7);
 }
 
 @fragment
 fn fs_stroke_main() -> @location(0) vec4<f32> {
-    return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    return vec4<f32>(0.8, 0.8, 0.8, 1.0);
 }

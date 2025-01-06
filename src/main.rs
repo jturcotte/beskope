@@ -320,7 +320,7 @@ impl WaveformWindow {
             height: 600,
             present_mode: wgpu::PresentMode::AutoVsync,
             desired_maximum_frame_latency: 1,
-            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            alpha_mode: wgpu::CompositeAlphaMode::PreMultiplied,
             view_formats: vec![],
         };
         wgpu.surface.configure(&wgpu.device, &config);
@@ -381,10 +381,10 @@ impl WaveformWindow {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.6,
-                            g: 0.6,
-                            b: 0.6,
-                            a: 1.0,
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 0.0,
                         }),
                         store: wgpu::StoreOp::Store,
                     },

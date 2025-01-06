@@ -195,7 +195,7 @@ impl WlrLayersEventQueue {
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         layer.set_size(64, 0);
         // FIXME: Remove once transparency and mouse passthrough work
-        layer.set_exclusive_zone(64);
+        layer.set_exclusive_zone(32);
 
         // In order for the layer surface to be mapped, we need to perform an initial commit with no attached\
         // buffer. For more info, see WaylandSurface::commit

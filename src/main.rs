@@ -451,8 +451,8 @@ impl WaveformWindow {
             fft.process_with_scratch(fft_inout_buffer, fft_scratch);
 
             // Skipping k=0 makes sense as it doesn't really capture oscillations, also skip frequencies low enough that
-            // aligning to them would prevent the waveform from scrolling enough to be noticeable at 120Hz refresh and 44100Hz sampling rates.
-            let k_to_skip: usize = (FFT_SIZE as f64 / (44100.0 / 120.0)).ceil() as usize;
+            // aligning to them would prevent the waveform from scrolling enough to be noticeable at 60Hz refresh and 44100Hz sampling rates.
+            let k_to_skip: usize = (FFT_SIZE as f64 / (44100.0 / 60.0)).ceil() as usize;
 
             // Find the peak frequency
             let peak_frequency_index = fft_inout_buffer
@@ -641,7 +641,8 @@ impl Vertex {
 impl ApplicationState {
     fn new(left_wgpu_surface: WgpuSurface, process_audio: Arc<Mutex<bool>>) -> ApplicationState {
         let rotation = Matrix4::from_angle_z(Rad(-std::f32::consts::FRAC_PI_2));
-        let transform_matrix: [[f32; 4]; 4] = rotation.into();
+        let mirror_x = Matrix4::from_nonuniform_scale(-1.0, 1.0, 1.0);
+        let transform_matrix: [[f32; 4]; 4] = (rotation * mirror_x).into();
         let left_waveform_window = WaveformWindow::new(left_wgpu_surface, 0, transform_matrix);
         // let right_waveform_window =
         //     WaveformWindow::new(Self::create_wgpu_surface(event_loop).await, 1).await;
@@ -819,11 +820,10 @@ impl ApplicationHandler for LoopState {
 }
 
 pub fn main() {
-    let loop_state = LoopState::new();
+    let mut loop_state = LoopState::new();
     let mut layers_even_queue = wlr_layers::WlrLayersEventQueue::new(loop_state);
     layers_even_queue.run_event_loop();
 
     // let event_loop = EventLoop::new().unwrap();
-
     // event_loop.run_app(&mut loop_state).unwrap();
 }

@@ -26,7 +26,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
 
     let y_index = (input.waveform_index + y_value_offset.offset) % arrayLength(&y_values);
-    let offset = input.should_offset * (y_values[y_index] * 0.75);
+    let offset = input.should_offset * (y_values[y_index] * 0.95);
     var position = vec4(input.position, 0.0, 1.0);
     position.y += offset;
 

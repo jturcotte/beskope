@@ -1,6 +1,7 @@
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
 };
+use smithay_client_toolkit::compositor::Region;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use wayland_client::EventQueue;
@@ -33,6 +34,7 @@ impl CompositorHandler for WlrLayersState {
         _surface: &wl_surface::WlSurface,
         _new_factor: i32,
     ) {
+        println!("Scale factor changed");
     }
 
     fn transform_changed(
@@ -42,6 +44,7 @@ impl CompositorHandler for WlrLayersState {
         _surface: &wl_surface::WlSurface,
         _new_transform: wl_output::Transform,
     ) {
+        println!("Transform changed");
     }
 
     fn frame(
@@ -61,6 +64,7 @@ impl CompositorHandler for WlrLayersState {
         _surface: &wl_surface::WlSurface,
         _output: &wl_output::WlOutput,
     ) {
+        println!("Surface entered");
     }
 
     fn surface_leave(
@@ -70,6 +74,7 @@ impl CompositorHandler for WlrLayersState {
         _surface: &wl_surface::WlSurface,
         _output: &wl_output::WlOutput,
     ) {
+        println!("Surface left");
     }
 }
 
@@ -84,6 +89,7 @@ impl OutputHandler for WlrLayersState {
         _qh: &QueueHandle<Self>,
         _output: wl_output::WlOutput,
     ) {
+        println!("New output");
     }
 
     fn update_output(
@@ -92,6 +98,7 @@ impl OutputHandler for WlrLayersState {
         _qh: &QueueHandle<Self>,
         _output: wl_output::WlOutput,
     ) {
+        println!("Update output");
     }
 
     fn output_destroyed(
@@ -100,11 +107,13 @@ impl OutputHandler for WlrLayersState {
         _qh: &QueueHandle<Self>,
         _output: wl_output::WlOutput,
     ) {
+        println!("Output destroyed");
     }
 }
 
 impl LayerShellHandler for WlrLayersState {
     fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {
+        println!("Layer closed");
         // FIXME: handle instead
         self.exit = true;
     }
@@ -185,6 +194,8 @@ impl WlrLayersEventQueue {
 
         // A layer surface is created from a surface.
         let surface = compositor.create_surface(&qh);
+        // Let mouse events pass through the surface
+        surface.set_input_region(Some(Region::new(&compositor).unwrap().wl_region()));
 
         // And then we create the layer shell.
         let layer =
@@ -193,9 +204,9 @@ impl WlrLayersEventQueue {
         // interactivity
         layer.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::BOTTOM);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        layer.set_size(64, 0);
+        layer.set_size(80, 0);
         // FIXME: Remove once transparency and mouse passthrough work
-        layer.set_exclusive_zone(32);
+        layer.set_exclusive_zone(80 / 2);
 
         // In order for the layer surface to be mapped, we need to perform an initial commit with no attached\
         // buffer. For more info, see WaylandSurface::commit

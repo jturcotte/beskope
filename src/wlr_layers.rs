@@ -135,10 +135,10 @@ impl LayerShellHandler for WlrLayersState {
             self.app_state.initialize(left_wgpu, right_wgpu);
         }
 
-        if layer == &self._left_layer {
+        if layer == &self.left_layer {
             self.app_state.left_resized(new_width, new_height);
         }
-        if layer == &self._right_layer {
+        if layer == &self.right_layer {
             self.app_state.right_resized(new_width, new_height);
 
             // Render once to let wgpu finalize the surface initialization.
@@ -149,15 +149,99 @@ impl LayerShellHandler for WlrLayersState {
     }
 }
 
+pub struct WlrWgpuSurface {
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    surface: wgpu::Surface<'static>,
+    queue: Arc<wgpu::Queue>,
+    request_redraw_callback: Arc<dyn Fn() + Send + Sync>,
+
+    pub layer: LayerSurface,
+}
+
+impl WlrWgpuSurface {
+    fn new(
+        conn: Connection,
+        qh: QueueHandle<WlrLayersState>,
+        layer: LayerSurface,
+    ) -> WlrWgpuSurface {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+
+        // Create the raw window handle for the surface.
+        let raw_display_handle = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(
+            NonNull::new(conn.backend().display_ptr() as *mut _).unwrap(),
+        ));
+        let raw_window_handle = RawWindowHandle::Wayland(WaylandWindowHandle::new(
+            NonNull::new(layer.wl_surface().id().as_ptr() as *mut _).unwrap(),
+        ));
+
+        let surface = unsafe {
+            instance
+                .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
+                    raw_display_handle,
+                    raw_window_handle,
+                })
+                .unwrap()
+        };
+
+        // Pick a supported adapter
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            compatible_surface: Some(&surface),
+            ..Default::default()
+        }))
+        .expect("Failed to find suitable adapter");
+
+        let (device, queue) = pollster::block_on(adapter.request_device(&Default::default(), None))
+            .expect("Failed to request device");
+
+        WlrWgpuSurface {
+            adapter,
+            device,
+            surface,
+            queue: Arc::new(queue),
+            request_redraw_callback: {
+                let layer = layer.clone();
+                Arc::new(move || {
+                    let surface = layer.wl_surface();
+                    surface.frame(&qh, surface.clone());
+                    surface.commit();
+                })
+            },
+            layer,
+        }
+    }
+}
+
+impl WgpuSurface for WlrWgpuSurface {
+    fn adapter(&self) -> &wgpu::Adapter {
+        &self.adapter
+    }
+    fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+    fn surface(&self) -> &wgpu::Surface<'static> {
+        &self.surface
+    }
+    fn queue(&self) -> &Arc<wgpu::Queue> {
+        &self.queue
+    }
+    fn request_redraw_callback(&self) -> &Arc<dyn Fn() + Send + Sync> {
+        &self.request_redraw_callback
+    }
+}
+
 struct WlrLayersState {
     registry_state: RegistryState,
     output_state: OutputState,
 
     exit: bool,
-    _left_layer: LayerSurface,
-    left_wgpu_holder: Option<WgpuSurface>,
-    _right_layer: LayerSurface,
-    right_wgpu_holder: Option<WgpuSurface>,
+    left_layer: LayerSurface,
+    right_layer: LayerSurface,
+    left_wgpu_holder: Option<Box<WlrWgpuSurface>>,
+    right_wgpu_holder: Option<Box<WlrWgpuSurface>>,
     app_state: Box<dyn WlrLayerApplicationHandler>,
 }
 
@@ -176,7 +260,11 @@ impl ProvidesRegistryState for WlrLayersState {
 }
 
 pub trait WlrLayerApplicationHandler {
-    fn initialize(&mut self, left_wgpu_surface: WgpuSurface, right_wgpu_surface: WgpuSurface);
+    fn initialize(
+        &mut self,
+        left_wgpu_surface: Box<dyn WgpuSurface>,
+        right_wgpu_surface: Box<dyn WgpuSurface>,
+    );
     fn left_resized(&mut self, width: u32, height: u32);
     fn right_resized(&mut self, width: u32, height: u32);
     fn render(&mut self);
@@ -194,7 +282,7 @@ impl WlrLayersEventQueue {
         let conn = Connection::connect_to_env().unwrap();
 
         // Enumerate the list of globals to get the protocols the server implements.
-        let (globals, event_queue) = registry_queue_init(&conn).unwrap();
+        let (globals, event_queue) = registry_queue_init::<WlrLayersState>(&conn).unwrap();
         let qh = event_queue.handle();
 
         // The compositor (not to be confused with the server which is commonly called the compositor) allows
@@ -204,7 +292,10 @@ impl WlrLayersEventQueue {
         // This app uses the wlr layer shell, which may not be available with every compositor.
         let layer_shell = LayerShell::bind(&globals, &qh).expect("layer shell is not available");
 
-        let create_surface = |anchor| {
+        let registry_state = RegistryState::new(&globals);
+        let output_state = OutputState::new(&globals, &qh);
+
+        let create_surface = |conn, anchor| {
             // A layer surface is created from a surface.
             let surface = compositor.create_surface(&qh);
             // Let mouse events pass through the surface
@@ -227,67 +318,20 @@ impl WlrLayersEventQueue {
             // surface with the correct options.
             layer.commit();
 
-            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-                backends: wgpu::Backends::all(),
-                ..Default::default()
-            });
-
-            // Create the raw window handle for the surface.
-            let raw_display_handle = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(
-                NonNull::new(conn.backend().display_ptr() as *mut _).unwrap(),
-            ));
-            let raw_window_handle = RawWindowHandle::Wayland(WaylandWindowHandle::new(
-                NonNull::new(layer.wl_surface().id().as_ptr() as *mut _).unwrap(),
-            ));
-
-            let surface = unsafe {
-                instance
-                    .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                        raw_display_handle,
-                        raw_window_handle,
-                    })
-                    .unwrap()
-            };
-
-            // Pick a supported adapter
-            let adapter =
-                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                    compatible_surface: Some(&surface),
-                    ..Default::default()
-                }))
-                .expect("Failed to find suitable adapter");
-
-            let (device, queue) =
-                pollster::block_on(adapter.request_device(&Default::default(), None))
-                    .expect("Failed to request device");
-
-            let layer_clone = layer.clone();
-            let qh_clone = qh.clone();
-
-            let wgpu = WgpuSurface {
-                adapter,
-                device,
-                surface,
-                queue: Arc::new(queue),
-                request_redraw: Arc::new(move || {
-                    let surface = layer_clone.wl_surface();
-                    surface.frame(&qh_clone, surface.clone());
-                    surface.commit();
-                }),
-            };
-            (wgpu, layer)
+            let qh = qh.clone();
+            Box::new(WlrWgpuSurface::new(conn, qh, layer))
         };
-        let (left_wgpu, left_layer) = create_surface(Anchor::TOP | Anchor::LEFT | Anchor::BOTTOM);
-        let (right_wgpu, right_layer) =
-            create_surface(Anchor::TOP | Anchor::RIGHT | Anchor::BOTTOM);
+
+        let left_wgpu = create_surface(conn.clone(), Anchor::TOP | Anchor::LEFT | Anchor::BOTTOM);
+        let right_wgpu = create_surface(conn, Anchor::TOP | Anchor::RIGHT | Anchor::BOTTOM);
 
         let state = WlrLayersState {
-            registry_state: RegistryState::new(&globals),
-            output_state: OutputState::new(&globals, &qh),
+            registry_state,
+            output_state,
             exit: false,
-            _left_layer: left_layer,
+            left_layer: left_wgpu.layer.clone(),
+            right_layer: right_wgpu.layer.clone(),
             left_wgpu_holder: Some(left_wgpu),
-            _right_layer: right_layer,
             right_wgpu_holder: Some(right_wgpu),
             app_state: Box::new(app_state),
         };

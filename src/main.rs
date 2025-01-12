@@ -966,7 +966,7 @@ slint::slint! {
     export global Configuration {
         callback changed();
 
-        in-out property<color> fill_color;
+        in-out property<color> fill_color: Colors.rgba(32, 32, 32, 0.7);
     }
 
     component LabeledSlider {
@@ -1000,8 +1000,8 @@ slint::slint! {
             Configuration.changed();
         }
 
-        width: 800px;
-        height: 600px;
+        preferred-width: 800px;
+        preferred-height: 600px;
 
         HorizontalBox {
             GroupBox {
@@ -1009,25 +1009,25 @@ slint::slint! {
                 VerticalBox {
                     h_slider := LabeledSlider {
                         label: "H";
-                        value: 0.0;
+                        value: Configuration.fill_color.to_hsv().hue;
                         maximum: 359.999;
                         changed(value) => { update_configuration() }
                     }
                     s_slider := LabeledSlider {
                         label: "S";
-                        value: 1.0;
+                        value: Configuration.fill_color.to_hsv().saturation;
                         maximum: 1.0;
                         changed(value) => { update_configuration() }
                     }
                     v_slider := LabeledSlider {
                         label: "V";
-                        value: 1.0;
+                        value: Configuration.fill_color.to_hsv().value;
                         maximum: 1.0;
                         changed(value) => { update_configuration() }
                     }
                     a_slider := LabeledSlider {
                         label: "A";
-                        value: 1.0;
+                        value: Configuration.fill_color.to_hsv().alpha;
                         maximum: 1.0;
                         changed(value) => { update_configuration() }
                     }
@@ -1068,6 +1068,9 @@ pub fn main() {
                 .unwrap();
         }
     });
+
+    // Apply the initial configuration from the UI
+    configuration.invoke_changed();
 
     window.run().unwrap();
 }

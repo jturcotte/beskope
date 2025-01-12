@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use std::{borrow::Cow, sync::Arc};
 use wgpu::util::DeviceExt;
 use wgpu::BufferUsages;
+use winit::platform::wayland::EventLoopBuilderExtWayland;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -931,6 +932,10 @@ impl ApplicationHandler for LoopState {
                     // state.right_waveform_window.reconfigure(new_size);
                 }
                 WindowEvent::RedrawRequested => {
+                    while let Ok(closure) = self.ui_msg_rx.try_recv() {
+                        closure(state);
+                    }
+
                     state.render();
                 }
                 WindowEvent::CloseRequested => event_loop.exit(),
@@ -1037,10 +1042,12 @@ pub fn main() {
 
     std::thread::spawn(move || {
         let mut loop_state = LoopState::new(ui_msg_rx);
-        let mut layers_even_queue = wlr_layers::WlrLayersEventQueue::new(loop_state);
 
+        let mut layers_even_queue = wlr_layers::WlrLayersEventQueue::new(loop_state);
         layers_even_queue.run_event_loop();
-        // let event_loop = EventLoop::new().unwrap();
+
+        // // This won't work on macOS, but by then let's hope we can render using wgpu directly in a Slint window.
+        // let event_loop = EventLoop::builder().with_any_thread(true).build().unwrap();
         // event_loop.run_app(&mut loop_state).unwrap();
     });
 

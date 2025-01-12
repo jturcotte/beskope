@@ -6,7 +6,9 @@ use ringbuf::traits::{Consumer, Observer, Producer, RingBuffer, Split};
 use ringbuf::wrap::caching::Caching;
 use ringbuf::{HeapRb, SharedRb};
 use rustfft::{Fft, FftDirection, FftPlanner};
+use slint::Color;
 use splines::Interpolation;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use std::{borrow::Cow, sync::Arc};
@@ -104,12 +106,33 @@ impl WgpuSurface for WinitWgpuSurface {
     }
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct Vertex {
+    position: [f32; 2],
+    waveform_index: u32,
+    should_offset: f32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct YValue {
+    y: f32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct WaveformConfig {
+    fill_color: [f32; 4],
+}
+
 struct WaveformWindow {
-    pub y_value_buffer: Arc<wgpu::Buffer>,
-    pub y_value_write_offset_buffer: Arc<wgpu::Buffer>,
     wgpu_surface: Box<dyn WgpuSurface>,
     _shader: wgpu::ShaderModule,
     _pipeline_layout: wgpu::PipelineLayout,
+    y_value_buffer: wgpu::Buffer,
+    y_value_offset_buffer: wgpu::Buffer,
+    waveform_config_buffer: wgpu::Buffer,
     fill_render_pipeline: wgpu::RenderPipeline,
     fill_vertex_buffer: wgpu::Buffer,
     stroke_render_pipeline: wgpu::RenderPipeline,
@@ -119,6 +142,8 @@ struct WaveformWindow {
     audio_sample_skip: usize,
     fft_input_ringbuf: HeapRb<f32>,
     y_value_write_offset: usize,
+    waveform_config: WaveformConfig,
+    waveform_config_dirty: bool,
 }
 
 impl WaveformWindow {
@@ -248,6 +273,16 @@ impl WaveformWindow {
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 });
 
+        let waveform_config_buffer =
+            wgpu.device()
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Waveform Config Buffer"),
+                    contents: bytemuck::cast_slice(&[WaveformConfig {
+                        fill_color: [1.0, 1.0, 1.0, 1.0],
+                    }]),
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                });
+
         // Create the bind group layout and bind group for the uniform
         let bind_group_layout =
             wgpu.device()
@@ -283,6 +318,16 @@ impl WaveformWindow {
                             },
                             count: None,
                         },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 3,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
                     ],
                     label: None,
                 });
@@ -301,6 +346,10 @@ impl WaveformWindow {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: transform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: waveform_config_buffer.as_entire_binding(),
                 },
             ],
             label: Some("Bind Group"),
@@ -395,15 +444,13 @@ impl WaveformWindow {
         };
         wgpu.surface().configure(wgpu.device(), &config);
 
-        let arc_y_value_buffer = Arc::new(y_value_buffer);
-        let arc_y_value_offset_buffer = Arc::new(y_value_offset_buffer);
-
         WaveformWindow {
-            y_value_buffer: arc_y_value_buffer,
-            y_value_write_offset_buffer: arc_y_value_offset_buffer,
             wgpu_surface: wgpu,
             _shader: shader,
             _pipeline_layout: pipeline_layout,
+            y_value_buffer,
+            y_value_offset_buffer,
+            waveform_config_buffer,
             fill_render_pipeline,
             fill_vertex_buffer,
             stroke_render_pipeline,
@@ -413,7 +460,21 @@ impl WaveformWindow {
             audio_sample_skip,
             fft_input_ringbuf: HeapRb::<f32>::new(FFT_SIZE),
             y_value_write_offset: 0,
+            waveform_config: WaveformConfig {
+                fill_color: [1.0, 1.0, 1.0, 1.0],
+            },
+            waveform_config_dirty: true,
         }
+    }
+
+    fn set_fill_color(&mut self, fill_color: Color) {
+        self.waveform_config.fill_color = [
+            fill_color.red() as f32 / 255.0,
+            fill_color.green() as f32 / 255.0,
+            fill_color.blue() as f32 / 255.0,
+            fill_color.alpha() as f32 / 255.0,
+        ];
+        self.waveform_config_dirty = true;
     }
 
     fn reconfigure(&mut self, width: u32, height: u32) {
@@ -426,6 +487,17 @@ impl WaveformWindow {
             .configure(self.wgpu_surface.device(), &self.config);
         // On macos the window needs to be redrawn manually after resizing
         (self.wgpu_surface.request_redraw_callback())();
+    }
+
+    fn update_config(&mut self) {
+        if self.waveform_config_dirty {
+            self.wgpu_surface.queue().write_buffer(
+                &self.waveform_config_buffer,
+                0,
+                bytemuck::cast_slice(&[self.waveform_config]),
+            );
+            self.waveform_config_dirty = false;
+        }
     }
 
     fn render(&self) {
@@ -589,7 +661,7 @@ impl WaveformWindow {
 
         // Tell the shader how to read the audio data ring buffer
         self.wgpu_surface.queue().write_buffer(
-            &self.y_value_write_offset_buffer,
+            &self.y_value_offset_buffer,
             0,
             bytemuck::cast_slice(&[aligned_write_offset as u32]),
         );
@@ -604,13 +676,15 @@ struct LoopState {
     // the even loop starts running.
     state: Option<ApplicationState>,
     process_audio: Arc<Mutex<bool>>,
+    ui_msg_rx: Receiver<Box<dyn FnOnce(&mut crate::ApplicationState) + Send>>,
 }
 
 impl LoopState {
-    fn new() -> LoopState {
+    fn new(ui_msg_rx: Receiver<Box<dyn FnOnce(&mut crate::ApplicationState) + Send>>) -> LoopState {
         LoopState {
             state: None,
             process_audio: Arc::new(Mutex::new(true)),
+            ui_msg_rx,
         }
     }
 
@@ -633,20 +707,6 @@ struct ApplicationState {
     fft: Arc<dyn Fft<f32>>,
     fft_inout_buffer: Vec<Complex<f32>>,
     fft_scratch: Vec<Complex<f32>>,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
-    position: [f32; 2],
-    waveform_index: u32,
-    should_offset: f32,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct YValue {
-    y: f32,
 }
 
 impl Vertex {
@@ -776,6 +836,10 @@ impl ApplicationState {
 
     fn render(&mut self) {
         let data: Vec<f32> = self.audio_input_ringbuf_cons.pop_iter().collect();
+
+        self.left_waveform_window.update_config();
+        self.right_waveform_window.update_config();
+
         self.left_waveform_window.process_audio(
             &data,
             self.fft.as_ref(),
@@ -832,6 +896,10 @@ impl WlrLayerApplicationHandler for LoopState {
     }
 
     fn render(&mut self) {
+        while let Ok(closure) = self.ui_msg_rx.try_recv() {
+            closure(self.state.as_mut().unwrap());
+        }
+
         self.state.as_mut().unwrap().render();
     }
 }
@@ -965,8 +1033,10 @@ slint::slint! {
 }
 
 pub fn main() {
+    let (ui_msg_tx, ui_msg_rx) = mpsc::channel::<Box<dyn FnOnce(&mut ApplicationState) + Send>>();
+
     std::thread::spawn(move || {
-        let mut loop_state = LoopState::new();
+        let mut loop_state = LoopState::new(ui_msg_rx);
         let mut layers_even_queue = wlr_layers::WlrLayersEventQueue::new(loop_state);
 
         layers_even_queue.run_event_loop();
@@ -982,7 +1052,13 @@ pub fn main() {
         move || {
             let window = window.upgrade().unwrap();
             let configuration = Configuration::get(&window);
-            println!("fill_color {}", configuration.get_fill_color());
+            let color = configuration.get_fill_color();
+            ui_msg_tx
+                .send(Box::new(move |state| {
+                    state.left_waveform_window.set_fill_color(color);
+                    state.right_waveform_window.set_fill_color(color);
+                }))
+                .unwrap();
         }
     });
 

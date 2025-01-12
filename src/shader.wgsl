@@ -11,6 +11,13 @@ var<storage, read> y_values: array<f32>;
 @group(0) @binding(2)
 var<uniform> transform: mat4x4<f32>;
 
+struct WaveformConfig {
+    fill_color: vec4<f32>,
+};
+
+@group(0) @binding(3)
+var<uniform> waveform_config: WaveformConfig;
+
 struct VertexInput {
     @location(0) position: vec2<f32>,
     @location(1) waveform_index: u32,
@@ -38,7 +45,8 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_fill_main() -> @location(0) vec4<f32> {
-    return vec4<f32>(0.077, 0.077, 0.077, 0.7);
+    let color = waveform_config.fill_color;
+    return vec4<f32>(color.rgb * color.a, color.a);
 }
 
 @fragment

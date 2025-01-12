@@ -54,7 +54,7 @@ impl CompositorHandler for WlrLayersState {
         _surface: &wl_surface::WlSurface,
         _time: u32,
     ) {
-        self.app_state.render();
+        self.loop_state.render();
     }
 
     fn surface_enter(
@@ -132,19 +132,19 @@ impl LayerShellHandler for WlrLayersState {
         if let (Some(left_wgpu), Some(right_wgpu)) =
             (self.left_wgpu_holder.take(), self.right_wgpu_holder.take())
         {
-            self.app_state.initialize(left_wgpu, right_wgpu);
+            self.loop_state.initialize(left_wgpu, right_wgpu);
         }
 
         if layer == &self.left_layer {
-            self.app_state.left_resized(new_width, new_height);
+            self.loop_state.left_resized(new_width, new_height);
         }
         if layer == &self.right_layer {
-            self.app_state.right_resized(new_width, new_height);
+            self.loop_state.right_resized(new_width, new_height);
 
             // Render once to let wgpu finalize the surface initialization.
             // FIXME: I get a "layer_surface has never been configured" error from wlroot
             // if I do this after the first layer, but putting this here should work for now.
-            self.app_state.render();
+            self.loop_state.render();
         }
     }
 }
@@ -242,7 +242,7 @@ struct WlrLayersState {
     right_layer: LayerSurface,
     left_wgpu_holder: Option<Box<WlrWgpuSurface>>,
     right_wgpu_holder: Option<Box<WlrWgpuSurface>>,
-    app_state: Box<dyn WlrLayerApplicationHandler>,
+    loop_state: crate::LoopState,
 }
 
 delegate_compositor!(WlrLayersState);
@@ -277,7 +277,7 @@ pub struct WlrLayersEventQueue {
 
 // FIXME: I don't need this separate stuff
 impl WlrLayersEventQueue {
-    pub fn new(app_state: impl WlrLayerApplicationHandler + 'static) -> WlrLayersEventQueue {
+    pub fn new(app_state: crate::LoopState) -> WlrLayersEventQueue {
         // All Wayland apps start by connecting the compositor (server).
         let conn = Connection::connect_to_env().unwrap();
 
@@ -333,7 +333,7 @@ impl WlrLayersEventQueue {
             right_layer: right_wgpu.layer.clone(),
             left_wgpu_holder: Some(left_wgpu),
             right_wgpu_holder: Some(right_wgpu),
-            app_state: Box::new(app_state),
+            loop_state: app_state,
         };
 
         WlrLayersEventQueue { event_queue, state }

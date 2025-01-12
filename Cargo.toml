@@ -5,16 +5,19 @@ edition = "2021"
 
 [dependencies]
 bytemuck = { version = "1", features = ["derive"] }
-cgmath = "0.18.0"
+cgmath = "0.18"
 cpal = "0.15"
 num-complex = "0.4"
 pollster = "0.4"
-raw-window-handle = "0.6.2"
+raw-window-handle = "0.6"
 ringbuf = "0.4"
 rustfft = "6"
-slint = "1.9.1"
-smithay-client-toolkit = "0.19.2"
+slint = "1.9"
+smithay-client-toolkit = "0.19"
 splines = "4"
-wayland-client = "0.31.7"
+wayland-client = "0.31"
 wgpu = "23"
 winit = "0.30"
+
+[build-dependencies]
+slint-build = "1.9"

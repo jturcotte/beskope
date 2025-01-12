@@ -887,11 +887,104 @@ impl ApplicationHandler for LoopState {
     }
 }
 
-pub fn main() {
-    let mut loop_state = LoopState::new();
-    let mut layers_even_queue = wlr_layers::WlrLayersEventQueue::new(loop_state);
-    layers_even_queue.run_event_loop();
+slint::slint! {
+    import { VerticalBox, Slider, HorizontalBox, GroupBox } from "std-widgets.slint";
 
-    // let event_loop = EventLoop::new().unwrap();
-    // event_loop.run_app(&mut loop_state).unwrap();
+    export global Configuration {
+        callback changed();
+
+        in-out property<color> fill_color;
+    }
+
+    component LabeledSlider {
+        in-out property<float> value <=> slider.value;
+        in property<string> label <=> text.text;
+        in property<float> minimum <=> slider.minimum;
+        in property<float> maximum <=> slider.maximum;
+        callback changed(float);
+        HorizontalBox {
+            text := Text {
+                vertical-alignment: TextVerticalAlignment.center;
+            }
+            slider := Slider {
+                changed(value) => { changed(value) }
+            }
+            Text {
+                width: 10%;
+                text: round(value*100)/100;
+                vertical-alignment: TextVerticalAlignment.center;
+                horizontal-alignment: TextHorizontalAlignment.left;
+            }
+        }
+    }
+    export component ConfigurationWindow inherits Window {
+        property<float> h <=> h_slider.value;
+        property<float> s <=> s_slider.value;
+        property<float> v <=> v_slider.value;
+        property<float> a <=> a_slider.value;
+        function update_configuration() {
+            Configuration.fill_color = Colors.hsv(h, s, v, a);
+            Configuration.changed();
+        }
+
+        width: 800px;
+        height: 600px;
+
+        HorizontalBox {
+            GroupBox {
+                title: "Fill color";
+                VerticalBox {
+                    h_slider := LabeledSlider {
+                        label: "H";
+                        value: 0.0;
+                        maximum: 359.999;
+                        changed(value) => { update_configuration() }
+                    }
+                    s_slider := LabeledSlider {
+                        label: "S";
+                        value: 1.0;
+                        maximum: 1.0;
+                        changed(value) => { update_configuration() }
+                    }
+                    v_slider := LabeledSlider {
+                        label: "V";
+                        value: 1.0;
+                        maximum: 1.0;
+                        changed(value) => { update_configuration() }
+                    }
+                    a_slider := LabeledSlider {
+                        label: "A";
+                        value: 1.0;
+                        maximum: 1.0;
+                        changed(value) => { update_configuration() }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn main() {
+    std::thread::spawn(move || {
+        let mut loop_state = LoopState::new();
+        let mut layers_even_queue = wlr_layers::WlrLayersEventQueue::new(loop_state);
+
+        layers_even_queue.run_event_loop();
+        // let event_loop = EventLoop::new().unwrap();
+        // event_loop.run_app(&mut loop_state).unwrap();
+    });
+
+    let window = ConfigurationWindow::new().unwrap();
+    let configuration = Configuration::get(&window);
+
+    configuration.on_changed({
+        let window = window.as_weak();
+        move || {
+            let window = window.upgrade().unwrap();
+            let configuration = Configuration::get(&window);
+            println!("fill_color {}", configuration.get_fill_color());
+        }
+    });
+
+    window.run().unwrap();
 }

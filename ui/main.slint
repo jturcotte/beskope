@@ -1,9 +1,10 @@
-import { VerticalBox, Slider, HorizontalBox, GroupBox } from "std-widgets.slint";
+import { VerticalBox, Slider, HorizontalBox, GroupBox, TabWidget } from "std-widgets.slint";
 
 export global Configuration {
     callback changed();
 
     in-out property<color> fill_color: Colors.rgba(32, 32, 32, 0.7);
+    in-out property<color> stroke_color: Colors.rgba(255, 255, 255, 0.8);
 }
 
 component LabeledSlider {
@@ -27,48 +28,71 @@ component LabeledSlider {
         }
     }
 }
+
+component HsvColorSelection inherits GroupBox {
+    in-out property<float> h <=> h_slider.value;
+    in-out property<float> s <=> s_slider.value;
+    in-out property<float> v <=> v_slider.value;
+    in-out property<float> a <=> a_slider.value;
+    callback changed();
+    VerticalBox {
+        h_slider := LabeledSlider {
+            label: "H";
+            maximum: 359.999;
+            changed(value) => { changed() }
+        }
+        s_slider := LabeledSlider {
+            label: "S";
+            maximum: 1.0;
+            changed(value) => { changed() }
+        }
+        v_slider := LabeledSlider {
+            label: "V";
+            maximum: 1.0;
+            changed(value) => { changed() }
+        }
+        a_slider := LabeledSlider {
+            label: "A";
+            maximum: 1.0;
+            changed(value) => { changed() }
+        }
+    }
+}
+
 export component ConfigurationWindow inherits Window {
-    property<float> h <=> h_slider.value;
-    property<float> s <=> s_slider.value;
-    property<float> v <=> v_slider.value;
-    property<float> a <=> a_slider.value;
     function update_configuration() {
-        Configuration.fill_color = Colors.hsv(h, s, v, a);
+        Configuration.fill_color = Colors.hsv(fill_color.h, fill_color.s, fill_color.v, fill_color.a);
+        Configuration.stroke_color = Colors.hsv(stroke_color.h, stroke_color.s, stroke_color.v, stroke_color.a);
         Configuration.changed();
     }
 
     preferred-width: 800px;
     preferred-height: 600px;
 
-    HorizontalBox {
-        GroupBox {
-            title: "Fill color";
+    TabWidget {
+        Tab {
+            title: "Color";
             VerticalBox {
-                h_slider := LabeledSlider {
-                    label: "H";
-                    value: Configuration.fill_color.to_hsv().hue;
-                    maximum: 359.999;
-                    changed(value) => { update_configuration() }
+                fill_color := HsvColorSelection {
+                    changed => { update_configuration(); }
+                    title: "Fill";
+                    h: Configuration.fill_color.to_hsv().hue;
+                    s: Configuration.fill_color.to_hsv().saturation;
+                    v: Configuration.fill_color.to_hsv().value;
+                    a: Configuration.fill_color.to_hsv().alpha;
                 }
-                s_slider := LabeledSlider {
-                    label: "S";
-                    value: Configuration.fill_color.to_hsv().saturation;
-                    maximum: 1.0;
-                    changed(value) => { update_configuration() }
-                }
-                v_slider := LabeledSlider {
-                    label: "V";
-                    value: Configuration.fill_color.to_hsv().value;
-                    maximum: 1.0;
-                    changed(value) => { update_configuration() }
-                }
-                a_slider := LabeledSlider {
-                    label: "A";
-                    value: Configuration.fill_color.to_hsv().alpha;
-                    maximum: 1.0;
-                    changed(value) => { update_configuration() }
+                stroke_color := HsvColorSelection {
+                    title: "Stroke";
+                    changed => { update_configuration(); }
+                    h: Configuration.stroke_color.to_hsv().hue;
+                    s: Configuration.stroke_color.to_hsv().saturation;
+                    v: Configuration.stroke_color.to_hsv().value;
+                    a: Configuration.stroke_color.to_hsv().alpha;
                 }
             }
+        }
+        Tab {
+            title: "Test";
         }
     }
 }

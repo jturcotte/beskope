@@ -13,6 +13,7 @@ var<uniform> transform: mat4x4<f32>;
 
 struct WaveformConfig {
     fill_color: vec4<f32>,
+    stroke_color: vec4<f32>,
 };
 
 @group(0) @binding(3)
@@ -51,5 +52,6 @@ fn fs_fill_main() -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_stroke_main() -> @location(0) vec4<f32> {
-    return vec4<f32>(0.8, 0.8, 0.8, 1.0);
+    let color = waveform_config.stroke_color;
+    return vec4<f32>(color.rgb * color.a, color.a);
 }

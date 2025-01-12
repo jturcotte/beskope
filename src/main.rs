@@ -125,6 +125,7 @@ struct YValue {
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct WaveformConfig {
     fill_color: [f32; 4],
+    stroke_color: [f32; 4],
 }
 
 struct WaveformWindow {
@@ -280,6 +281,7 @@ impl WaveformWindow {
                     label: Some("Waveform Config Buffer"),
                     contents: bytemuck::cast_slice(&[WaveformConfig {
                         fill_color: [1.0, 1.0, 1.0, 1.0],
+                        stroke_color: [1.0, 1.0, 1.0, 1.0],
                     }]),
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 });
@@ -463,6 +465,7 @@ impl WaveformWindow {
             y_value_write_offset: 0,
             waveform_config: WaveformConfig {
                 fill_color: [1.0, 1.0, 1.0, 1.0],
+                stroke_color: [1.0, 1.0, 1.0, 1.0],
             },
             waveform_config_dirty: true,
         }
@@ -474,6 +477,16 @@ impl WaveformWindow {
             fill_color.green() as f32 / 255.0,
             fill_color.blue() as f32 / 255.0,
             fill_color.alpha() as f32 / 255.0,
+        ];
+        self.waveform_config_dirty = true;
+    }
+
+    fn set_stroke_color(&mut self, stroke_color: Color) {
+        self.waveform_config.stroke_color = [
+            stroke_color.red() as f32 / 255.0,
+            stroke_color.green() as f32 / 255.0,
+            stroke_color.blue() as f32 / 255.0,
+            stroke_color.alpha() as f32 / 255.0,
         ];
         self.waveform_config_dirty = true;
     }
@@ -984,11 +997,14 @@ pub fn main() {
         move || {
             let window = window.upgrade().unwrap();
             let configuration = Configuration::get(&window);
-            let color = configuration.get_fill_color();
+            let fill_color = configuration.get_fill_color();
+            let stroke_color = configuration.get_stroke_color();
             ui_msg_tx
                 .send(Box::new(move |state| {
-                    state.left_waveform_window.set_fill_color(color);
-                    state.right_waveform_window.set_fill_color(color);
+                    state.left_waveform_window.set_fill_color(fill_color);
+                    state.right_waveform_window.set_fill_color(fill_color);
+                    state.left_waveform_window.set_stroke_color(stroke_color);
+                    state.right_waveform_window.set_stroke_color(stroke_color);
                 }))
                 .unwrap();
         }

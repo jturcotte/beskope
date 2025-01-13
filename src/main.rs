@@ -1,4 +1,5 @@
-use cgmath::{Matrix4, Rad};
+use cgmath::{Matrix4, Rad, SquareMatrix};
+use core::panic;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use num_complex::Complex;
 use ringbuf::storage::Heap;
@@ -8,7 +9,7 @@ use ringbuf::{HeapRb, SharedRb};
 use rustfft::{Fft, FftDirection, FftPlanner};
 use slint::Color;
 use splines::Interpolation;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use std::{borrow::Cow, sync::Arc};
@@ -21,7 +22,7 @@ use winit::{
     event_loop::{ActiveEventLoop, EventLoop},
     window::{Window, WindowId},
 };
-use wlr_layers::WlrLayerApplicationHandler;
+use wlr_layers::{PanelAnchorPosition, WlrLayerApplicationHandler, WlrLayersState};
 
 mod wlr_layers;
 
@@ -688,17 +689,15 @@ struct LoopState {
     // in winit >= 0.30.0.
     // The actual state is in an Option because its initialization is now delayed to after
     // the even loop starts running.
-    state: Option<ApplicationState>,
+    app_state: Option<ApplicationState>,
     process_audio: Arc<Mutex<bool>>,
-    ui_msg_rx: Receiver<Box<dyn FnOnce(&mut crate::ApplicationState) + Send>>,
 }
 
 impl LoopState {
-    fn new(ui_msg_rx: Receiver<Box<dyn FnOnce(&mut crate::ApplicationState) + Send>>) -> LoopState {
+    fn new() -> LoopState {
         LoopState {
-            state: None,
+            app_state: None,
             process_audio: Arc::new(Mutex::new(true)),
-            ui_msg_rx,
         }
     }
 
@@ -712,8 +711,10 @@ impl LoopState {
 }
 
 struct ApplicationState {
-    left_waveform_window: WaveformWindow,
-    right_waveform_window: WaveformWindow,
+    left_waveform_window: Option<WaveformWindow>,
+    right_waveform_window: Option<WaveformWindow>,
+    left_request_redraw: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
+    right_request_redraw: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
     audio_input_ringbuf_cons: Caching<Arc<SharedRb<Heap<f32>>>, false, true>,
     _stream: Option<cpal::Stream>,
     last_fps_dump_time: Instant,
@@ -750,37 +751,21 @@ impl Vertex {
 }
 
 impl ApplicationState {
-    fn new(
-        left_wgpu_surface: Box<dyn WgpuSurface>,
-        right_wgpu_surface: Box<dyn WgpuSurface>,
-        process_audio: Arc<Mutex<bool>>,
-    ) -> ApplicationState {
-        // Identity transform is a horizontal waveform scrolling from right to left.
-        let rotation = Matrix4::from_angle_z(Rad(-std::f32::consts::FRAC_PI_2));
-        let mirror_v = Matrix4::from_nonuniform_scale(-1.0, 1.0, 1.0);
-        let mirror_h = Matrix4::from_nonuniform_scale(1.0, -1.0, 1.0);
-        let left_waveform_window =
-            WaveformWindow::new(left_wgpu_surface, 0, (rotation * mirror_v).into());
-        let right_waveform_window = WaveformWindow::new(
-            right_wgpu_surface,
-            1,
-            (rotation * mirror_v * mirror_h).into(),
-        );
-
+    fn new(process_audio: Arc<Mutex<bool>>) -> ApplicationState {
         let (mut audio_input_ringbuf_prod, audio_input_ringbuf_cons) =
             HeapRb::<f32>::new(44100 * NUM_CHANNELS).split();
 
-        let left_redraw = left_waveform_window
-            .wgpu_surface
-            .request_redraw_callback()
-            .clone();
-        let right_redraw = right_waveform_window
-            .wgpu_surface
-            .request_redraw_callback()
-            .clone();
-        let request_redraw = move || {
-            left_redraw();
-            right_redraw();
+        let left_request_redraw: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>> =
+            Arc::new(Mutex::new(Arc::new(|| {})));
+        let right_request_redraw: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>> =
+            Arc::new(Mutex::new(Arc::new(|| {})));
+        let request_redraw = {
+            let left_request_redraw = left_request_redraw.clone();
+            let right_request_redraw = right_request_redraw.clone();
+            move || {
+                left_request_redraw.lock().unwrap()();
+                right_request_redraw.lock().unwrap()();
+            }
         };
 
         let arc_process_audio = process_audio.clone();
@@ -835,8 +820,10 @@ impl ApplicationState {
         let fft = FftPlanner::new().plan_fft(FFT_SIZE, FftDirection::Forward);
         let scratch_len = fft.get_inplace_scratch_len();
         ApplicationState {
-            left_waveform_window,
-            right_waveform_window,
+            left_waveform_window: None,
+            right_waveform_window: None,
+            left_request_redraw,
+            right_request_redraw,
             audio_input_ringbuf_cons,
             _stream: stream,
             last_fps_dump_time: Instant::now(),
@@ -848,27 +835,74 @@ impl ApplicationState {
         }
     }
 
+    fn create_waveform_window(
+        wgpu_surface: Box<dyn WgpuSurface>,
+        anchor_position: PanelAnchorPosition,
+    ) -> WaveformWindow {
+        // Identity transform is a horizontal waveform scrolling from right to left.
+        let rotation = Matrix4::from_angle_z(Rad(-std::f32::consts::FRAC_PI_2));
+        let mirror_h = Matrix4::from_nonuniform_scale(-1.0, 1.0, 1.0);
+        let mirror_v = Matrix4::from_nonuniform_scale(1.0, -1.0, 1.0);
+        let transform_matrix = match anchor_position {
+            PanelAnchorPosition::Top => mirror_v,
+            PanelAnchorPosition::Bottom => Matrix4::identity(),
+            PanelAnchorPosition::Left => rotation * mirror_h,
+            PanelAnchorPosition::Right => rotation * mirror_v * mirror_h,
+        };
+        WaveformWindow::new(wgpu_surface, 0, transform_matrix.into())
+    }
+
+    fn configure_left_wgpu_surface(
+        &mut self,
+        wgpu_surface: Box<dyn WgpuSurface>,
+        anchor_position: PanelAnchorPosition,
+    ) {
+        let waveform_window = Self::create_waveform_window(wgpu_surface, anchor_position);
+
+        *self.left_request_redraw.lock().unwrap() = waveform_window
+            .wgpu_surface
+            .request_redraw_callback()
+            .clone();
+        self.left_waveform_window = Some(waveform_window);
+    }
+
+    fn configure_right_wgpu_surface(
+        &mut self,
+        wgpu_surface: Box<dyn WgpuSurface>,
+        anchor_position: PanelAnchorPosition,
+    ) {
+        let waveform_window = Self::create_waveform_window(wgpu_surface, anchor_position);
+
+        *self.right_request_redraw.lock().unwrap() = waveform_window
+            .wgpu_surface
+            .request_redraw_callback()
+            .clone();
+        self.right_waveform_window = Some(waveform_window);
+    }
+
     fn render(&mut self) {
         let data: Vec<f32> = self.audio_input_ringbuf_cons.pop_iter().collect();
 
-        self.left_waveform_window.update_config();
-        self.right_waveform_window.update_config();
-
-        self.left_waveform_window.process_audio(
-            &data,
-            self.fft.as_ref(),
-            &mut self.fft_inout_buffer,
-            &mut self.fft_scratch,
-        );
-        self.right_waveform_window.process_audio(
-            &data,
-            self.fft.as_ref(),
-            &mut self.fft_inout_buffer,
-            &mut self.fft_scratch,
-        );
-
-        self.left_waveform_window.render();
-        self.right_waveform_window.render();
+        if let Some(left_waveform_window) = &mut self.left_waveform_window {
+            left_waveform_window.update_config();
+            left_waveform_window.process_audio(
+                &data,
+                self.fft.as_ref(),
+                &mut self.fft_inout_buffer,
+                &mut self.fft_scratch,
+            );
+            left_waveform_window.render();
+        }
+        if let Some(right_waveform_window) = &mut self.right_waveform_window {
+            right_waveform_window.update_config();
+            right_waveform_window.process_audio(
+                &data,
+                self.fft.as_ref(),
+                &mut self.fft_inout_buffer,
+                &mut self.fft_scratch,
+            );
+            right_waveform_window.render();
+        }
 
         // FPS calculation
         let now = Instant::now();
@@ -882,50 +916,71 @@ impl ApplicationState {
 }
 
 impl WlrLayerApplicationHandler for LoopState {
-    fn initialize(
+    fn initialize_app_state(&mut self) {
+        self.app_state = Some(ApplicationState::new(self.process_audio.clone()));
+    }
+
+    fn configure_left_wgpu_surface(
         &mut self,
-        left_wgpu_surface: Box<dyn WgpuSurface>,
-        right_wgpu_surface: Box<dyn WgpuSurface>,
+        wgpu_surface: Box<dyn WgpuSurface>,
+        anchor_position: PanelAnchorPosition,
     ) {
-        self.state = Some(ApplicationState::new(
-            left_wgpu_surface,
-            right_wgpu_surface,
-            self.process_audio.clone(),
-        ));
+        self.app_state
+            .as_mut()
+            .unwrap()
+            .configure_left_wgpu_surface(wgpu_surface, anchor_position);
+    }
+
+    fn configure_right_wgpu_surface(
+        &mut self,
+        wgpu_surface: Box<dyn WgpuSurface>,
+        anchor_position: PanelAnchorPosition,
+    ) {
+        self.app_state
+            .as_mut()
+            .unwrap()
+            .configure_right_wgpu_surface(wgpu_surface, anchor_position);
     }
 
     fn left_resized(&mut self, width: u32, height: u32) {
-        self.state
+        if let Some(waveform_window) = self
+            .app_state
             .as_mut()
             .unwrap()
             .left_waveform_window
-            .reconfigure(width, height);
+            .as_mut()
+        {
+            waveform_window.reconfigure(width, height);
+        }
     }
     fn right_resized(&mut self, width: u32, height: u32) {
-        self.state
+        if let Some(waveform_window) = self
+            .app_state
             .as_mut()
             .unwrap()
             .right_waveform_window
-            .reconfigure(width, height);
+            .as_mut()
+        {
+            waveform_window.reconfigure(width, height);
+        }
     }
 
     fn render(&mut self) {
-        while let Ok(closure) = self.ui_msg_rx.try_recv() {
-            closure(self.state.as_mut().unwrap());
-        }
-
-        self.state.as_mut().unwrap().render();
+        self.app_state.as_mut().unwrap().render();
     }
 }
 
 impl ApplicationHandler for LoopState {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.state.is_none() {
-            self.state = Some(ApplicationState::new(
-                Self::create_winit_window_and_wgpu_surface(event_loop),
-                Self::create_winit_window_and_wgpu_surface(event_loop),
-                self.process_audio.clone(),
-            ));
+        if self.app_state.is_none() {
+            self.app_state = Some(ApplicationState::new(self.process_audio.clone()));
+            self.app_state
+                .as_mut()
+                .unwrap()
+                .configure_left_wgpu_surface(
+                    Self::create_winit_window_and_wgpu_surface(event_loop),
+                    PanelAnchorPosition::Bottom,
+                );
         }
     }
 
@@ -935,20 +990,19 @@ impl ApplicationHandler for LoopState {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
-        if let Some(state) = self.state.as_mut() {
+        if let Some(state) = self.app_state.as_mut() {
             match event {
                 WindowEvent::Resized(new_size) => {
                     // FIXME: Check the window ID
                     state
                         .left_waveform_window
+                        .as_mut()
+                        .or(state.right_waveform_window.as_mut())
+                        .unwrap()
                         .reconfigure(new_size.width, new_size.height);
                     // state.right_waveform_window.reconfigure(new_size);
                 }
                 WindowEvent::RedrawRequested => {
-                    while let Ok(closure) = self.ui_msg_rx.try_recv() {
-                        closure(state);
-                    }
-
                     state.render();
                 }
                 WindowEvent::CloseRequested => event_loop.exit(),
@@ -961,6 +1015,8 @@ impl ApplicationHandler for LoopState {
                             *process_audio = !*process_audio;
                             (state
                                 .left_waveform_window
+                                .as_ref()
+                                .unwrap()
                                 .wgpu_surface
                                 .request_redraw_callback())();
                             // (state.right_waveform_window.wgpu_surface.request_redraw)();
@@ -975,24 +1031,34 @@ impl ApplicationHandler for LoopState {
 
 slint::include_modules!();
 
+enum UiMessage {
+    ApplicationStateCallback(Box<dyn FnOnce(&mut ApplicationState) + Send>),
+    SetPanelLayout(PanelLayout),
+    SetPanelLayer(PanelLayer),
+}
+
 pub fn main() {
-    let (ui_msg_tx, ui_msg_rx) = mpsc::channel::<Box<dyn FnOnce(&mut ApplicationState) + Send>>();
+    let (ui_msg_tx, ui_msg_rx) = mpsc::channel::<UiMessage>();
 
     std::thread::spawn(move || {
-        let mut loop_state = LoopState::new(ui_msg_rx);
+        let mut loop_state = LoopState::new();
 
-        let mut layers_even_queue = wlr_layers::WlrLayersEventQueue::new(loop_state);
+        let mut layers_even_queue = wlr_layers::WlrLayersEventQueue::new(loop_state, ui_msg_rx);
+        layers_even_queue.set_panel_layout(PanelLayout::SingleTop);
         layers_even_queue.run_event_loop();
 
         // // This won't work on macOS, but by then let's hope we can render using wgpu directly in a Slint window.
         // let event_loop = EventLoop::builder().with_any_thread(true).build().unwrap();
+        // FIXME: Handle ui_msg_rx
         // event_loop.run_app(&mut loop_state).unwrap();
     });
 
     let window = ConfigurationWindow::new().unwrap();
     let configuration = Configuration::get(&window);
+    let panel_configuration = PanelConfiguration::get(&window);
 
     configuration.on_changed({
+        let ui_msg_tx = ui_msg_tx.clone();
         let window = window.as_weak();
         move || {
             let window = window.upgrade().unwrap();
@@ -1000,13 +1066,26 @@ pub fn main() {
             let fill_color = configuration.get_fill_color();
             let stroke_color = configuration.get_stroke_color();
             ui_msg_tx
-                .send(Box::new(move |state| {
-                    state.left_waveform_window.set_fill_color(fill_color);
-                    state.right_waveform_window.set_fill_color(fill_color);
-                    state.left_waveform_window.set_stroke_color(stroke_color);
-                    state.right_waveform_window.set_stroke_color(stroke_color);
-                }))
+                .send(UiMessage::ApplicationStateCallback(Box::new(
+                    move |state| {
+                        if let Some(left_waveform_window) = &mut state.left_waveform_window {
+                            left_waveform_window.set_fill_color(fill_color);
+                            left_waveform_window.set_stroke_color(stroke_color);
+                        }
+                        if let Some(right_waveform_window) = &mut state.right_waveform_window {
+                            right_waveform_window.set_fill_color(fill_color);
+                            right_waveform_window.set_stroke_color(stroke_color);
+                        }
+                    },
+                )))
                 .unwrap();
+        }
+    });
+
+    panel_configuration.on_layout_changed({
+        let ui_msg_tx = ui_msg_tx.clone();
+        move |layout| {
+            ui_msg_tx.send(UiMessage::SetPanelLayout(layout)).unwrap();
         }
     });
 

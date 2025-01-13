@@ -1,10 +1,37 @@
-import { VerticalBox, Slider, HorizontalBox, GroupBox, TabWidget } from "std-widgets.slint";
+import { VerticalBox, Slider, HorizontalBox, GroupBox, TabWidget, ComboBox, LineEdit, GridBox, AboutSlint } from "std-widgets.slint";
+
+enum RenderChannels {
+    Both,
+    Left,
+}
+
+enum PanelLayout {
+    TwoPanels,
+    SingleTop,
+    SingleBottom,
+}
+
+enum PanelLayer {
+    Background,
+    AboveWindows,
+    AboveFullscreenWindows,
+}
 
 export global Configuration {
     callback changed();
 
-    in-out property<color> fill_color: Colors.rgba(32, 32, 32, 0.7);
-    in-out property<color> stroke_color: Colors.rgba(255, 255, 255, 0.8);
+    in-out property<color> fill_color: Colors.rgba(32, 32, 32, 0.8);
+    in-out property<color> stroke_color: Colors.rgba(205, 205, 205, 0.8);
+}
+
+export global PanelConfiguration {
+    callback channels_changed(RenderChannels);
+    callback layout_changed(PanelLayout);
+    callback layer_changed(PanelLayer);
+
+    in-out property<RenderChannels> channels: RenderChannels.Both;
+    in-out property<PanelLayout> layout: PanelLayout.TwoPanels;
+    in-out property<PanelLayer> layer: PanelLayer.AboveWindows;
 }
 
 component LabeledSlider {
@@ -71,6 +98,97 @@ export component ConfigurationWindow inherits Window {
 
     TabWidget {
         Tab {
+            title: "General";
+            GridBox {
+                Row {
+                    Text {
+                        text: "Channels per window/panel";
+                        vertical-alignment: TextVerticalAlignment.center;
+                    }
+                    channels_cb := ComboBox {
+                        enabled: layout_cb.current-value != "Two panels (one on each side of the screen)";
+                        model: [
+                            "Both left and right",
+                            "Only left",
+                        ];
+                        current-index: PanelConfiguration.channels == RenderChannels.Both ? 0 : 1;
+                        selected(current-value) => {
+                            if (self.current-index == 0) {
+                                PanelConfiguration.channels = RenderChannels.Both;
+                            } else {
+                                PanelConfiguration.channels = RenderChannels.Left;
+                            }
+                            PanelConfiguration.channels_changed(PanelConfiguration.channels);
+                        }
+                    }
+                }
+                Row {
+                    Text {
+                        text: "Panel layout";
+                        vertical-alignment: TextVerticalAlignment.center;
+                    }
+                    layout_cb := ComboBox {
+                        model: [
+                            "Two panels (one on each side of the screen)",
+                            "Single panel at the top",
+                            "Single panel at the bottom",
+                        ];
+                        current-index: PanelConfiguration.layout == PanelLayout.TwoPanels
+                            ? 0 
+                            : PanelConfiguration.layout == PanelLayout.SingleTop
+                                ? 1
+                                : 2;
+                        selected(current-value) => {
+                            if (self.current-index == 0) {
+                                channels_cb.enabled = false;
+                                channels_cb.current-index = 0;
+                            } else {
+                                channels_cb.enabled = true;
+                            }
+
+                            if (self.current-index == 0) {
+                                PanelConfiguration.layout = PanelLayout.TwoPanels;
+                            } else if (self.current-index == 1) {
+                                PanelConfiguration.layout = PanelLayout.SingleTop;
+                            } else {
+                                PanelConfiguration.layout = PanelLayout.SingleBottom;
+                            }
+                            PanelConfiguration.layout_changed(PanelConfiguration.layout);
+                        }
+                    }
+                }
+                Row {
+                    Text {
+                        text: "Panel Layer";
+                        vertical-alignment: TextVerticalAlignment.center;
+                    }
+                    layer_cb := ComboBox {
+                        model: [
+                            "Background",
+                            "Above windows",
+                            "Above full-screen windows",
+                        ];
+                        current-index: PanelConfiguration.layer == PanelLayer.Background
+                            ? 0
+                            : PanelConfiguration.layer == PanelLayer.AboveWindows
+                                ? 1
+                                : 2;
+                        selected(current-value) => {
+                            if (self.current-index == 0) {
+                                PanelConfiguration.layer = PanelLayer.Background;
+                            } else if (self.current-index == 1) {
+                                PanelConfiguration.layer = PanelLayer.AboveWindows;
+                            } else {
+                                PanelConfiguration.layer = PanelLayer.AboveFullscreenWindows;
+                            }
+                            PanelConfiguration.layer_changed(PanelConfiguration.layer);
+                        }
+                    }
+                }
+                Rectangle { }
+            }
+        }
+        Tab {
             title: "Color";
             VerticalBox {
                 fill_color := HsvColorSelection {
@@ -90,9 +208,6 @@ export component ConfigurationWindow inherits Window {
                     a: Configuration.stroke_color.to_hsv().alpha;
                 }
             }
-        }
-        Tab {
-            title: "Test";
         }
     }
 }

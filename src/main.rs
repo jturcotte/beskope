@@ -22,7 +22,7 @@ use winit::{
     event_loop::{ActiveEventLoop, EventLoop},
     window::{Window, WindowId},
 };
-use wlr_layers::{PanelAnchorPosition, WlrLayerApplicationHandler, WlrLayersState};
+use wlr_layers::{PanelAnchorPosition, WlrLayerApplicationHandler, WlrWaylandEventHandler};
 
 mod wlr_layers;
 
@@ -683,20 +683,20 @@ impl WaveformWindow {
     }
 }
 
-struct LoopState {
+struct ApplicationState {
     // See https://docs.rs/winit/latest/winit/changelog/v0_30/index.html#removed
     // for the recommended practice regarding Window creation (from which everything depends)
     // in winit >= 0.30.0.
     // The actual state is in an Option because its initialization is now delayed to after
     // the even loop starts running.
-    app_state: Option<ApplicationState>,
+    windowed_state: Option<WindowedApplicationState>,
     process_audio: Arc<Mutex<bool>>,
 }
 
-impl LoopState {
-    fn new() -> LoopState {
-        LoopState {
-            app_state: None,
+impl ApplicationState {
+    fn new() -> ApplicationState {
+        ApplicationState {
+            windowed_state: None,
             process_audio: Arc::new(Mutex::new(true)),
         }
     }
@@ -710,7 +710,7 @@ impl LoopState {
     }
 }
 
-struct ApplicationState {
+struct WindowedApplicationState {
     left_waveform_window: Option<WaveformWindow>,
     right_waveform_window: Option<WaveformWindow>,
     left_request_redraw: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
@@ -750,8 +750,8 @@ impl Vertex {
     }
 }
 
-impl ApplicationState {
-    fn new(process_audio: Arc<Mutex<bool>>) -> ApplicationState {
+impl WindowedApplicationState {
+    fn new(process_audio: Arc<Mutex<bool>>) -> WindowedApplicationState {
         let (mut audio_input_ringbuf_prod, audio_input_ringbuf_cons) =
             HeapRb::<f32>::new(44100 * NUM_CHANNELS).split();
 
@@ -819,7 +819,7 @@ impl ApplicationState {
 
         let fft = FftPlanner::new().plan_fft(FFT_SIZE, FftDirection::Forward);
         let scratch_len = fft.get_inplace_scratch_len();
-        ApplicationState {
+        WindowedApplicationState {
             left_waveform_window: None,
             right_waveform_window: None,
             left_request_redraw,
@@ -915,9 +915,9 @@ impl ApplicationState {
     }
 }
 
-impl WlrLayerApplicationHandler for LoopState {
+impl WlrLayerApplicationHandler for ApplicationState {
     fn initialize_app_state(&mut self) {
-        self.app_state = Some(ApplicationState::new(self.process_audio.clone()));
+        self.windowed_state = Some(WindowedApplicationState::new(self.process_audio.clone()));
     }
 
     fn configure_left_wgpu_surface(
@@ -925,7 +925,7 @@ impl WlrLayerApplicationHandler for LoopState {
         wgpu_surface: Box<dyn WgpuSurface>,
         anchor_position: PanelAnchorPosition,
     ) {
-        self.app_state
+        self.windowed_state
             .as_mut()
             .unwrap()
             .configure_left_wgpu_surface(wgpu_surface, anchor_position);
@@ -936,7 +936,7 @@ impl WlrLayerApplicationHandler for LoopState {
         wgpu_surface: Box<dyn WgpuSurface>,
         anchor_position: PanelAnchorPosition,
     ) {
-        self.app_state
+        self.windowed_state
             .as_mut()
             .unwrap()
             .configure_right_wgpu_surface(wgpu_surface, anchor_position);
@@ -944,7 +944,7 @@ impl WlrLayerApplicationHandler for LoopState {
 
     fn left_resized(&mut self, width: u32, height: u32) {
         if let Some(waveform_window) = self
-            .app_state
+            .windowed_state
             .as_mut()
             .unwrap()
             .left_waveform_window
@@ -955,7 +955,7 @@ impl WlrLayerApplicationHandler for LoopState {
     }
     fn right_resized(&mut self, width: u32, height: u32) {
         if let Some(waveform_window) = self
-            .app_state
+            .windowed_state
             .as_mut()
             .unwrap()
             .right_waveform_window
@@ -966,15 +966,15 @@ impl WlrLayerApplicationHandler for LoopState {
     }
 
     fn render(&mut self) {
-        self.app_state.as_mut().unwrap().render();
+        self.windowed_state.as_mut().unwrap().render();
     }
 }
 
-impl ApplicationHandler for LoopState {
+impl ApplicationHandler for ApplicationState {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.app_state.is_none() {
-            self.app_state = Some(ApplicationState::new(self.process_audio.clone()));
-            self.app_state
+        if self.windowed_state.is_none() {
+            self.windowed_state = Some(WindowedApplicationState::new(self.process_audio.clone()));
+            self.windowed_state
                 .as_mut()
                 .unwrap()
                 .configure_left_wgpu_surface(
@@ -990,7 +990,7 @@ impl ApplicationHandler for LoopState {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
-        if let Some(state) = self.app_state.as_mut() {
+        if let Some(state) = self.windowed_state.as_mut() {
             match event {
                 WindowEvent::Resized(new_size) => {
                     // FIXME: Check the window ID
@@ -1032,7 +1032,7 @@ impl ApplicationHandler for LoopState {
 slint::include_modules!();
 
 enum UiMessage {
-    ApplicationStateCallback(Box<dyn FnOnce(&mut ApplicationState) + Send>),
+    ApplicationStateCallback(Box<dyn FnOnce(&mut WindowedApplicationState) + Send>),
     SetPanelLayout(PanelLayout),
     SetPanelLayer(PanelLayer),
 }
@@ -1041,9 +1041,9 @@ pub fn main() {
     let (ui_msg_tx, ui_msg_rx) = mpsc::channel::<UiMessage>();
 
     std::thread::spawn(move || {
-        let mut loop_state = LoopState::new();
+        let mut app_state = ApplicationState::new();
 
-        let mut layers_even_queue = wlr_layers::WlrLayersEventQueue::new(loop_state, ui_msg_rx);
+        let mut layers_even_queue = wlr_layers::WlrWaylandEventLoop::new(app_state, ui_msg_rx);
         layers_even_queue.set_panel_layout(PanelLayout::SingleTop);
         layers_even_queue.run_event_loop();
 

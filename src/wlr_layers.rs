@@ -25,9 +25,9 @@ use wayland_client::{
     Connection, Proxy, QueueHandle,
 };
 
-use crate::{UiMessage, WgpuSurface};
+use crate::{ApplicationState, UiMessage, WgpuSurface};
 
-impl CompositorHandler for WlrLayersState {
+impl CompositorHandler for WlrWaylandEventHandler {
     fn scale_factor_changed(
         &mut self,
         _conn: &Connection,
@@ -58,7 +58,7 @@ impl CompositorHandler for WlrLayersState {
         while let Ok(message) = self.ui_msg_rx.try_recv() {
             match message {
                 UiMessage::ApplicationStateCallback(closure) => {
-                    closure(self.loop_state.app_state.as_mut().unwrap())
+                    closure(self.app_state.windowed_state.as_mut().unwrap())
                 }
                 UiMessage::SetPanelLayout(layout) => {
                     self.set_panel_layout(layout, conn, qh);
@@ -66,7 +66,7 @@ impl CompositorHandler for WlrLayersState {
                 UiMessage::SetPanelLayer(_) => {}
             }
         }
-        self.loop_state.render();
+        self.app_state.render();
     }
 
     fn surface_enter(
@@ -90,7 +90,7 @@ impl CompositorHandler for WlrLayersState {
     }
 }
 
-impl OutputHandler for WlrLayersState {
+impl OutputHandler for WlrWaylandEventHandler {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
     }
@@ -123,7 +123,7 @@ impl OutputHandler for WlrLayersState {
     }
 }
 
-impl LayerShellHandler for WlrLayersState {
+impl LayerShellHandler for WlrWaylandEventHandler {
     fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {
         println!("Layer closed");
         // FIXME: handle instead
@@ -141,31 +141,31 @@ impl LayerShellHandler for WlrLayersState {
         let (new_width, new_height) = configure.new_size;
         println!("Configure: {new_width}x{new_height}");
 
-        if !self.loop_state_initialized {
-            self.loop_state_initialized = true;
-            self.loop_state.initialize_app_state();
+        if !self.app_state_initialized {
+            self.app_state_initialized = true;
+            self.app_state.initialize_app_state();
         }
         if let Some((wgpu_surface, anchor_position)) = self.left_wgpu_holder.take() {
-            self.loop_state
+            self.app_state
                 .configure_left_wgpu_surface(wgpu_surface, anchor_position);
         }
         if let Some((wgpu_surface, anchor_position)) = self.right_wgpu_holder.take() {
-            self.loop_state
+            self.app_state
                 .configure_right_wgpu_surface(wgpu_surface, anchor_position);
         }
 
         if Some(layer) == self.left_layer.as_ref() {
-            self.loop_state.left_resized(new_width, new_height);
+            self.app_state.left_resized(new_width, new_height);
         }
         if Some(layer) == self.right_layer.as_ref() {
-            self.loop_state.right_resized(new_width, new_height);
+            self.app_state.right_resized(new_width, new_height);
         }
 
         if Some(layer) == self.right_layer.as_ref() || self.right_layer.is_none() {
             // Render once to let wgpu finalize the surface initialization.
             // FIXME: I get a "layer_surface has never been configured" error from wlroots
             // if I do this after the first layer, but putting this here seems to work.
-            self.loop_state.render();
+            self.app_state.render();
         }
     }
 }
@@ -183,7 +183,7 @@ pub struct WlrWgpuSurface {
 impl WlrWgpuSurface {
     fn new(
         conn: Connection,
-        qh: QueueHandle<WlrLayersState>,
+        qh: QueueHandle<WlrWaylandEventHandler>,
         layer: LayerSurface,
     ) -> WlrWgpuSurface {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -254,7 +254,7 @@ impl WgpuSurface for WlrWgpuSurface {
     }
 }
 
-pub struct WlrLayersState {
+pub struct WlrWaylandEventHandler {
     ui_msg_rx: Receiver<UiMessage>,
     compositor: CompositorState,
     layer_shell: LayerShell,
@@ -266,11 +266,11 @@ pub struct WlrLayersState {
     right_layer: Option<LayerSurface>,
     left_wgpu_holder: Option<(Box<WlrWgpuSurface>, PanelAnchorPosition)>,
     right_wgpu_holder: Option<(Box<WlrWgpuSurface>, PanelAnchorPosition)>,
-    loop_state: crate::LoopState,
-    loop_state_initialized: bool,
+    app_state: ApplicationState,
+    app_state_initialized: bool,
 }
 
-impl WlrLayersState {
+impl WlrWaylandEventHandler {
     pub fn set_panel_layout(
         &mut self,
         panel_layout: crate::PanelLayout,
@@ -305,7 +305,7 @@ impl WlrLayersState {
         };
 
         // Already destroy existing WgpuSurfaces
-        if let Some(app_state) = self.loop_state.app_state.as_mut() {
+        if let Some(app_state) = self.app_state.windowed_state.as_mut() {
             app_state.left_waveform_window = None;
             app_state.right_waveform_window = None;
         }
@@ -353,14 +353,14 @@ impl WlrLayersState {
     }
 }
 
-delegate_compositor!(WlrLayersState);
-delegate_output!(WlrLayersState);
+delegate_compositor!(WlrWaylandEventHandler);
+delegate_output!(WlrWaylandEventHandler);
 
-delegate_layer!(WlrLayersState);
+delegate_layer!(WlrWaylandEventHandler);
 
-delegate_registry!(WlrLayersState);
+delegate_registry!(WlrWaylandEventHandler);
 
-impl ProvidesRegistryState for WlrLayersState {
+impl ProvidesRegistryState for WlrWaylandEventHandler {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry_state
     }
@@ -391,19 +391,19 @@ pub trait WlrLayerApplicationHandler {
     fn render(&mut self);
 }
 
-pub struct WlrLayersEventQueue {
+pub struct WlrWaylandEventLoop {
     conn: Connection,
-    event_queue: EventQueue<WlrLayersState>,
-    pub state: WlrLayersState,
+    event_queue: EventQueue<WlrWaylandEventHandler>,
+    pub state: WlrWaylandEventHandler,
 }
 
-impl WlrLayersEventQueue {
-    pub fn new(app_state: crate::LoopState, ui_msg_rx: Receiver<UiMessage>) -> WlrLayersEventQueue {
+impl WlrWaylandEventLoop {
+    pub fn new(app_state: ApplicationState, ui_msg_rx: Receiver<UiMessage>) -> WlrWaylandEventLoop {
         // All Wayland apps start by connecting the compositor (server).
         let conn = Connection::connect_to_env().unwrap();
 
         // Enumerate the list of globals to get the protocols the server implements.
-        let (globals, event_queue) = registry_queue_init::<WlrLayersState>(&conn).unwrap();
+        let (globals, event_queue) = registry_queue_init::<WlrWaylandEventHandler>(&conn).unwrap();
         let qh = event_queue.handle();
 
         // The compositor (not to be confused with the server which is commonly called the compositor) allows
@@ -416,7 +416,7 @@ impl WlrLayersEventQueue {
         let registry_state = RegistryState::new(&globals);
         let output_state = OutputState::new(&globals, &qh);
 
-        let state = WlrLayersState {
+        let state = WlrWaylandEventHandler {
             ui_msg_rx,
             compositor,
             layer_shell,
@@ -427,11 +427,11 @@ impl WlrLayersEventQueue {
             right_layer: None,
             left_wgpu_holder: None,
             right_wgpu_holder: None,
-            loop_state: app_state,
-            loop_state_initialized: false,
+            app_state,
+            app_state_initialized: false,
         };
 
-        WlrLayersEventQueue {
+        WlrWaylandEventLoop {
             conn,
             event_queue,
             state,

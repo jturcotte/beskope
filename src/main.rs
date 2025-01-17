@@ -1033,18 +1033,23 @@ slint::include_modules!();
 
 enum UiMessage {
     ApplicationStateCallback(Box<dyn FnOnce(&mut WindowedApplicationState) + Send>),
-    SetPanelLayout(PanelLayout),
-    SetPanelLayer(PanelLayer),
+    SetPanelLayout(PanelConfiguration),
+    SetPanelLayer(PanelConfiguration),
+    SetPanelWidth(PanelConfiguration),
+    SetPanelExclusiveRatio(PanelConfiguration),
 }
 
 pub fn main() {
     let (ui_msg_tx, ui_msg_rx) = mpsc::channel::<UiMessage>();
+    let window = ConfigurationWindow::new().unwrap();
+    let configuration = Configuration::get(&window);
+    let panel_configuration = configuration.get_panel();
 
     std::thread::spawn(move || {
         let mut app_state = ApplicationState::new();
 
-        let mut layers_even_queue = wlr_layers::WlrWaylandEventLoop::new(app_state, ui_msg_rx);
-        layers_even_queue.set_panel_layout(PanelLayout::SingleTop);
+        let mut layers_even_queue =
+            wlr_layers::WlrWaylandEventLoop::new(app_state, ui_msg_rx, panel_configuration);
         layers_even_queue.run_event_loop();
 
         // // This won't work on macOS, but by then let's hope we can render using wgpu directly in a Slint window.
@@ -1052,10 +1057,6 @@ pub fn main() {
         // FIXME: Handle ui_msg_rx
         // event_loop.run_app(&mut loop_state).unwrap();
     });
-
-    let window = ConfigurationWindow::new().unwrap();
-    let configuration = Configuration::get(&window);
-    let panel_configuration = PanelConfiguration::get(&window);
 
     configuration.on_changed({
         let ui_msg_tx = ui_msg_tx.clone();
@@ -1082,10 +1083,30 @@ pub fn main() {
         }
     });
 
-    panel_configuration.on_layout_changed({
+    configuration.on_panel_layout_changed({
         let ui_msg_tx = ui_msg_tx.clone();
-        move |layout| {
-            ui_msg_tx.send(UiMessage::SetPanelLayout(layout)).unwrap();
+        move |config| {
+            ui_msg_tx.send(UiMessage::SetPanelLayout(config)).unwrap();
+        }
+    });
+    configuration.on_panel_layer_changed({
+        let ui_msg_tx = ui_msg_tx.clone();
+        move |config| {
+            ui_msg_tx.send(UiMessage::SetPanelLayer(config)).unwrap();
+        }
+    });
+    configuration.on_panel_width_changed({
+        let ui_msg_tx = ui_msg_tx.clone();
+        move |config| {
+            ui_msg_tx.send(UiMessage::SetPanelWidth(config)).unwrap();
+        }
+    });
+    configuration.on_panel_exclusive_ratio_changed({
+        let ui_msg_tx = ui_msg_tx.clone();
+        move |config| {
+            ui_msg_tx
+                .send(UiMessage::SetPanelExclusiveRatio(config))
+                .unwrap();
         }
     });
 

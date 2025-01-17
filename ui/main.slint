@@ -12,26 +12,39 @@ enum PanelLayout {
 }
 
 enum PanelLayer {
+    Overlay,
+    Top,
+    Bottom,
     Background,
-    AboveWindows,
-    AboveFullscreenWindows,
+}
+
+struct PanelConfiguration {
+    channels: RenderChannels,
+    layout: PanelLayout,
+    layer: PanelLayer,
+    width: int,
+    exclusive_ratio: float,
 }
 
 export global Configuration {
     callback changed();
 
+    callback panel_channels_changed(PanelConfiguration);
+    callback panel_layout_changed(PanelConfiguration);
+    callback panel_layer_changed(PanelConfiguration);
+    callback panel_width_changed(PanelConfiguration);
+    callback panel_exclusive_ratio_changed(PanelConfiguration);
+
     in-out property<color> fill_color: Colors.rgba(32, 32, 32, 0.8);
     in-out property<color> stroke_color: Colors.rgba(205, 205, 205, 0.8);
-}
 
-export global PanelConfiguration {
-    callback channels_changed(RenderChannels);
-    callback layout_changed(PanelLayout);
-    callback layer_changed(PanelLayer);
-
-    in-out property<RenderChannels> channels: RenderChannels.Both;
-    in-out property<PanelLayout> layout: PanelLayout.TwoPanels;
-    in-out property<PanelLayer> layer: PanelLayer.AboveWindows;
+    in-out property<PanelConfiguration> panel: {
+        channels: RenderChannels.Both,
+        layout: PanelLayout.TwoPanels,
+        layer: PanelLayer.Top,
+        width: 80,
+        exclusive_ratio: 1.0,
+    };
 }
 
 component LabeledSlider {
@@ -39,6 +52,8 @@ component LabeledSlider {
     in property<string> label <=> text.text;
     in property<float> minimum <=> slider.minimum;
     in property<float> maximum <=> slider.maximum;
+    in property<float> precision: 100;
+    in property<string> unit: "";
     callback changed(float);
     HorizontalBox {
         text := Text {
@@ -49,12 +64,13 @@ component LabeledSlider {
         }
         Text {
             width: 10%;
-            text: round(value*100)/100;
+            text: round(value*precision)/precision + root.unit;
             vertical-alignment: TextVerticalAlignment.center;
             horizontal-alignment: TextHorizontalAlignment.left;
         }
     }
 }
+
 
 component HsvColorSelection inherits GroupBox {
     in-out property<float> h <=> h_slider.value;
@@ -111,14 +127,14 @@ export component ConfigurationWindow inherits Window {
                             "Both left and right",
                             "Only left",
                         ];
-                        current-index: PanelConfiguration.channels == RenderChannels.Both ? 0 : 1;
+                        current-index: Configuration.panel.channels == RenderChannels.Both ? 0 : 1;
                         selected(current-value) => {
                             if (self.current-index == 0) {
-                                PanelConfiguration.channels = RenderChannels.Both;
+                                Configuration.panel.channels = RenderChannels.Both;
                             } else {
-                                PanelConfiguration.channels = RenderChannels.Left;
+                                Configuration.panel.channels = RenderChannels.Left;
                             }
-                            PanelConfiguration.channels_changed(PanelConfiguration.channels);
+                            Configuration.panel_channels_changed(Configuration.panel);
                         }
                     }
                 }
@@ -133,9 +149,9 @@ export component ConfigurationWindow inherits Window {
                             "Single panel at the top",
                             "Single panel at the bottom",
                         ];
-                        current-index: PanelConfiguration.layout == PanelLayout.TwoPanels
+                        current-index: Configuration.panel.layout == PanelLayout.TwoPanels
                             ? 0 
-                            : PanelConfiguration.layout == PanelLayout.SingleTop
+                            : Configuration.panel.layout == PanelLayout.SingleTop
                                 ? 1
                                 : 2;
                         selected(current-value) => {
@@ -147,13 +163,13 @@ export component ConfigurationWindow inherits Window {
                             }
 
                             if (self.current-index == 0) {
-                                PanelConfiguration.layout = PanelLayout.TwoPanels;
+                                Configuration.panel.layout = PanelLayout.TwoPanels;
                             } else if (self.current-index == 1) {
-                                PanelConfiguration.layout = PanelLayout.SingleTop;
+                                Configuration.panel.layout = PanelLayout.SingleTop;
                             } else {
-                                PanelConfiguration.layout = PanelLayout.SingleBottom;
+                                Configuration.panel.layout = PanelLayout.SingleBottom;
                             }
-                            PanelConfiguration.layout_changed(PanelConfiguration.layout);
+                            Configuration.panel_layout_changed(Configuration.panel);
                         }
                     }
                 }
@@ -164,24 +180,57 @@ export component ConfigurationWindow inherits Window {
                     }
                     layer_cb := ComboBox {
                         model: [
+                            "Overlay",
+                            "Top",
+                            "Bottom",
                             "Background",
-                            "Above windows",
-                            "Above full-screen windows",
                         ];
-                        current-index: PanelConfiguration.layer == PanelLayer.Background
+                        current-index: Configuration.panel.layer == PanelLayer.Overlay
                             ? 0
-                            : PanelConfiguration.layer == PanelLayer.AboveWindows
+                            : Configuration.panel.layer == PanelLayer.Top
                                 ? 1
-                                : 2;
+                                : Configuration.panel.layer == PanelLayer.Bottom
+                                    ? 2
+                                    : 3;
                         selected(current-value) => {
                             if (self.current-index == 0) {
-                                PanelConfiguration.layer = PanelLayer.Background;
+                                Configuration.panel.layer = PanelLayer.Overlay;
                             } else if (self.current-index == 1) {
-                                PanelConfiguration.layer = PanelLayer.AboveWindows;
+                                Configuration.panel.layer = PanelLayer.Top;
+                            } else if (self.current-index == 2) {
+                                Configuration.panel.layer = PanelLayer.Bottom;
                             } else {
-                                PanelConfiguration.layer = PanelLayer.AboveFullscreenWindows;
+                                Configuration.panel.layer = PanelLayer.Background;
                             }
-                            PanelConfiguration.layer_changed(PanelConfiguration.layer);
+                            Configuration.panel_layer_changed(Configuration.panel);
+                        }
+                    }
+                }
+                Row {
+                    Text { text: "Height/Width"; }
+                    LabeledSlider {
+                        value: Configuration.panel.width;
+                        minimum: 1;
+                        maximum: 800;
+                        precision: 1;
+                        unit: " px";
+                        changed => {
+                            Configuration.panel.width = self.value;
+                            Configuration.panel_width_changed(Configuration.panel);
+                        }
+                    }
+                }
+                Row {
+                    Text { text: "Height/Width Exclusive"; }
+                    LabeledSlider {
+                        value: Configuration.panel.exclusive_ratio * 100;
+                        minimum: 0;
+                        maximum: 100;
+                        precision: 1;
+                        unit: " %";
+                        changed => {
+                            Configuration.panel.exclusive_ratio = self.value / 100;
+                            Configuration.panel_exclusive_ratio_changed(Configuration.panel);
                         }
                     }
                 }

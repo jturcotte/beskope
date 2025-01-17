@@ -25,7 +25,7 @@ use wayland_client::{
     Connection, Proxy, QueueHandle,
 };
 
-use crate::{ApplicationState, UiMessage, WgpuSurface};
+use crate::{ApplicationState, PanelConfiguration, PanelLayer, UiMessage, WgpuSurface};
 
 impl CompositorHandler for WlrWaylandEventHandler {
     fn scale_factor_changed(
@@ -60,10 +60,22 @@ impl CompositorHandler for WlrWaylandEventHandler {
                 UiMessage::ApplicationStateCallback(closure) => {
                     closure(self.app_state.windowed_state.as_mut().unwrap())
                 }
-                UiMessage::SetPanelLayout(layout) => {
-                    self.set_panel_layout(layout, conn, qh);
+                UiMessage::SetPanelLayout(config) => {
+                    self.panel_configuration = config.clone();
+                    self.set_panel_layout(config.layout, conn, qh);
                 }
-                UiMessage::SetPanelLayer(_) => {}
+                UiMessage::SetPanelLayer(config) => {
+                    self.panel_configuration = config.clone();
+                    self.set_panel_layer(config.layer)
+                }
+                UiMessage::SetPanelWidth(config) => {
+                    self.panel_configuration = config.clone();
+                    self.set_panel_width(config.width as u32)
+                }
+                UiMessage::SetPanelExclusiveRatio(config) => {
+                    self.panel_configuration = config.clone();
+                    self.set_panel_exclusive_ratio(config.exclusive_ratio)
+                }
             }
         }
         self.app_state.render();
@@ -262,6 +274,7 @@ pub struct WlrWaylandEventHandler {
     output_state: OutputState,
 
     exit: bool,
+    panel_configuration: PanelConfiguration,
     left_layer: Option<LayerSurface>,
     right_layer: Option<LayerSurface>,
     left_wgpu_holder: Option<(Box<WlrWgpuSurface>, PanelAnchorPosition)>,
@@ -351,6 +364,54 @@ impl WlrWaylandEventHandler {
         let qh = qh.clone();
         Box::new(WlrWgpuSurface::new(conn.clone(), qh, layer))
     }
+
+    fn set_panel_width(&mut self, width: u32) {
+        let (width, height) = if self.panel_configuration.layout == crate::PanelLayout::SingleTop
+            || self.panel_configuration.layout == crate::PanelLayout::SingleBottom
+        {
+            (0, width)
+        } else {
+            (width, 0)
+        };
+
+        if let Some(layer) = self.left_layer.as_ref() {
+            layer.set_size(width, height);
+            layer.commit();
+        }
+        if let Some(layer) = self.right_layer.as_ref() {
+            layer.set_size(width, height);
+            layer.commit();
+        }
+    }
+
+    fn set_panel_exclusive_ratio(&mut self, ratio: f32) {
+        if let Some(layer) = self.left_layer.as_ref() {
+            layer.set_exclusive_zone((self.panel_configuration.width as f32 * ratio) as i32);
+            layer.commit();
+        }
+        if let Some(layer) = self.right_layer.as_ref() {
+            layer.set_exclusive_zone((self.panel_configuration.width as f32 * ratio) as i32);
+            layer.commit();
+        }
+    }
+
+    fn set_panel_layer(&mut self, layer: PanelLayer) {
+        let wayland_layer = match layer {
+            PanelLayer::Overlay => Layer::Overlay,
+            PanelLayer::Top => Layer::Top,
+            PanelLayer::Bottom => Layer::Bottom,
+            PanelLayer::Background => Layer::Background,
+        };
+        println!("Setting layer to {:?}", wayland_layer);
+        if let Some(layer) = self.left_layer.as_ref() {
+            layer.set_layer(wayland_layer);
+            layer.commit();
+        }
+        if let Some(layer) = self.right_layer.as_ref() {
+            layer.set_layer(wayland_layer);
+            layer.commit();
+        }
+    }
 }
 
 delegate_compositor!(WlrWaylandEventHandler);
@@ -398,7 +459,11 @@ pub struct WlrWaylandEventLoop {
 }
 
 impl WlrWaylandEventLoop {
-    pub fn new(app_state: ApplicationState, ui_msg_rx: Receiver<UiMessage>) -> WlrWaylandEventLoop {
+    pub fn new(
+        app_state: ApplicationState,
+        ui_msg_rx: Receiver<UiMessage>,
+        panel_configuration: PanelConfiguration,
+    ) -> WlrWaylandEventLoop {
         // All Wayland apps start by connecting the compositor (server).
         let conn = Connection::connect_to_env().unwrap();
 
@@ -416,13 +481,15 @@ impl WlrWaylandEventLoop {
         let registry_state = RegistryState::new(&globals);
         let output_state = OutputState::new(&globals, &qh);
 
-        let state = WlrWaylandEventHandler {
+        let layout = panel_configuration.layout;
+        let mut state = WlrWaylandEventHandler {
             ui_msg_rx,
             compositor,
             layer_shell,
             registry_state,
             output_state,
             exit: false,
+            panel_configuration,
             left_layer: None,
             right_layer: None,
             left_wgpu_holder: None,
@@ -431,16 +498,13 @@ impl WlrWaylandEventLoop {
             app_state_initialized: false,
         };
 
+        state.set_panel_layout(layout, &conn, &qh);
+
         WlrWaylandEventLoop {
             conn,
             event_queue,
             state,
         }
-    }
-
-    pub fn set_panel_layout(&mut self, panel_layout: crate::PanelLayout) {
-        self.state
-            .set_panel_layout(panel_layout, &self.conn, &self.event_queue.handle());
     }
 
     pub fn run_event_loop(&mut self) {

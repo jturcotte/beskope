@@ -1,5 +1,4 @@
 use cgmath::{Matrix4, Rad, SquareMatrix};
-use core::panic;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use num_complex::Complex;
 use ringbuf::storage::Heap;
@@ -9,7 +8,7 @@ use ringbuf::{HeapRb, SharedRb};
 use rustfft::{Fft, FftDirection, FftPlanner};
 use slint::Color;
 use splines::Interpolation;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use std::{borrow::Cow, sync::Arc};
@@ -22,7 +21,7 @@ use winit::{
     event_loop::{ActiveEventLoop, EventLoop},
     window::{Window, WindowId},
 };
-use wlr_layers::{PanelAnchorPosition, WlrLayerApplicationHandler, WlrWaylandEventHandler};
+use wlr_layers::{PanelAnchorPosition, WlrLayerApplicationHandler};
 
 mod wlr_layers;
 
@@ -493,7 +492,6 @@ impl WaveformWindow {
     }
 
     fn reconfigure(&mut self, width: u32, height: u32) {
-        println!("Reconfiguring window to {}x{}", width, height);
         // Reconfigure the surface with the new size
         self.config.width = width.max(1);
         self.config.height = height.max(1);
@@ -1045,68 +1043,79 @@ pub fn main() {
     let configuration = Configuration::get(&window);
     let panel_configuration = configuration.get_panel();
 
-    std::thread::spawn(move || {
-        let mut app_state = ApplicationState::new();
+    let request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>> =
+        Arc::new(Mutex::new(Arc::new(|| {})));
+    std::thread::spawn({
+        let request_redraw_callback = request_redraw_callback.clone();
+        move || {
+            let mut app_state = ApplicationState::new();
 
-        let mut layers_even_queue =
-            wlr_layers::WlrWaylandEventLoop::new(app_state, ui_msg_rx, panel_configuration);
-        layers_even_queue.run_event_loop();
+            let mut layers_even_queue = wlr_layers::WlrWaylandEventLoop::new(
+                app_state,
+                ui_msg_rx,
+                panel_configuration,
+                request_redraw_callback,
+            );
+            layers_even_queue.run_event_loop();
 
-        // // This won't work on macOS, but by then let's hope we can render using wgpu directly in a Slint window.
-        // let event_loop = EventLoop::builder().with_any_thread(true).build().unwrap();
-        // FIXME: Handle ui_msg_rx
-        // event_loop.run_app(&mut loop_state).unwrap();
+            // // This won't work on macOS, but by then let's hope we can render using wgpu directly in a Slint window.
+            // let event_loop = EventLoop::builder().with_any_thread(true).build().unwrap();
+            // FIXME: Handle ui_msg_rx
+            // event_loop.run_app(&mut loop_state).unwrap();
+        }
     });
 
+    let send_ui_msg = {
+        move |msg| {
+            ui_msg_tx.send(msg).unwrap();
+            request_redraw_callback.lock().unwrap()();
+        }
+    };
     configuration.on_changed({
-        let ui_msg_tx = ui_msg_tx.clone();
+        let send = send_ui_msg.clone();
         let window = window.as_weak();
         move || {
             let window = window.upgrade().unwrap();
             let configuration = Configuration::get(&window);
             let fill_color = configuration.get_fill_color();
             let stroke_color = configuration.get_stroke_color();
-            ui_msg_tx
-                .send(UiMessage::ApplicationStateCallback(Box::new(
-                    move |state| {
-                        if let Some(left_waveform_window) = &mut state.left_waveform_window {
-                            left_waveform_window.set_fill_color(fill_color);
-                            left_waveform_window.set_stroke_color(stroke_color);
-                        }
-                        if let Some(right_waveform_window) = &mut state.right_waveform_window {
-                            right_waveform_window.set_fill_color(fill_color);
-                            right_waveform_window.set_stroke_color(stroke_color);
-                        }
-                    },
-                )))
-                .unwrap();
+            send(UiMessage::ApplicationStateCallback(Box::new(
+                move |state| {
+                    if let Some(left_waveform_window) = &mut state.left_waveform_window {
+                        left_waveform_window.set_fill_color(fill_color);
+                        left_waveform_window.set_stroke_color(stroke_color);
+                    }
+                    if let Some(right_waveform_window) = &mut state.right_waveform_window {
+                        right_waveform_window.set_fill_color(fill_color);
+                        right_waveform_window.set_stroke_color(stroke_color);
+                    }
+                },
+            )));
         }
     });
 
     configuration.on_panel_layout_changed({
-        let ui_msg_tx = ui_msg_tx.clone();
+        let send = send_ui_msg.clone();
         move |config| {
-            ui_msg_tx.send(UiMessage::SetPanelLayout(config)).unwrap();
+            send(UiMessage::SetPanelLayout(config));
         }
     });
     configuration.on_panel_layer_changed({
-        let ui_msg_tx = ui_msg_tx.clone();
+        let send = send_ui_msg.clone();
         move |config| {
-            ui_msg_tx.send(UiMessage::SetPanelLayer(config)).unwrap();
+            send(UiMessage::SetPanelLayer(config));
         }
     });
     configuration.on_panel_width_changed({
-        let ui_msg_tx = ui_msg_tx.clone();
+        let send = send_ui_msg.clone();
         move |config| {
-            ui_msg_tx.send(UiMessage::SetPanelWidth(config)).unwrap();
+            send(UiMessage::SetPanelWidth(config));
         }
     });
     configuration.on_panel_exclusive_ratio_changed({
-        let ui_msg_tx = ui_msg_tx.clone();
+        let send = send_ui_msg.clone();
         move |config| {
-            ui_msg_tx
-                .send(UiMessage::SetPanelExclusiveRatio(config))
-                .unwrap();
+            send(UiMessage::SetPanelExclusiveRatio(config));
         }
     });
 

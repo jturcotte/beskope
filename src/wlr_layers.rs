@@ -4,7 +4,7 @@ use raw_window_handle::{
 use smithay_client_toolkit::compositor::Region;
 use std::ptr::NonNull;
 use std::sync::mpsc::Receiver;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use wayland_client::EventQueue;
 
 use smithay_client_toolkit::shell::WaylandSurface;
@@ -348,11 +348,14 @@ impl WlrWaylandEventHandler {
         layer.set_anchor(anchor);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         if !anchor.intersects(Anchor::BOTTOM) || !anchor.intersects(Anchor::TOP) {
-            layer.set_size(0, 80);
+            layer.set_size(0, self.panel_configuration.width as u32);
         } else {
-            layer.set_size(80, 0);
+            layer.set_size(self.panel_configuration.width as u32, 0);
         }
-        layer.set_exclusive_zone(80 / 2);
+        layer.set_exclusive_zone(
+            (self.panel_configuration.width as f32 * self.panel_configuration.exclusive_ratio)
+                as i32,
+        );
 
         // In order for the layer surface to be mapped, we need to perform an initial commit with no attached\
         // buffer. For more info, see WaylandSurface::commit
@@ -382,6 +385,8 @@ impl WlrWaylandEventHandler {
             layer.set_size(width, height);
             layer.commit();
         }
+        // Apply the ratio relatively to the new width
+        self.set_panel_exclusive_ratio(self.panel_configuration.exclusive_ratio);
     }
 
     fn set_panel_exclusive_ratio(&mut self, ratio: f32) {
@@ -453,7 +458,6 @@ pub trait WlrLayerApplicationHandler {
 }
 
 pub struct WlrWaylandEventLoop {
-    conn: Connection,
     event_queue: EventQueue<WlrWaylandEventHandler>,
     pub state: WlrWaylandEventHandler,
 }
@@ -463,6 +467,7 @@ impl WlrWaylandEventLoop {
         app_state: ApplicationState,
         ui_msg_rx: Receiver<UiMessage>,
         panel_configuration: PanelConfiguration,
+        request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
     ) -> WlrWaylandEventLoop {
         // All Wayland apps start by connecting the compositor (server).
         let conn = Connection::connect_to_env().unwrap();
@@ -500,11 +505,25 @@ impl WlrWaylandEventLoop {
 
         state.set_panel_layout(layout, &conn, &qh);
 
-        WlrWaylandEventLoop {
-            conn,
-            event_queue,
-            state,
-        }
+        *request_redraw_callback.lock().unwrap() = {
+            let left_layer = state.left_layer.clone();
+            let right_layer = state.right_layer.clone();
+            Arc::new(move || {
+                if let Some(layer) = &left_layer {
+                    let surface = layer.wl_surface();
+                    surface.frame(&qh, surface.clone());
+                    surface.commit();
+                }
+                if let Some(layer) = &right_layer {
+                    let surface = layer.wl_surface();
+                    surface.frame(&qh, surface.clone());
+                    surface.commit();
+                }
+                conn.flush().unwrap();
+            })
+        };
+
+        WlrWaylandEventLoop { event_queue, state }
     }
 
     pub fn run_event_loop(&mut self) {

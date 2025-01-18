@@ -689,13 +689,15 @@ struct ApplicationState {
     // the even loop starts running.
     windowed_state: Option<WindowedApplicationState>,
     process_audio: Arc<Mutex<bool>>,
+    request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl ApplicationState {
-    fn new() -> ApplicationState {
+    fn new(request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>) -> ApplicationState {
         ApplicationState {
             windowed_state: None,
             process_audio: Arc::new(Mutex::new(true)),
+            request_redraw_callback,
         }
     }
 
@@ -711,8 +713,6 @@ impl ApplicationState {
 struct WindowedApplicationState {
     left_waveform_window: Option<WaveformWindow>,
     right_waveform_window: Option<WaveformWindow>,
-    left_request_redraw: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
-    right_request_redraw: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
     audio_input_ringbuf_cons: Caching<Arc<SharedRb<Heap<f32>>>, false, true>,
     _stream: Option<cpal::Stream>,
     last_fps_dump_time: Instant,
@@ -749,22 +749,12 @@ impl Vertex {
 }
 
 impl WindowedApplicationState {
-    fn new(process_audio: Arc<Mutex<bool>>) -> WindowedApplicationState {
+    fn new(
+        process_audio: Arc<Mutex<bool>>,
+        request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
+    ) -> WindowedApplicationState {
         let (mut audio_input_ringbuf_prod, audio_input_ringbuf_cons) =
             HeapRb::<f32>::new(44100 * NUM_CHANNELS).split();
-
-        let left_request_redraw: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>> =
-            Arc::new(Mutex::new(Arc::new(|| {})));
-        let right_request_redraw: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>> =
-            Arc::new(Mutex::new(Arc::new(|| {})));
-        let request_redraw = {
-            let left_request_redraw = left_request_redraw.clone();
-            let right_request_redraw = right_request_redraw.clone();
-            move || {
-                left_request_redraw.lock().unwrap()();
-                right_request_redraw.lock().unwrap()();
-            }
-        };
 
         let arc_process_audio = process_audio.clone();
 
@@ -800,7 +790,8 @@ impl WindowedApplicationState {
                         if process_audio {
                             audio_input_ringbuf_prod.push_slice(data);
 
-                            request_redraw();
+                            request_redraw_callback.lock().unwrap()();
+                            // request_redraw();
                         }
                     },
                     move |err| {
@@ -820,8 +811,6 @@ impl WindowedApplicationState {
         WindowedApplicationState {
             left_waveform_window: None,
             right_waveform_window: None,
-            left_request_redraw,
-            right_request_redraw,
             audio_input_ringbuf_cons,
             _stream: stream,
             last_fps_dump_time: Instant::now(),
@@ -856,11 +845,6 @@ impl WindowedApplicationState {
         anchor_position: PanelAnchorPosition,
     ) {
         let waveform_window = Self::create_waveform_window(wgpu_surface, anchor_position);
-
-        *self.left_request_redraw.lock().unwrap() = waveform_window
-            .wgpu_surface
-            .request_redraw_callback()
-            .clone();
         self.left_waveform_window = Some(waveform_window);
     }
 
@@ -870,11 +854,6 @@ impl WindowedApplicationState {
         anchor_position: PanelAnchorPosition,
     ) {
         let waveform_window = Self::create_waveform_window(wgpu_surface, anchor_position);
-
-        *self.right_request_redraw.lock().unwrap() = waveform_window
-            .wgpu_surface
-            .request_redraw_callback()
-            .clone();
         self.right_waveform_window = Some(waveform_window);
     }
 
@@ -915,7 +894,10 @@ impl WindowedApplicationState {
 
 impl WlrLayerApplicationHandler for ApplicationState {
     fn initialize_app_state(&mut self) {
-        self.windowed_state = Some(WindowedApplicationState::new(self.process_audio.clone()));
+        self.windowed_state = Some(WindowedApplicationState::new(
+            self.process_audio.clone(),
+            self.request_redraw_callback.clone(),
+        ));
     }
 
     fn configure_left_wgpu_surface(
@@ -971,7 +953,10 @@ impl WlrLayerApplicationHandler for ApplicationState {
 impl ApplicationHandler for ApplicationState {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.windowed_state.is_none() {
-            self.windowed_state = Some(WindowedApplicationState::new(self.process_audio.clone()));
+            self.windowed_state = Some(WindowedApplicationState::new(
+                self.process_audio.clone(),
+                self.request_redraw_callback.clone(),
+            ));
             self.windowed_state
                 .as_mut()
                 .unwrap()
@@ -1048,7 +1033,7 @@ pub fn main() {
     std::thread::spawn({
         let request_redraw_callback = request_redraw_callback.clone();
         move || {
-            let mut app_state = ApplicationState::new();
+            let mut app_state = ApplicationState::new(request_redraw_callback.clone());
 
             let mut layers_even_queue = wlr_layers::WlrWaylandEventLoop::new(
                 app_state,

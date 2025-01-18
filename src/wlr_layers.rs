@@ -236,9 +236,8 @@ impl WlrWgpuSurface {
             surface,
             queue: Arc::new(queue),
             request_redraw_callback: {
-                let layer = layer.clone();
+                let surface = layer.wl_surface().clone();
                 Arc::new(move || {
-                    let surface = layer.wl_surface();
                     surface.frame(&qh, surface.clone());
                     surface.commit();
                 })
@@ -275,6 +274,7 @@ pub struct WlrWaylandEventHandler {
 
     exit: bool,
     panel_configuration: PanelConfiguration,
+    request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
     left_layer: Option<LayerSurface>,
     right_layer: Option<LayerSurface>,
     left_wgpu_holder: Option<(Box<WlrWgpuSurface>, PanelAnchorPosition)>,
@@ -326,6 +326,8 @@ impl WlrWaylandEventHandler {
         self.right_layer = right_wgpu_and_anchor.as_ref().map(|s| s.0.layer.clone());
         self.left_wgpu_holder = left_wgpu_and_anchor;
         self.right_wgpu_holder = right_wgpu_and_anchor;
+
+        self.update_request_redraw_callback(qh.clone());
     }
 
     fn create_surface(
@@ -417,6 +419,24 @@ impl WlrWaylandEventHandler {
             layer.commit();
         }
     }
+
+    fn update_request_redraw_callback(&mut self, qh: QueueHandle<Self>) {
+        *self.request_redraw_callback.lock().unwrap() = {
+            let left_surface = self.left_layer.as_ref().map(|l| l.wl_surface().clone());
+            let right_surface = self.right_layer.as_ref().map(|l| l.wl_surface().clone());
+            Arc::new(move || {
+                if let Some(surface) = &left_surface {
+                    surface.frame(&qh, surface.clone());
+                    surface.commit();
+                }
+                if let Some(surface) = &right_surface {
+                    surface.frame(&qh, surface.clone());
+                    surface.commit();
+                }
+                // conn.flush().unwrap();
+            })
+        };
+    }
 }
 
 delegate_compositor!(WlrWaylandEventHandler);
@@ -495,6 +515,7 @@ impl WlrWaylandEventLoop {
             output_state,
             exit: false,
             panel_configuration,
+            request_redraw_callback,
             left_layer: None,
             right_layer: None,
             left_wgpu_holder: None,
@@ -504,24 +525,7 @@ impl WlrWaylandEventLoop {
         };
 
         state.set_panel_layout(layout, &conn, &qh);
-
-        *request_redraw_callback.lock().unwrap() = {
-            let left_layer = state.left_layer.clone();
-            let right_layer = state.right_layer.clone();
-            Arc::new(move || {
-                if let Some(layer) = &left_layer {
-                    let surface = layer.wl_surface();
-                    surface.frame(&qh, surface.clone());
-                    surface.commit();
-                }
-                if let Some(layer) = &right_layer {
-                    let surface = layer.wl_surface();
-                    surface.frame(&qh, surface.clone());
-                    surface.commit();
-                }
-                conn.flush().unwrap();
-            })
-        };
+        state.update_request_redraw_callback(qh);
 
         WlrWaylandEventLoop { event_queue, state }
     }

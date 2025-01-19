@@ -124,7 +124,7 @@ struct YValue {
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct WaveformConfig {
+struct WaveformConfigUniform {
     fill_color: [f32; 4],
     stroke_color: [f32; 4],
 }
@@ -145,7 +145,7 @@ struct WaveformWindow {
     audio_sample_skip: usize,
     fft_input_ringbuf: HeapRb<f32>,
     y_value_write_offset: usize,
-    waveform_config: WaveformConfig,
+    waveform_config: WaveformConfigUniform,
     waveform_config_dirty: bool,
 }
 
@@ -280,7 +280,7 @@ impl WaveformWindow {
             wgpu.device()
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("Waveform Config Buffer"),
-                    contents: bytemuck::cast_slice(&[WaveformConfig {
+                    contents: bytemuck::cast_slice(&[WaveformConfigUniform {
                         fill_color: [1.0, 1.0, 1.0, 1.0],
                         stroke_color: [1.0, 1.0, 1.0, 1.0],
                     }]),
@@ -464,7 +464,7 @@ impl WaveformWindow {
             audio_sample_skip,
             fft_input_ringbuf: HeapRb::<f32>::new(FFT_SIZE),
             y_value_write_offset: 0,
-            waveform_config: WaveformConfig {
+            waveform_config: WaveformConfigUniform {
                 fill_color: [1.0, 1.0, 1.0, 1.0],
                 stroke_color: [1.0, 1.0, 1.0, 1.0],
             },
@@ -1032,7 +1032,7 @@ pub fn main() {
     let (ui_msg_tx, ui_msg_rx) = mpsc::channel::<UiMessage>();
     let window = ConfigurationWindow::new().unwrap();
     let configuration = Configuration::get(&window);
-    let panel_configuration = configuration.get_panel();
+    let panel_config = configuration.get_panel();
 
     let request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>> =
         Arc::new(Mutex::new(Arc::new(|| {})));
@@ -1044,7 +1044,7 @@ pub fn main() {
             let mut layers_even_queue = wlr_layers::WlrWaylandEventLoop::new(
                 app_state,
                 ui_msg_rx,
-                panel_configuration,
+                panel_config,
                 request_redraw_callback,
             );
             layers_even_queue.run_event_loop();
@@ -1062,14 +1062,14 @@ pub fn main() {
             request_redraw_callback.lock().unwrap()();
         }
     };
-    configuration.on_changed({
+    configuration.on_waveform_config_changed({
         let send = send_ui_msg.clone();
         let window = window.as_weak();
         move || {
             let window = window.upgrade().unwrap();
             let configuration = Configuration::get(&window);
-            let fill_color = configuration.get_fill_color();
-            let stroke_color = configuration.get_stroke_color();
+            let fill_color = configuration.get_waveform().fill_color;
+            let stroke_color = configuration.get_waveform().stroke_color;
             send(UiMessage::ApplicationStateCallback(Box::new(
                 move |state| {
                     if let Some(left_waveform_window) = &mut state.left_waveform_window {
@@ -1127,7 +1127,7 @@ pub fn main() {
     });
 
     // Apply the initial configuration from the UI
-    configuration.invoke_changed();
+    configuration.invoke_waveform_config_changed();
 
     window.run().unwrap();
 }

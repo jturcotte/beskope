@@ -18,7 +18,7 @@ enum PanelLayer {
     Background,
 }
 
-struct PanelConfiguration {
+struct PanelConfig {
     channels: RenderChannels,
     layout: PanelLayout,
     layer: PanelLayer,
@@ -26,19 +26,26 @@ struct PanelConfiguration {
     exclusive_ratio: float,
 }
 
+struct WaveformConfig {
+    fill_color: color,
+    stroke_color: color,
+}
+
 export global Configuration {
-    callback changed();
+    callback waveform_config_changed();
 
-    callback panel_channels_changed(PanelConfiguration);
-    callback panel_layout_changed(PanelConfiguration);
-    callback panel_layer_changed(PanelConfiguration);
-    callback panel_width_changed(PanelConfiguration);
-    callback panel_exclusive_ratio_changed(PanelConfiguration);
+    callback panel_channels_changed(PanelConfig);
+    callback panel_layout_changed(PanelConfig);
+    callback panel_layer_changed(PanelConfig);
+    callback panel_width_changed(PanelConfig);
+    callback panel_exclusive_ratio_changed(PanelConfig);
 
-    in-out property<color> fill_color: Colors.rgba(32, 32, 32, 0.8);
-    in-out property<color> stroke_color: Colors.rgba(205, 205, 205, 0.8);
+    in-out property<WaveformConfig> waveform: {
+        fill_color: Colors.rgba(32, 32, 32, 0.8),
+        stroke_color: Colors.rgba(205, 205, 205, 0.8),
+    };
 
-    in-out property<PanelConfiguration> panel: {
+    in-out property<PanelConfig> panel: {
         channels: RenderChannels.Both,
         layout: PanelLayout.TwoPanels,
         layer: PanelLayer.Top,
@@ -103,10 +110,10 @@ component HsvColorSelection inherits GroupBox {
 }
 
 export component ConfigurationWindow inherits Window {
-    function update_configuration() {
-        Configuration.fill_color = Colors.hsv(fill_color.h, fill_color.s, fill_color.v, fill_color.a);
-        Configuration.stroke_color = Colors.hsv(stroke_color.h, stroke_color.s, stroke_color.v, stroke_color.a);
-        Configuration.changed();
+    function update_waveform_config() {
+        Configuration.waveform.fill_color = Colors.hsv(fill_color.h, fill_color.s, fill_color.v, fill_color.a);
+        Configuration.waveform.stroke_color = Colors.hsv(stroke_color.h, stroke_color.s, stroke_color.v, stroke_color.a);
+        Configuration.waveform_config_changed();
     }
 
     preferred-width: 800px;
@@ -241,20 +248,20 @@ export component ConfigurationWindow inherits Window {
             title: "Color";
             VerticalBox {
                 fill_color := HsvColorSelection {
-                    changed => { update_configuration(); }
+                    changed => { update_waveform_config(); }
                     title: "Fill";
-                    h: Configuration.fill_color.to_hsv().hue;
-                    s: Configuration.fill_color.to_hsv().saturation;
-                    v: Configuration.fill_color.to_hsv().value;
-                    a: Configuration.fill_color.to_hsv().alpha;
+                    h: Configuration.waveform.fill_color.to_hsv().hue;
+                    s: Configuration.waveform.fill_color.to_hsv().saturation;
+                    v: Configuration.waveform.fill_color.to_hsv().value;
+                    a: Configuration.waveform.fill_color.to_hsv().alpha;
                 }
                 stroke_color := HsvColorSelection {
                     title: "Stroke";
-                    changed => { update_configuration(); }
-                    h: Configuration.stroke_color.to_hsv().hue;
-                    s: Configuration.stroke_color.to_hsv().saturation;
-                    v: Configuration.stroke_color.to_hsv().value;
-                    a: Configuration.stroke_color.to_hsv().alpha;
+                    changed => { update_waveform_config(); }
+                    h: Configuration.waveform.stroke_color.to_hsv().hue;
+                    s: Configuration.waveform.stroke_color.to_hsv().saturation;
+                    v: Configuration.waveform.stroke_color.to_hsv().value;
+                    a: Configuration.waveform.stroke_color.to_hsv().alpha;
                 }
             }
         }

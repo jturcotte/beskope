@@ -25,7 +25,7 @@ use wayland_client::{
     Connection, Proxy, QueueHandle,
 };
 
-use crate::{ApplicationState, PanelConfiguration, PanelLayer, UiMessage, WgpuSurface};
+use crate::{ApplicationState, PanelConfig, PanelLayer, UiMessage, WgpuSurface};
 
 impl CompositorHandler for WlrWaylandEventHandler {
     fn scale_factor_changed(
@@ -258,7 +258,7 @@ pub struct WlrWaylandEventHandler {
     output_state: OutputState,
 
     exit: bool,
-    panel_configuration: PanelConfiguration,
+    panel_config: PanelConfig,
     request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
     left_layer: Option<LayerSurface>,
     right_layer: Option<LayerSurface>,
@@ -335,13 +335,12 @@ impl WlrWaylandEventHandler {
         layer.set_anchor(anchor);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         if !anchor.intersects(Anchor::BOTTOM) || !anchor.intersects(Anchor::TOP) {
-            layer.set_size(0, self.panel_configuration.width as u32);
+            layer.set_size(0, self.panel_config.width as u32);
         } else {
-            layer.set_size(self.panel_configuration.width as u32, 0);
+            layer.set_size(self.panel_config.width as u32, 0);
         }
         layer.set_exclusive_zone(
-            (self.panel_configuration.width as f32 * self.panel_configuration.exclusive_ratio)
-                as i32,
+            (self.panel_config.width as f32 * self.panel_config.exclusive_ratio) as i32,
         );
 
         // In order for the layer surface to be mapped, we need to perform an initial commit with no attached\
@@ -356,8 +355,8 @@ impl WlrWaylandEventHandler {
     }
 
     pub fn set_panel_width(&mut self, width: u32) {
-        let (width, height) = if self.panel_configuration.layout == crate::PanelLayout::SingleTop
-            || self.panel_configuration.layout == crate::PanelLayout::SingleBottom
+        let (width, height) = if self.panel_config.layout == crate::PanelLayout::SingleTop
+            || self.panel_config.layout == crate::PanelLayout::SingleBottom
         {
             (0, width)
         } else {
@@ -373,16 +372,16 @@ impl WlrWaylandEventHandler {
             layer.commit();
         }
         // Apply the ratio relatively to the new width
-        self.set_panel_exclusive_ratio(self.panel_configuration.exclusive_ratio);
+        self.set_panel_exclusive_ratio(self.panel_config.exclusive_ratio);
     }
 
     pub fn set_panel_exclusive_ratio(&mut self, ratio: f32) {
         if let Some(layer) = self.left_layer.as_ref() {
-            layer.set_exclusive_zone((self.panel_configuration.width as f32 * ratio) as i32);
+            layer.set_exclusive_zone((self.panel_config.width as f32 * ratio) as i32);
             layer.commit();
         }
         if let Some(layer) = self.right_layer.as_ref() {
-            layer.set_exclusive_zone((self.panel_configuration.width as f32 * ratio) as i32);
+            layer.set_exclusive_zone((self.panel_config.width as f32 * ratio) as i32);
             layer.commit();
         }
     }
@@ -471,7 +470,7 @@ impl WlrWaylandEventLoop {
     pub fn new(
         app_state: ApplicationState,
         ui_msg_rx: Receiver<UiMessage>,
-        panel_configuration: PanelConfiguration,
+        panel_config: PanelConfig,
         request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
     ) -> WlrWaylandEventLoop {
         // All Wayland apps start by connecting the compositor (server).
@@ -491,7 +490,7 @@ impl WlrWaylandEventLoop {
         let registry_state = RegistryState::new(&globals);
         let output_state = OutputState::new(&globals, &qh);
 
-        let layout = panel_configuration.layout;
+        let layout = panel_config.layout;
         let mut state = WlrWaylandEventHandler {
             ui_msg_rx,
             compositor,
@@ -499,7 +498,7 @@ impl WlrWaylandEventLoop {
             registry_state,
             output_state,
             exit: false,
-            panel_configuration,
+            panel_config,
             request_redraw_callback,
             left_layer: None,
             right_layer: None,

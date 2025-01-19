@@ -840,7 +840,7 @@ impl WindowedApplicationState {
         WaveformWindow::new(wgpu_surface, 0, transform_matrix.into())
     }
 
-    fn configure_left_wgpu_surface(
+    fn configure_primary_wgpu_surface(
         &mut self,
         wgpu_surface: Box<dyn WgpuSurface>,
         anchor_position: PanelAnchorPosition,
@@ -849,7 +849,7 @@ impl WindowedApplicationState {
         self.left_waveform_window = Some(waveform_window);
     }
 
-    fn configure_right_wgpu_surface(
+    fn configure_secondary_wgpu_surface(
         &mut self,
         wgpu_surface: Box<dyn WgpuSurface>,
         anchor_position: PanelAnchorPosition,
@@ -901,7 +901,7 @@ impl WlrLayerApplicationHandler for ApplicationState {
         ));
     }
 
-    fn configure_left_wgpu_surface(
+    fn configure_primary_wgpu_surface(
         &mut self,
         wgpu_surface: Box<dyn WgpuSurface>,
         anchor_position: PanelAnchorPosition,
@@ -909,10 +909,10 @@ impl WlrLayerApplicationHandler for ApplicationState {
         self.windowed_state
             .as_mut()
             .unwrap()
-            .configure_left_wgpu_surface(wgpu_surface, anchor_position);
+            .configure_primary_wgpu_surface(wgpu_surface, anchor_position);
     }
 
-    fn configure_right_wgpu_surface(
+    fn configure_secondary_wgpu_surface(
         &mut self,
         wgpu_surface: Box<dyn WgpuSurface>,
         anchor_position: PanelAnchorPosition,
@@ -920,10 +920,10 @@ impl WlrLayerApplicationHandler for ApplicationState {
         self.windowed_state
             .as_mut()
             .unwrap()
-            .configure_right_wgpu_surface(wgpu_surface, anchor_position);
+            .configure_secondary_wgpu_surface(wgpu_surface, anchor_position);
     }
 
-    fn left_resized(&mut self, width: u32, height: u32) {
+    fn primary_resized(&mut self, width: u32, height: u32) {
         if let Some(waveform_window) = self
             .windowed_state
             .as_mut()
@@ -934,7 +934,7 @@ impl WlrLayerApplicationHandler for ApplicationState {
             waveform_window.reconfigure(width, height);
         }
     }
-    fn right_resized(&mut self, width: u32, height: u32) {
+    fn secondary_resized(&mut self, width: u32, height: u32) {
         if let Some(waveform_window) = self
             .windowed_state
             .as_mut()
@@ -961,7 +961,7 @@ impl ApplicationHandler for ApplicationState {
             self.windowed_state
                 .as_mut()
                 .unwrap()
-                .configure_left_wgpu_surface(
+                .configure_primary_wgpu_surface(
                     Self::create_winit_window_and_wgpu_surface(event_loop),
                     PanelAnchorPosition::Bottom,
                 );

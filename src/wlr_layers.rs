@@ -142,23 +142,23 @@ impl LayerShellHandler for WlrWaylandEventHandler {
             self.app_state_initialized = true;
             self.app_state.initialize_app_state();
         }
-        if let Some((wgpu_surface, anchor_position)) = self.left_wgpu_holder.take() {
+        if let Some((wgpu_surface, anchor_position)) = self.primary_wgpu_holder.take() {
             self.app_state
-                .configure_left_wgpu_surface(wgpu_surface, anchor_position);
+                .configure_primary_wgpu_surface(wgpu_surface, anchor_position);
         }
-        if let Some((wgpu_surface, anchor_position)) = self.right_wgpu_holder.take() {
+        if let Some((wgpu_surface, anchor_position)) = self.secondary_wgpu_holder.take() {
             self.app_state
-                .configure_right_wgpu_surface(wgpu_surface, anchor_position);
+                .configure_secondary_wgpu_surface(wgpu_surface, anchor_position);
         }
 
-        if Some(layer) == self.left_layer.as_ref() {
-            self.app_state.left_resized(new_width, new_height);
+        if Some(layer) == self.primary_layer.as_ref() {
+            self.app_state.primary_resized(new_width, new_height);
         }
-        if Some(layer) == self.right_layer.as_ref() {
-            self.app_state.right_resized(new_width, new_height);
+        if Some(layer) == self.secondary_layer.as_ref() {
+            self.app_state.secondary_resized(new_width, new_height);
         }
 
-        if Some(layer) == self.right_layer.as_ref() || self.right_layer.is_none() {
+        if Some(layer) == self.secondary_layer.as_ref() || self.secondary_layer.is_none() {
             // Render once to let wgpu finalize the surface initialization.
             // FIXME: I get a "layer_surface has never been configured" error from wlroots
             // if I do this after the first layer, but putting this here seems to work.
@@ -260,10 +260,10 @@ pub struct WlrWaylandEventHandler {
     exit: bool,
     panel_config: PanelConfig,
     request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
-    left_layer: Option<LayerSurface>,
-    right_layer: Option<LayerSurface>,
-    left_wgpu_holder: Option<(Box<WlrWgpuSurface>, PanelAnchorPosition)>,
-    right_wgpu_holder: Option<(Box<WlrWgpuSurface>, PanelAnchorPosition)>,
+    primary_layer: Option<LayerSurface>,
+    secondary_layer: Option<LayerSurface>,
+    primary_wgpu_holder: Option<(Box<WlrWgpuSurface>, PanelAnchorPosition)>,
+    secondary_wgpu_holder: Option<(Box<WlrWgpuSurface>, PanelAnchorPosition)>,
     app_state: ApplicationState,
     app_state_initialized: bool,
 }
@@ -275,7 +275,7 @@ impl WlrWaylandEventHandler {
         conn: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        let (left_wgpu_and_anchor, right_wgpu_and_anchor) = match panel_layout {
+        let (primary_wgpu_and_anchor, secondary_wgpu_and_anchor) = match panel_layout {
             crate::PanelLayout::TwoPanels => (
                 Some((
                     self.create_surface(Anchor::TOP | Anchor::LEFT | Anchor::BOTTOM, conn, qh),
@@ -307,10 +307,12 @@ impl WlrWaylandEventHandler {
             app_state.left_waveform_window = None;
             app_state.right_waveform_window = None;
         }
-        self.left_layer = left_wgpu_and_anchor.as_ref().map(|s| s.0.layer.clone());
-        self.right_layer = right_wgpu_and_anchor.as_ref().map(|s| s.0.layer.clone());
-        self.left_wgpu_holder = left_wgpu_and_anchor;
-        self.right_wgpu_holder = right_wgpu_and_anchor;
+        self.primary_layer = primary_wgpu_and_anchor.as_ref().map(|s| s.0.layer.clone());
+        self.secondary_layer = secondary_wgpu_and_anchor
+            .as_ref()
+            .map(|s| s.0.layer.clone());
+        self.primary_wgpu_holder = primary_wgpu_and_anchor;
+        self.secondary_wgpu_holder = secondary_wgpu_and_anchor;
 
         self.update_request_redraw_callback(qh.clone());
     }
@@ -363,11 +365,11 @@ impl WlrWaylandEventHandler {
             (width, 0)
         };
 
-        if let Some(layer) = self.left_layer.as_ref() {
+        if let Some(layer) = self.primary_layer.as_ref() {
             layer.set_size(width, height);
             layer.commit();
         }
-        if let Some(layer) = self.right_layer.as_ref() {
+        if let Some(layer) = self.secondary_layer.as_ref() {
             layer.set_size(width, height);
             layer.commit();
         }
@@ -376,11 +378,11 @@ impl WlrWaylandEventHandler {
     }
 
     pub fn set_panel_exclusive_ratio(&mut self, ratio: f32) {
-        if let Some(layer) = self.left_layer.as_ref() {
+        if let Some(layer) = self.primary_layer.as_ref() {
             layer.set_exclusive_zone((self.panel_config.width as f32 * ratio) as i32);
             layer.commit();
         }
-        if let Some(layer) = self.right_layer.as_ref() {
+        if let Some(layer) = self.secondary_layer.as_ref() {
             layer.set_exclusive_zone((self.panel_config.width as f32 * ratio) as i32);
             layer.commit();
         }
@@ -394,11 +396,11 @@ impl WlrWaylandEventHandler {
             PanelLayer::Background => Layer::Background,
         };
         println!("Setting layer to {:?}", wayland_layer);
-        if let Some(layer) = self.left_layer.as_ref() {
+        if let Some(layer) = self.primary_layer.as_ref() {
             layer.set_layer(wayland_layer);
             layer.commit();
         }
-        if let Some(layer) = self.right_layer.as_ref() {
+        if let Some(layer) = self.secondary_layer.as_ref() {
             layer.set_layer(wayland_layer);
             layer.commit();
         }
@@ -406,14 +408,17 @@ impl WlrWaylandEventHandler {
 
     fn update_request_redraw_callback(&mut self, qh: QueueHandle<Self>) {
         *self.request_redraw_callback.lock().unwrap() = {
-            let left_surface = self.left_layer.as_ref().map(|l| l.wl_surface().clone());
-            let right_surface = self.right_layer.as_ref().map(|l| l.wl_surface().clone());
+            let primary_surface = self.primary_layer.as_ref().map(|l| l.wl_surface().clone());
+            let secondary_surface = self
+                .secondary_layer
+                .as_ref()
+                .map(|l| l.wl_surface().clone());
             Arc::new(move || {
-                if let Some(surface) = &left_surface {
+                if let Some(surface) = &primary_surface {
                     surface.frame(&qh, surface.clone());
                     surface.commit();
                 }
-                if let Some(surface) = &right_surface {
+                if let Some(surface) = &secondary_surface {
                     surface.frame(&qh, surface.clone());
                     surface.commit();
                 }
@@ -446,18 +451,18 @@ pub enum PanelAnchorPosition {
 
 pub trait WlrLayerApplicationHandler {
     fn initialize_app_state(&mut self);
-    fn configure_left_wgpu_surface(
+    fn configure_primary_wgpu_surface(
         &mut self,
         wgpu_surface: Box<dyn WgpuSurface>,
         anchor_position: PanelAnchorPosition,
     );
-    fn configure_right_wgpu_surface(
+    fn configure_secondary_wgpu_surface(
         &mut self,
         wgpu_surface: Box<dyn WgpuSurface>,
         anchor_position: PanelAnchorPosition,
     );
-    fn left_resized(&mut self, width: u32, height: u32);
-    fn right_resized(&mut self, width: u32, height: u32);
+    fn primary_resized(&mut self, width: u32, height: u32);
+    fn secondary_resized(&mut self, width: u32, height: u32);
     fn render(&mut self);
 }
 
@@ -500,10 +505,10 @@ impl WlrWaylandEventLoop {
             exit: false,
             panel_config,
             request_redraw_callback,
-            left_layer: None,
-            right_layer: None,
-            left_wgpu_holder: None,
-            right_wgpu_holder: None,
+            primary_layer: None,
+            secondary_layer: None,
+            primary_wgpu_holder: None,
+            secondary_wgpu_holder: None,
             app_state,
             app_state_initialized: false,
         };

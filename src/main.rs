@@ -12,6 +12,7 @@ use std::sync::mpsc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use std::{borrow::Cow, sync::Arc};
+use wayland_client::{Connection, QueueHandle};
 use wgpu::util::DeviceExt;
 use wgpu::BufferUsages;
 use winit::platform::wayland::EventLoopBuilderExtWayland;
@@ -21,7 +22,7 @@ use winit::{
     event_loop::{ActiveEventLoop, EventLoop},
     window::{Window, WindowId},
 };
-use wlr_layers::{PanelAnchorPosition, WlrLayerApplicationHandler};
+use wlr_layers::{PanelAnchorPosition, WlrLayerApplicationHandler, WlrWaylandEventHandler};
 
 mod wlr_layers;
 
@@ -1016,10 +1017,15 @@ slint::include_modules!();
 
 enum UiMessage {
     ApplicationStateCallback(Box<dyn FnOnce(&mut WindowedApplicationState) + Send>),
-    SetPanelLayout(PanelConfiguration),
-    SetPanelLayer(PanelConfiguration),
-    SetPanelWidth(PanelConfiguration),
-    SetPanelExclusiveRatio(PanelConfiguration),
+    WlrWaylandEventHandlerCallback(
+        Box<
+            dyn FnOnce(
+                    &mut WlrWaylandEventHandler,
+                    &Connection,
+                    &QueueHandle<WlrWaylandEventHandler>,
+                ) + Send,
+        >,
+    ),
 }
 
 pub fn main() {
@@ -1082,25 +1088,41 @@ pub fn main() {
     configuration.on_panel_layout_changed({
         let send = send_ui_msg.clone();
         move |config| {
-            send(UiMessage::SetPanelLayout(config));
+            send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
+                move |handler, conn, qh| {
+                    handler.set_panel_layout(config.layout, conn, qh);
+                },
+            )));
         }
     });
     configuration.on_panel_layer_changed({
         let send = send_ui_msg.clone();
         move |config| {
-            send(UiMessage::SetPanelLayer(config));
+            send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
+                move |handler, _, _| {
+                    handler.set_panel_layer(config.layer);
+                },
+            )));
         }
     });
     configuration.on_panel_width_changed({
         let send = send_ui_msg.clone();
         move |config| {
-            send(UiMessage::SetPanelWidth(config));
+            send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
+                move |handler, _, _| {
+                    handler.set_panel_width(config.width as u32);
+                },
+            )));
         }
     });
     configuration.on_panel_exclusive_ratio_changed({
         let send = send_ui_msg.clone();
         move |config| {
-            send(UiMessage::SetPanelExclusiveRatio(config));
+            send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
+                move |handler, _, _| {
+                    handler.set_panel_exclusive_ratio(config.exclusive_ratio);
+                },
+            )));
         }
     });
 

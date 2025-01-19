@@ -60,22 +60,7 @@ impl CompositorHandler for WlrWaylandEventHandler {
                 UiMessage::ApplicationStateCallback(closure) => {
                     closure(self.app_state.windowed_state.as_mut().unwrap())
                 }
-                UiMessage::SetPanelLayout(config) => {
-                    self.panel_configuration = config.clone();
-                    self.set_panel_layout(config.layout, conn, qh);
-                }
-                UiMessage::SetPanelLayer(config) => {
-                    self.panel_configuration = config.clone();
-                    self.set_panel_layer(config.layer)
-                }
-                UiMessage::SetPanelWidth(config) => {
-                    self.panel_configuration = config.clone();
-                    self.set_panel_width(config.width as u32)
-                }
-                UiMessage::SetPanelExclusiveRatio(config) => {
-                    self.panel_configuration = config.clone();
-                    self.set_panel_exclusive_ratio(config.exclusive_ratio)
-                }
+                UiMessage::WlrWaylandEventHandlerCallback(closure) => closure(self, conn, qh),
             }
         }
         self.app_state.render();
@@ -370,7 +355,7 @@ impl WlrWaylandEventHandler {
         Box::new(WlrWgpuSurface::new(conn.clone(), qh, layer))
     }
 
-    fn set_panel_width(&mut self, width: u32) {
+    pub fn set_panel_width(&mut self, width: u32) {
         let (width, height) = if self.panel_configuration.layout == crate::PanelLayout::SingleTop
             || self.panel_configuration.layout == crate::PanelLayout::SingleBottom
         {
@@ -391,7 +376,7 @@ impl WlrWaylandEventHandler {
         self.set_panel_exclusive_ratio(self.panel_configuration.exclusive_ratio);
     }
 
-    fn set_panel_exclusive_ratio(&mut self, ratio: f32) {
+    pub fn set_panel_exclusive_ratio(&mut self, ratio: f32) {
         if let Some(layer) = self.left_layer.as_ref() {
             layer.set_exclusive_zone((self.panel_configuration.width as f32 * ratio) as i32);
             layer.commit();
@@ -402,7 +387,7 @@ impl WlrWaylandEventHandler {
         }
     }
 
-    fn set_panel_layer(&mut self, layer: PanelLayer) {
+    pub fn set_panel_layer(&mut self, layer: PanelLayer) {
         let wayland_layer = match layer {
             PanelLayer::Overlay => Layer::Overlay,
             PanelLayer::Top => Layer::Top,

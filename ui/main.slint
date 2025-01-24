@@ -1,8 +1,8 @@
 import { VerticalBox, Slider, HorizontalBox, GroupBox, TabWidget, ComboBox, LineEdit, GridBox, AboutSlint } from "std-widgets.slint";
 
 enum RenderChannels {
+    Single,
     Both,
-    Left,
 }
 
 enum PanelLayout {
@@ -131,15 +131,15 @@ export component ConfigurationWindow inherits Window {
                     channels_cb := ComboBox {
                         enabled: layout_cb.current-value != "Two panels (one on each side of the screen)";
                         model: [
-                            "Both left and right",
                             "Only left",
+                            "Both left and right",
                         ];
-                        current-index: Configuration.panel.channels == RenderChannels.Both ? 0 : 1;
+                        current-index: Configuration.panel.channels == RenderChannels.Single ? 0 : 1;
                         selected(current-value) => {
                             if (self.current-index == 0) {
-                                Configuration.panel.channels = RenderChannels.Both;
+                                Configuration.panel.channels = RenderChannels.Single;
                             } else {
-                                Configuration.panel.channels = RenderChannels.Left;
+                                Configuration.panel.channels = RenderChannels.Both;
                             }
                             Configuration.panel_channels_changed(Configuration.panel);
                         }

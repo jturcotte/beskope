@@ -3,6 +3,7 @@ use raw_window_handle::{
 };
 use smithay_client_toolkit::compositor::Region;
 use std::ptr::NonNull;
+use std::rc::Rc;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use wayland_client::EventQueue;
@@ -25,7 +26,7 @@ use wayland_client::{
     Connection, Proxy, QueueHandle,
 };
 
-use crate::{ApplicationState, PanelConfig, PanelLayer, UiMessage, WgpuSurface};
+use crate::{ApplicationState, PanelConfig, PanelLayer, RenderChannels, UiMessage, WgpuSurface};
 
 impl CompositorHandler for WlrWaylandEventHandler {
     fn scale_factor_changed(
@@ -142,9 +143,9 @@ impl LayerShellHandler for WlrWaylandEventHandler {
             self.app_state_initialized = true;
             self.app_state.initialize_app_state();
         }
-        if let Some((wgpu_surface, anchor_position)) = self.primary_wgpu_holder.take() {
+        if let Some((wgpu_surface, anchor_position, channels)) = self.primary_wgpu_holder.take() {
             self.app_state
-                .configure_primary_wgpu_surface(wgpu_surface, anchor_position);
+                .configure_primary_wgpu_surface(wgpu_surface, anchor_position, channels);
         }
         if let Some((wgpu_surface, anchor_position)) = self.secondary_wgpu_holder.take() {
             self.app_state
@@ -262,24 +263,48 @@ pub struct WlrWaylandEventHandler {
     request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
     primary_layer: Option<LayerSurface>,
     secondary_layer: Option<LayerSurface>,
-    primary_wgpu_holder: Option<(Box<WlrWgpuSurface>, PanelAnchorPosition)>,
-    secondary_wgpu_holder: Option<(Box<WlrWgpuSurface>, PanelAnchorPosition)>,
+    primary_wgpu_holder: Option<(Rc<WlrWgpuSurface>, PanelAnchorPosition, RenderChannels)>,
+    secondary_wgpu_holder: Option<(Rc<WlrWgpuSurface>, PanelAnchorPosition)>,
     app_state: ApplicationState,
     app_state_initialized: bool,
 }
 
 impl WlrWaylandEventHandler {
+    pub fn set_panel_channels(
+        &mut self,
+        channels: RenderChannels,
+        conn: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        self.panel_config.channels = channels;
+        self.apply_panel_layout(conn, qh);
+    }
     pub fn set_panel_layout(
         &mut self,
         panel_layout: crate::PanelLayout,
         conn: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        let (primary_wgpu_and_anchor, secondary_wgpu_and_anchor) = match panel_layout {
+        self.panel_config.layout = panel_layout;
+        self.apply_panel_layout(conn, qh);
+    }
+    fn apply_panel_layout(&mut self, conn: &Connection, qh: &QueueHandle<Self>) {
+        // Already destroy existing layers and wgpu surfaces
+        self.primary_layer = None;
+        self.secondary_layer = None;
+        if let Some(app_state) = self.app_state.windowed_state.as_mut() {
+            app_state.primary_waveform_window = None;
+            app_state.secondary_waveform_window = None;
+            app_state.left_waveform_view = None;
+            app_state.right_waveform_view = None;
+        }
+
+        let (primary_wgpu_and_anchor, secondary_wgpu_and_anchor) = match self.panel_config.layout {
             crate::PanelLayout::TwoPanels => (
                 Some((
                     self.create_surface(Anchor::TOP | Anchor::LEFT | Anchor::BOTTOM, conn, qh),
                     PanelAnchorPosition::Left,
+                    RenderChannels::Single,
                 )),
                 Some((
                     self.create_surface(Anchor::TOP | Anchor::RIGHT | Anchor::BOTTOM, conn, qh),
@@ -290,6 +315,7 @@ impl WlrWaylandEventHandler {
                 Some((
                     self.create_surface(Anchor::LEFT | Anchor::TOP | Anchor::RIGHT, conn, qh),
                     PanelAnchorPosition::Top,
+                    self.panel_config.channels,
                 )),
                 None,
             ),
@@ -297,16 +323,12 @@ impl WlrWaylandEventHandler {
                 Some((
                     self.create_surface(Anchor::LEFT | Anchor::BOTTOM | Anchor::RIGHT, conn, qh),
                     PanelAnchorPosition::Bottom,
+                    self.panel_config.channels,
                 )),
                 None,
             ),
         };
 
-        // Already destroy existing WgpuSurfaces
-        if let Some(app_state) = self.app_state.windowed_state.as_mut() {
-            app_state.left_waveform_window = None;
-            app_state.right_waveform_window = None;
-        }
         self.primary_layer = primary_wgpu_and_anchor.as_ref().map(|s| s.0.layer.clone());
         self.secondary_layer = secondary_wgpu_and_anchor
             .as_ref()
@@ -322,7 +344,7 @@ impl WlrWaylandEventHandler {
         anchor: Anchor,
         conn: &Connection,
         qh: &QueueHandle<Self>,
-    ) -> Box<WlrWgpuSurface> {
+    ) -> Rc<WlrWgpuSurface> {
         // A layer surface is created from a surface.
         let surface = self.compositor.create_surface(&qh);
         // Let mouse events pass through the surface
@@ -353,7 +375,7 @@ impl WlrWaylandEventHandler {
         layer.commit();
 
         let qh = qh.clone();
-        Box::new(WlrWgpuSurface::new(conn.clone(), qh, layer))
+        Rc::new(WlrWgpuSurface::new(conn.clone(), qh, layer))
     }
 
     pub fn set_panel_width(&mut self, width: u32) {
@@ -442,6 +464,7 @@ impl ProvidesRegistryState for WlrWaylandEventHandler {
     registry_handlers![OutputState];
 }
 
+#[derive(Debug, Clone, Copy)]
 pub enum PanelAnchorPosition {
     Top,
     Bottom,
@@ -453,12 +476,13 @@ pub trait WlrLayerApplicationHandler {
     fn initialize_app_state(&mut self);
     fn configure_primary_wgpu_surface(
         &mut self,
-        wgpu_surface: Box<dyn WgpuSurface>,
+        wgpu_surface: Rc<dyn WgpuSurface>,
         anchor_position: PanelAnchorPosition,
+        channels: RenderChannels,
     );
     fn configure_secondary_wgpu_surface(
         &mut self,
-        wgpu_surface: Box<dyn WgpuSurface>,
+        wgpu_surface: Rc<dyn WgpuSurface>,
         anchor_position: PanelAnchorPosition,
     );
     fn primary_resized(&mut self, width: u32, height: u32);

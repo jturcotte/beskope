@@ -1,4 +1,4 @@
-use cgmath::{Matrix4, Rad, SquareMatrix};
+use cgmath::{Matrix4, Rad, SquareMatrix, Vector3};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use num_complex::Complex;
 use ringbuf::storage::Heap;
@@ -8,13 +8,14 @@ use ringbuf::{HeapRb, SharedRb};
 use rustfft::{Fft, FftDirection, FftPlanner};
 use slint::Color;
 use splines::Interpolation;
+use std::rc::Rc;
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use std::{borrow::Cow, sync::Arc};
 use wayland_client::{Connection, QueueHandle};
 use wgpu::util::DeviceExt;
-use wgpu::BufferUsages;
+use wgpu::{BufferUsages, CommandEncoder, TextureFormat, TextureView};
 use winit::platform::wayland::EventLoopBuilderExtWayland;
 use winit::{
     application::ApplicationHandler,
@@ -130,9 +131,21 @@ struct WaveformConfigUniform {
 }
 
 struct WaveformWindow {
-    wgpu_surface: Box<dyn WgpuSurface>,
-    _shader: wgpu::ShaderModule,
-    _pipeline_layout: wgpu::PipelineLayout,
+    wgpu: Rc<dyn WgpuSurface>,
+    shader: wgpu::ShaderModule,
+    config: wgpu::SurfaceConfiguration,
+    swapchain_format: TextureFormat,
+}
+
+#[derive(PartialEq, Clone, Copy)]
+enum RenderWindow {
+    Primary,
+    Secondary,
+}
+
+struct WaveformView {
+    render_window: RenderWindow,
+    wgpu_queue: Arc<wgpu::Queue>,
     y_value_buffer: wgpu::Buffer,
     y_value_offset_buffer: wgpu::Buffer,
     waveform_config_buffer: wgpu::Buffer,
@@ -141,7 +154,6 @@ struct WaveformWindow {
     stroke_render_pipeline: wgpu::RenderPipeline,
     stroke_vertex_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
-    config: wgpu::SurfaceConfiguration,
     audio_sample_skip: usize,
     fft_input_ringbuf: HeapRb<f32>,
     y_value_write_offset: usize,
@@ -150,11 +162,7 @@ struct WaveformWindow {
 }
 
 impl WaveformWindow {
-    fn new(
-        wgpu: Box<dyn WgpuSurface>,
-        audio_sample_skip: usize,
-        transform_matrix: [[f32; 4]; 4],
-    ) -> WaveformWindow {
+    fn new(wgpu: Rc<dyn WgpuSurface>) -> WaveformWindow {
         // Load the shaders from disk
         let shader = wgpu
             .device()
@@ -163,17 +171,49 @@ impl WaveformWindow {
                 source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shader.wgsl"))),
             });
 
-        let pipeline_layout =
-            wgpu.device()
-                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("Pipeline Layout"),
-                    bind_group_layouts: &[],
-                    push_constant_ranges: &[],
-                });
-
         let swapchain_capabilities = wgpu.surface().get_capabilities(wgpu.adapter());
         let swapchain_format = swapchain_capabilities.formats[0];
 
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: swapchain_format,
+            // FIXME: Init wgpu on configure?
+            width: 800,
+            height: 600,
+            present_mode: wgpu::PresentMode::AutoVsync,
+            desired_maximum_frame_latency: 1,
+            alpha_mode: wgpu::CompositeAlphaMode::PreMultiplied,
+            view_formats: vec![],
+        };
+        wgpu.surface().configure(wgpu.device(), &config);
+
+        WaveformWindow {
+            wgpu,
+            shader,
+            config,
+            swapchain_format,
+        }
+    }
+
+    fn reconfigure(&mut self, width: u32, height: u32) {
+        // Reconfigure the surface with the new size
+        self.config.width = width.max(1);
+        self.config.height = height.max(1);
+        self.wgpu
+            .surface()
+            .configure(self.wgpu.device(), &self.config);
+        // On macos the window needs to be redrawn manually after resizing
+        (self.wgpu.request_redraw_callback())();
+    }
+}
+
+impl WaveformView {
+    fn new(
+        window: &WaveformWindow,
+        render_window: RenderWindow,
+        audio_sample_skip: usize,
+        transform_matrix: [[f32; 4]; 4],
+    ) -> WaveformView {
         // Define control points for the spline used to make the waveform look more compressed for older samples.
         let cps = vec![
             (0.0, 0.0, Interpolation::Linear),
@@ -198,8 +238,8 @@ impl WaveformWindow {
                 0.6,
                 Interpolation::CatmullRom,
             ),
-            (VERTEX_BUFFER_SIZE as f32, 1.0, Interpolation::Linear),
-            (VERTEX_BUFFER_SIZE as f32, 1.0, Interpolation::Linear),
+            ((VERTEX_BUFFER_SIZE - 1) as f32, 1.0, Interpolation::Linear),
+            ((VERTEX_BUFFER_SIZE) as f32, 1.0, Interpolation::Linear),
         ];
 
         // Create the spline
@@ -237,7 +277,9 @@ impl WaveformWindow {
         let y_values: Vec<YValue> = vec![YValue { y: 0.0 }; VERTEX_BUFFER_SIZE];
 
         let fill_vertex_buffer =
-            wgpu.device()
+            window
+                .wgpu
+                .device()
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("Fill Vertex Buffer"),
                     contents: bytemuck::cast_slice(&fill_vertices),
@@ -245,23 +287,27 @@ impl WaveformWindow {
                 });
 
         let stroke_vertex_buffer =
-            wgpu.device()
+            window
+                .wgpu
+                .device()
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("Stroke Vertex Buffer"),
                     contents: bytemuck::cast_slice(&stroke_vertices),
                     usage: wgpu::BufferUsages::VERTEX,
                 });
 
-        let y_value_buffer = wgpu
-            .device()
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Y Value Buffer"),
-                contents: bytemuck::cast_slice(&y_values),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            });
+        let y_value_buffer =
+            window
+                .wgpu
+                .device()
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Y Value Buffer"),
+                    contents: bytemuck::cast_slice(&y_values),
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                });
 
         // Create the y_value_offset buffer
-        let y_value_offset_buffer = wgpu.device().create_buffer(&wgpu::BufferDescriptor {
+        let y_value_offset_buffer = window.wgpu.device().create_buffer(&wgpu::BufferDescriptor {
             label: Some("Y Value Offset Buffer"),
             size: std::mem::size_of::<u32>() as wgpu::BufferAddress,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
@@ -269,7 +315,9 @@ impl WaveformWindow {
         });
 
         let transform_buffer =
-            wgpu.device()
+            window
+                .wgpu
+                .device()
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("Transform Buffer"),
                     contents: bytemuck::cast_slice(&transform_matrix),
@@ -277,7 +325,9 @@ impl WaveformWindow {
                 });
 
         let waveform_config_buffer =
-            wgpu.device()
+            window
+                .wgpu
+                .device()
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("Waveform Config Buffer"),
                     contents: bytemuck::cast_slice(&[WaveformConfigUniform {
@@ -289,7 +339,9 @@ impl WaveformWindow {
 
         // Create the bind group layout and bind group for the uniform
         let bind_group_layout =
-            wgpu.device()
+            window
+                .wgpu
+                .device()
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     entries: &[
                         wgpu::BindGroupLayoutEntry {
@@ -336,51 +388,60 @@ impl WaveformWindow {
                     label: None,
                 });
 
-        let bind_group = wgpu.device().create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: y_value_offset_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: y_value_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: transform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: waveform_config_buffer.as_entire_binding(),
-                },
-            ],
-            label: Some("Bind Group"),
-        });
+        let bind_group = window
+            .wgpu
+            .device()
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: y_value_offset_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: y_value_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: transform_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: waveform_config_buffer.as_entire_binding(),
+                    },
+                ],
+                label: Some("Bind Group"),
+            });
+
+        let pipeline_layout =
+            window
+                .wgpu
+                .device()
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Pipeline Layout"),
+                    bind_group_layouts: &[&bind_group_layout],
+                    push_constant_ranges: &[],
+                });
 
         let fill_render_pipeline =
-            wgpu.device()
+            window
+                .wgpu
+                .device()
                 .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: None,
-                    layout: Some(&wgpu.device().create_pipeline_layout(
-                        &wgpu::PipelineLayoutDescriptor {
-                            label: Some("Pipeline Layout"),
-                            bind_group_layouts: &[&bind_group_layout],
-                            push_constant_ranges: &[],
-                        },
-                    )),
+                    layout: Some(&pipeline_layout),
                     vertex: wgpu::VertexState {
-                        module: &shader,
+                        module: &window.shader,
                         entry_point: Some("vs_main"),
                         buffers: &[Vertex::desc()],
                         compilation_options: Default::default(),
                     },
                     fragment: Some(wgpu::FragmentState {
-                        module: &shader,
+                        module: &window.shader,
                         entry_point: Some("fs_fill_main"),
                         compilation_options: Default::default(),
-                        targets: &[Some(swapchain_format.into())],
+                        targets: &[Some(window.swapchain_format.into())],
                     }),
                     primitive: wgpu::PrimitiveState {
                         topology: wgpu::PrimitiveTopology::TriangleStrip,
@@ -398,27 +459,23 @@ impl WaveformWindow {
                 });
 
         let stroke_render_pipeline =
-            wgpu.device()
+            window
+                .wgpu
+                .device()
                 .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: None,
-                    layout: Some(&wgpu.device().create_pipeline_layout(
-                        &wgpu::PipelineLayoutDescriptor {
-                            label: Some("Pipeline Layout"),
-                            bind_group_layouts: &[&bind_group_layout],
-                            push_constant_ranges: &[],
-                        },
-                    )),
+                    layout: Some(&pipeline_layout),
                     vertex: wgpu::VertexState {
-                        module: &shader,
+                        module: &window.shader,
                         entry_point: Some("vs_main"),
                         buffers: &[Vertex::desc()],
                         compilation_options: Default::default(),
                     },
                     fragment: Some(wgpu::FragmentState {
-                        module: &shader,
+                        module: &window.shader,
                         entry_point: Some("fs_stroke_main"),
                         compilation_options: Default::default(),
-                        targets: &[Some(swapchain_format.into())],
+                        targets: &[Some(window.swapchain_format.into())],
                     }),
                     primitive: wgpu::PrimitiveState {
                         topology: wgpu::PrimitiveTopology::LineStrip,
@@ -435,23 +492,9 @@ impl WaveformWindow {
                     cache: None,
                 });
 
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: swapchain_format,
-            // FIXME: Init wgpu on configure?
-            width: 800,
-            height: 600,
-            present_mode: wgpu::PresentMode::AutoVsync,
-            desired_maximum_frame_latency: 1,
-            alpha_mode: wgpu::CompositeAlphaMode::PreMultiplied,
-            view_formats: vec![],
-        };
-        wgpu.surface().configure(wgpu.device(), &config);
-
-        WaveformWindow {
-            wgpu_surface: wgpu,
-            _shader: shader,
-            _pipeline_layout: pipeline_layout,
+        WaveformView {
+            render_window,
+            wgpu_queue: window.wgpu.queue().clone(),
             y_value_buffer,
             y_value_offset_buffer,
             waveform_config_buffer,
@@ -460,7 +503,6 @@ impl WaveformWindow {
             stroke_render_pipeline,
             stroke_vertex_buffer,
             bind_group,
-            config,
             audio_sample_skip,
             fft_input_ringbuf: HeapRb::<f32>::new(FFT_SIZE),
             y_value_write_offset: 0,
@@ -492,20 +534,9 @@ impl WaveformWindow {
         self.waveform_config_dirty = true;
     }
 
-    fn reconfigure(&mut self, width: u32, height: u32) {
-        // Reconfigure the surface with the new size
-        self.config.width = width.max(1);
-        self.config.height = height.max(1);
-        self.wgpu_surface
-            .surface()
-            .configure(self.wgpu_surface.device(), &self.config);
-        // On macos the window needs to be redrawn manually after resizing
-        (self.wgpu_surface.request_redraw_callback())();
-    }
-
     fn update_config(&mut self) {
         if self.waveform_config_dirty {
-            self.wgpu_surface.queue().write_buffer(
+            self.wgpu_queue.write_buffer(
                 &self.waveform_config_buffer,
                 0,
                 bytemuck::cast_slice(&[self.waveform_config]),
@@ -514,21 +545,7 @@ impl WaveformWindow {
         }
     }
 
-    fn render(&self) {
-        let frame = self
-            .wgpu_surface
-            .surface()
-            .get_current_texture()
-            .expect("Failed to acquire next swap chain texture");
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut encoder = self
-            .wgpu_surface
-            .device()
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
+    fn render(&self, encoder: &mut CommandEncoder, view: &TextureView) {
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
@@ -536,12 +553,7 @@ impl WaveformWindow {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.0,
-                            g: 0.0,
-                            b: 0.0,
-                            a: 0.0,
-                        }),
+                        load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -563,8 +575,7 @@ impl WaveformWindow {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
-                        // Last pass
-                        store: wgpu::StoreOp::Discard,
+                        store: wgpu::StoreOp::Store,
                     },
                 })],
                 depth_stencil_attachment: None,
@@ -576,9 +587,6 @@ impl WaveformWindow {
             render_pass.set_bind_group(0, &self.bind_group, &[]);
             render_pass.draw(0..VERTEX_BUFFER_SIZE as u32, 0..1);
         }
-
-        self.wgpu_surface.queue().submit(Some(encoder.finish()));
-        frame.present();
     }
 
     pub fn process_audio(
@@ -646,7 +654,7 @@ impl WaveformWindow {
         let first_pass_len = {
             let first_pass_len = VERTEX_BUFFER_SIZE - self.y_value_write_offset;
             let first_pass_data = &y_values[..first_pass_len.min(y_values.len())];
-            self.wgpu_surface.queue().write_buffer(
+            self.wgpu_queue.write_buffer(
                 &self.y_value_buffer,
                 (self.y_value_write_offset * std::mem::size_of::<YValue>()) as wgpu::BufferAddress,
                 bytemuck::cast_slice(first_pass_data),
@@ -666,7 +674,7 @@ impl WaveformWindow {
         // Second pass: write to the beginning of the buffer
         if first_pass_len < y_values.len() {
             let second_pass_data = &y_values[first_pass_len..];
-            self.wgpu_surface.queue().write_buffer(
+            self.wgpu_queue.write_buffer(
                 &self.y_value_buffer,
                 0,
                 bytemuck::cast_slice(second_pass_data),
@@ -674,7 +682,7 @@ impl WaveformWindow {
         }
 
         // Tell the shader how to read the audio data ring buffer
-        self.wgpu_surface.queue().write_buffer(
+        self.wgpu_queue.write_buffer(
             &self.y_value_offset_buffer,
             0,
             bytemuck::cast_slice(&[aligned_write_offset as u32]),
@@ -702,18 +710,20 @@ impl ApplicationState {
         }
     }
 
-    fn create_winit_window_and_wgpu_surface(event_loop: &ActiveEventLoop) -> Box<WinitWgpuSurface> {
+    fn create_winit_window_and_wgpu_surface(event_loop: &ActiveEventLoop) -> Rc<WinitWgpuSurface> {
         #[allow(unused_mut)]
         let mut attributes = Window::default_attributes();
         let window = Arc::new(event_loop.create_window(attributes).unwrap());
 
-        Box::new(WinitWgpuSurface::new(window))
+        Rc::new(WinitWgpuSurface::new(window))
     }
 }
 
 struct WindowedApplicationState {
-    left_waveform_window: Option<WaveformWindow>,
-    right_waveform_window: Option<WaveformWindow>,
+    primary_waveform_window: Option<WaveformWindow>,
+    secondary_waveform_window: Option<WaveformWindow>,
+    left_waveform_view: Option<WaveformView>,
+    right_waveform_view: Option<WaveformView>,
     audio_input_ringbuf_cons: Caching<Arc<SharedRb<Heap<f32>>>, false, true>,
     _stream: Option<cpal::Stream>,
     last_fps_dump_time: Instant,
@@ -810,8 +820,10 @@ impl WindowedApplicationState {
         let fft = FftPlanner::new().plan_fft(FFT_SIZE, FftDirection::Forward);
         let scratch_len = fft.get_inplace_scratch_len();
         WindowedApplicationState {
-            left_waveform_window: None,
-            right_waveform_window: None,
+            primary_waveform_window: None,
+            secondary_waveform_window: None,
+            left_waveform_view: None,
+            right_waveform_view: None,
             audio_input_ringbuf_cons,
             _stream: stream,
             last_fps_dump_time: Instant::now(),
@@ -823,63 +835,174 @@ impl WindowedApplicationState {
         }
     }
 
-    fn create_waveform_window(
-        wgpu_surface: Box<dyn WgpuSurface>,
+    fn create_waveform_view(
+        window: &WaveformWindow,
+        render_window: RenderWindow,
         anchor_position: PanelAnchorPosition,
-    ) -> WaveformWindow {
+        channels: RenderChannels,
+        left: bool,
+    ) -> Option<WaveformView> {
         // Identity transform is a horizontal waveform scrolling from right to left.
         let rotation = Matrix4::from_angle_z(Rad(-std::f32::consts::FRAC_PI_2));
         let mirror_h = Matrix4::from_nonuniform_scale(-1.0, 1.0, 1.0);
         let mirror_v = Matrix4::from_nonuniform_scale(1.0, -1.0, 1.0);
-        let transform_matrix = match anchor_position {
-            PanelAnchorPosition::Top => mirror_v,
-            PanelAnchorPosition::Bottom => Matrix4::identity(),
-            PanelAnchorPosition::Left => rotation * mirror_h,
-            PanelAnchorPosition::Right => rotation * mirror_v * mirror_h,
+        let half = Matrix4::from_nonuniform_scale(0.5, 1.0, 1.0);
+        let translate_half_left = Matrix4::from_translation(Vector3::new(-1.0, 0.0, 0.0));
+        let translate_half_right = Matrix4::from_translation(Vector3::new(1.0, 0.0, 0.0));
+        let transform_matrix = match (render_window, anchor_position, channels, left) {
+            (RenderWindow::Primary, PanelAnchorPosition::Top, RenderChannels::Single, _) => {
+                Some(mirror_v)
+            }
+            (RenderWindow::Primary, PanelAnchorPosition::Top, RenderChannels::Both, true) => {
+                Some(mirror_v * half * translate_half_left)
+            }
+            (RenderWindow::Primary, PanelAnchorPosition::Top, RenderChannels::Both, false) => {
+                Some(mirror_v * half * translate_half_right * mirror_h)
+            }
+            (RenderWindow::Primary, PanelAnchorPosition::Bottom, RenderChannels::Single, _) => {
+                Some(Matrix4::identity())
+            }
+            (RenderWindow::Primary, PanelAnchorPosition::Bottom, RenderChannels::Both, true) => {
+                Some(half * translate_half_left)
+            }
+            (RenderWindow::Primary, PanelAnchorPosition::Bottom, RenderChannels::Both, false) => {
+                Some(half * translate_half_right * mirror_h)
+            }
+            (RenderWindow::Primary, PanelAnchorPosition::Left, _, _) => Some(rotation * mirror_h),
+            (RenderWindow::Secondary, PanelAnchorPosition::Right, _, _) => {
+                Some(rotation * mirror_v * mirror_h)
+            }
+            _ => None,
         };
-        WaveformWindow::new(wgpu_surface, 0, transform_matrix.into())
+
+        transform_matrix.map(|transform_matrix| {
+            WaveformView::new(
+                &window,
+                render_window,
+                if left { 0 } else { 1 },
+                transform_matrix.into(),
+            )
+        })
     }
 
     fn configure_primary_wgpu_surface(
         &mut self,
-        wgpu_surface: Box<dyn WgpuSurface>,
+        wgpu_surface: Rc<dyn WgpuSurface>,
         anchor_position: PanelAnchorPosition,
+        channels: RenderChannels,
     ) {
-        let waveform_window = Self::create_waveform_window(wgpu_surface, anchor_position);
-        self.left_waveform_window = Some(waveform_window);
+        let window = WaveformWindow::new(wgpu_surface.clone());
+
+        let left_waveform_view = Self::create_waveform_view(
+            &window,
+            RenderWindow::Primary,
+            anchor_position,
+            channels,
+            true,
+        );
+        self.left_waveform_view = left_waveform_view;
+        if let Some(view) = Self::create_waveform_view(
+            &window,
+            RenderWindow::Primary,
+            anchor_position,
+            channels,
+            false,
+        ) {
+            self.right_waveform_view = Some(view);
+        }
+        self.primary_waveform_window = Some(window);
     }
 
     fn configure_secondary_wgpu_surface(
         &mut self,
-        wgpu_surface: Box<dyn WgpuSurface>,
+        wgpu_surface: Rc<dyn WgpuSurface>,
         anchor_position: PanelAnchorPosition,
     ) {
-        let waveform_window = Self::create_waveform_window(wgpu_surface, anchor_position);
-        self.right_waveform_window = Some(waveform_window);
+        let window = WaveformWindow::new(wgpu_surface.clone());
+        if let Some(view) = Self::create_waveform_view(
+            &window,
+            RenderWindow::Secondary,
+            anchor_position,
+            RenderChannels::Both,
+            false,
+        ) {
+            self.right_waveform_view = Some(view);
+        }
+        self.secondary_waveform_window = Some(window);
     }
 
     fn render(&mut self) {
         let data: Vec<f32> = self.audio_input_ringbuf_cons.pop_iter().collect();
 
-        if let Some(left_waveform_window) = &mut self.left_waveform_window {
-            left_waveform_window.update_config();
-            left_waveform_window.process_audio(
-                &data,
-                self.fft.as_ref(),
-                &mut self.fft_inout_buffer,
-                &mut self.fft_scratch,
-            );
-            left_waveform_window.render();
+        if let Some(window) = self.primary_waveform_window.as_ref() {
+            let frame = window
+                .wgpu
+                .surface()
+                .get_current_texture()
+                .expect("Failed to acquire next swap chain texture");
+            let view = frame
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+
+            let mut encoder = window
+                .wgpu
+                .device()
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+            if let Some(left_waveform_window) = &mut self.left_waveform_view {
+                left_waveform_window.update_config();
+                left_waveform_window.process_audio(
+                    &data,
+                    self.fft.as_ref(),
+                    &mut self.fft_inout_buffer,
+                    &mut self.fft_scratch,
+                );
+                left_waveform_window.render(&mut encoder, &view);
+            }
+            if let Some(right_waveform_window) = &mut self.right_waveform_view {
+                if right_waveform_window.render_window == RenderWindow::Primary {
+                    right_waveform_window.update_config();
+                    right_waveform_window.process_audio(
+                        &data,
+                        self.fft.as_ref(),
+                        &mut self.fft_inout_buffer,
+                        &mut self.fft_scratch,
+                    );
+                    right_waveform_window.render(&mut encoder, &view);
+                }
+            }
+            window.wgpu.queue().submit(Some(encoder.finish()));
+            frame.present();
         }
-        if let Some(right_waveform_window) = &mut self.right_waveform_window {
-            right_waveform_window.update_config();
-            right_waveform_window.process_audio(
-                &data,
-                self.fft.as_ref(),
-                &mut self.fft_inout_buffer,
-                &mut self.fft_scratch,
-            );
-            right_waveform_window.render();
+
+        if let Some(window) = self.secondary_waveform_window.as_ref() {
+            let frame = window
+                .wgpu
+                .surface()
+                .get_current_texture()
+                .expect("Failed to acquire next swap chain texture");
+            let view = frame
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+
+            let mut encoder = window
+                .wgpu
+                .device()
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+            if let Some(right_waveform_window) = &mut self.right_waveform_view {
+                assert!(right_waveform_window.render_window == RenderWindow::Secondary);
+                right_waveform_window.update_config();
+                right_waveform_window.process_audio(
+                    &data,
+                    self.fft.as_ref(),
+                    &mut self.fft_inout_buffer,
+                    &mut self.fft_scratch,
+                );
+                right_waveform_window.render(&mut encoder, &view);
+            }
+            window.wgpu.queue().submit(Some(encoder.finish()));
+            frame.present();
         }
 
         // FPS calculation
@@ -903,18 +1026,19 @@ impl WlrLayerApplicationHandler for ApplicationState {
 
     fn configure_primary_wgpu_surface(
         &mut self,
-        wgpu_surface: Box<dyn WgpuSurface>,
+        wgpu_surface: Rc<dyn WgpuSurface>,
         anchor_position: PanelAnchorPosition,
+        channels: RenderChannels,
     ) {
         self.windowed_state
             .as_mut()
             .unwrap()
-            .configure_primary_wgpu_surface(wgpu_surface, anchor_position);
+            .configure_primary_wgpu_surface(wgpu_surface, anchor_position, channels);
     }
 
     fn configure_secondary_wgpu_surface(
         &mut self,
-        wgpu_surface: Box<dyn WgpuSurface>,
+        wgpu_surface: Rc<dyn WgpuSurface>,
         anchor_position: PanelAnchorPosition,
     ) {
         self.windowed_state
@@ -928,7 +1052,7 @@ impl WlrLayerApplicationHandler for ApplicationState {
             .windowed_state
             .as_mut()
             .unwrap()
-            .left_waveform_window
+            .primary_waveform_window
             .as_mut()
         {
             waveform_window.reconfigure(width, height);
@@ -939,7 +1063,7 @@ impl WlrLayerApplicationHandler for ApplicationState {
             .windowed_state
             .as_mut()
             .unwrap()
-            .right_waveform_window
+            .secondary_waveform_window
             .as_mut()
         {
             waveform_window.reconfigure(width, height);
@@ -964,6 +1088,7 @@ impl ApplicationHandler for ApplicationState {
                 .configure_primary_wgpu_surface(
                     Self::create_winit_window_and_wgpu_surface(event_loop),
                     PanelAnchorPosition::Bottom,
+                    RenderChannels::Both,
                 );
         }
     }
@@ -979,9 +1104,9 @@ impl ApplicationHandler for ApplicationState {
                 WindowEvent::Resized(new_size) => {
                     // FIXME: Check the window ID
                     state
-                        .left_waveform_window
+                        .primary_waveform_window
                         .as_mut()
-                        .or(state.right_waveform_window.as_mut())
+                        .or(state.secondary_waveform_window.as_mut())
                         .unwrap()
                         .reconfigure(new_size.width, new_size.height);
                     // state.right_waveform_window.reconfigure(new_size);
@@ -998,12 +1123,12 @@ impl ApplicationHandler for ApplicationState {
                             let mut process_audio = self.process_audio.lock().unwrap();
                             *process_audio = !*process_audio;
                             (state
-                                .left_waveform_window
+                                .primary_waveform_window
                                 .as_ref()
                                 .unwrap()
-                                .wgpu_surface
+                                .wgpu
                                 .request_redraw_callback())();
-                            // (state.right_waveform_window.wgpu_surface.request_redraw)();
+                            // (state.right_waveform_window.wgpu.request_redraw)();
                         }
                     }
                 }
@@ -1072,11 +1197,11 @@ pub fn main() {
             let stroke_color = configuration.get_waveform().stroke_color;
             send(UiMessage::ApplicationStateCallback(Box::new(
                 move |state| {
-                    if let Some(left_waveform_window) = &mut state.left_waveform_window {
+                    if let Some(left_waveform_window) = &mut state.left_waveform_view {
                         left_waveform_window.set_fill_color(fill_color);
                         left_waveform_window.set_stroke_color(stroke_color);
                     }
-                    if let Some(right_waveform_window) = &mut state.right_waveform_window {
+                    if let Some(right_waveform_window) = &mut state.right_waveform_view {
                         right_waveform_window.set_fill_color(fill_color);
                         right_waveform_window.set_stroke_color(stroke_color);
                     }
@@ -1085,6 +1210,16 @@ pub fn main() {
         }
     });
 
+    configuration.on_panel_channels_changed({
+        let send = send_ui_msg.clone();
+        move |config| {
+            send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
+                move |handler, conn, qh| {
+                    handler.set_panel_channels(config.channels, conn, qh);
+                },
+            )));
+        }
+    });
     configuration.on_panel_layout_changed({
         let send = send_ui_msg.clone();
         move |config| {

@@ -378,13 +378,14 @@ impl WlrWaylandEventHandler {
         Rc::new(WlrWgpuSurface::new(conn.clone(), qh, layer))
     }
 
-    pub fn set_panel_width(&mut self, width: u32) {
+    pub fn set_panel_width(&mut self, width: i32) {
+        self.panel_config.width = width;
         let (width, height) = if self.panel_config.layout == crate::PanelLayout::SingleTop
             || self.panel_config.layout == crate::PanelLayout::SingleBottom
         {
-            (0, width)
+            (0, width as u32)
         } else {
-            (width, 0)
+            (width as u32, 0)
         };
 
         if let Some(layer) = self.primary_layer.as_ref() {
@@ -400,6 +401,7 @@ impl WlrWaylandEventHandler {
     }
 
     pub fn set_panel_exclusive_ratio(&mut self, ratio: f32) {
+        self.panel_config.exclusive_ratio = ratio;
         if let Some(layer) = self.primary_layer.as_ref() {
             layer.set_exclusive_zone((self.panel_config.width as f32 * ratio) as i32);
             layer.commit();
@@ -411,6 +413,7 @@ impl WlrWaylandEventHandler {
     }
 
     pub fn set_panel_layer(&mut self, layer: PanelLayer) {
+        self.panel_config.layer = layer;
         let wayland_layer = match layer {
             PanelLayer::Overlay => Layer::Overlay,
             PanelLayer::Top => Layer::Top,

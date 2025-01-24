@@ -1245,7 +1245,7 @@ pub fn main() {
         move |config| {
             send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
                 move |handler, _, _| {
-                    handler.set_panel_width(config.width as u32);
+                    handler.set_panel_width(config.width);
                 },
             )));
         }

@@ -6,7 +6,6 @@ use ringbuf::traits::{Consumer, Observer, Producer, RingBuffer, Split};
 use ringbuf::wrap::caching::Caching;
 use ringbuf::{HeapRb, SharedRb};
 use rustfft::{Fft, FftDirection, FftPlanner};
-use slint::Color;
 use splines::Interpolation;
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -514,22 +513,18 @@ impl WaveformView {
         }
     }
 
-    fn set_fill_color(&mut self, fill_color: Color) {
+    fn set_waveform_config(&mut self, config: WaveformConfig) {
         self.waveform_config.fill_color = [
-            fill_color.red() as f32 / 255.0,
-            fill_color.green() as f32 / 255.0,
-            fill_color.blue() as f32 / 255.0,
-            fill_color.alpha() as f32 / 255.0,
+            config.fill_color.red() as f32 / 255.0,
+            config.fill_color.green() as f32 / 255.0,
+            config.fill_color.blue() as f32 / 255.0,
+            config.fill_color.alpha() as f32 / 255.0,
         ];
-        self.waveform_config_dirty = true;
-    }
-
-    fn set_stroke_color(&mut self, stroke_color: Color) {
         self.waveform_config.stroke_color = [
-            stroke_color.red() as f32 / 255.0,
-            stroke_color.green() as f32 / 255.0,
-            stroke_color.blue() as f32 / 255.0,
-            stroke_color.alpha() as f32 / 255.0,
+            config.stroke_color.red() as f32 / 255.0,
+            config.stroke_color.green() as f32 / 255.0,
+            config.stroke_color.blue() as f32 / 255.0,
+            config.stroke_color.alpha() as f32 / 255.0,
         ];
         self.waveform_config_dirty = true;
     }
@@ -724,6 +719,7 @@ struct WindowedApplicationState {
     secondary_waveform_window: Option<WaveformWindow>,
     left_waveform_view: Option<WaveformView>,
     right_waveform_view: Option<WaveformView>,
+    waveform_config: WaveformConfig,
     audio_input_ringbuf_cons: Caching<Arc<SharedRb<Heap<f32>>>, false, true>,
     _stream: Option<cpal::Stream>,
     last_fps_dump_time: Instant,
@@ -824,6 +820,7 @@ impl WindowedApplicationState {
             secondary_waveform_window: None,
             left_waveform_view: None,
             right_waveform_view: None,
+            waveform_config: WaveformConfig::default(),
             audio_input_ringbuf_cons,
             _stream: stream,
             last_fps_dump_time: Instant::now(),
@@ -836,6 +833,7 @@ impl WindowedApplicationState {
     }
 
     fn create_waveform_view(
+        &self,
         window: &WaveformWindow,
         render_window: RenderWindow,
         anchor_position: PanelAnchorPosition,
@@ -876,12 +874,14 @@ impl WindowedApplicationState {
         };
 
         transform_matrix.map(|transform_matrix| {
-            WaveformView::new(
+            let mut view = WaveformView::new(
                 &window,
                 render_window,
                 if left { 0 } else { 1 },
                 transform_matrix.into(),
-            )
+            );
+            view.set_waveform_config(self.waveform_config.clone());
+            view
         })
     }
 
@@ -893,7 +893,7 @@ impl WindowedApplicationState {
     ) {
         let window = WaveformWindow::new(wgpu_surface.clone());
 
-        let left_waveform_view = Self::create_waveform_view(
+        let left_waveform_view = self.create_waveform_view(
             &window,
             RenderWindow::Primary,
             anchor_position,
@@ -901,7 +901,7 @@ impl WindowedApplicationState {
             true,
         );
         self.left_waveform_view = left_waveform_view;
-        if let Some(view) = Self::create_waveform_view(
+        if let Some(view) = self.create_waveform_view(
             &window,
             RenderWindow::Primary,
             anchor_position,
@@ -919,7 +919,7 @@ impl WindowedApplicationState {
         anchor_position: PanelAnchorPosition,
     ) {
         let window = WaveformWindow::new(wgpu_surface.clone());
-        if let Some(view) = Self::create_waveform_view(
+        if let Some(view) = self.create_waveform_view(
             &window,
             RenderWindow::Secondary,
             anchor_position,
@@ -1012,6 +1012,16 @@ impl WindowedApplicationState {
             println!("FPS: {}", self.frame_count);
             self.frame_count = 0;
             self.last_fps_dump_time = now;
+        }
+    }
+
+    fn set_waveform_config(&mut self, config: WaveformConfig) {
+        self.waveform_config = config.clone();
+        if let Some(view) = &mut self.left_waveform_view {
+            view.set_waveform_config(config.clone());
+        }
+        if let Some(view) = &mut self.right_waveform_view {
+            view.set_waveform_config(config);
         }
     }
 }
@@ -1193,18 +1203,10 @@ pub fn main() {
         move || {
             let window = window.upgrade().unwrap();
             let configuration = Configuration::get(&window);
-            let fill_color = configuration.get_waveform().fill_color;
-            let stroke_color = configuration.get_waveform().stroke_color;
+            let config = configuration.get_waveform();
             send(UiMessage::ApplicationStateCallback(Box::new(
                 move |state| {
-                    if let Some(left_waveform_window) = &mut state.left_waveform_view {
-                        left_waveform_window.set_fill_color(fill_color);
-                        left_waveform_window.set_stroke_color(stroke_color);
-                    }
-                    if let Some(right_waveform_window) = &mut state.right_waveform_view {
-                        right_waveform_window.set_fill_color(fill_color);
-                        right_waveform_window.set_stroke_color(stroke_color);
-                    }
+                    state.set_waveform_config(config);
                 },
             )));
         }

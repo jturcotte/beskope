@@ -1,4 +1,4 @@
-import { VerticalBox, Slider, HorizontalBox, GroupBox, TabWidget, ComboBox, LineEdit, GridBox, AboutSlint } from "std-widgets.slint";
+import { VerticalBox, Slider, HorizontalBox, GroupBox, TabWidget, ComboBox, LineEdit, GridBox, AboutSlint, Palette } from "std-widgets.slint";
 
 enum RenderChannels {
     Single,
@@ -109,161 +109,261 @@ component HsvColorSelection inherits GroupBox {
     }
 }
 
-export component ConfigurationWindow inherits Window {
+component GeneralTab inherits GridBox {
+    Row {
+        Text {
+            text: "Channels per window/panel";
+            vertical-alignment: TextVerticalAlignment.center;
+        }
+        channels_cb := ComboBox {
+            enabled: layout_cb.current-value != "Two panels (one on each side of the screen)";
+            model: [
+                "Only left",
+                "Both left and right",
+            ];
+            current-index: Configuration.panel.channels == RenderChannels.Single ? 0 : 1;
+            selected(current-value) => {
+                if (self.current-index == 0) {
+                    Configuration.panel.channels = RenderChannels.Single;
+                } else {
+                    Configuration.panel.channels = RenderChannels.Both;
+                }
+                Configuration.panel_channels_changed(Configuration.panel);
+            }
+        }
+    }
+    Row {
+        Text {
+            text: "Panel layout";
+            vertical-alignment: TextVerticalAlignment.center;
+        }
+        layout_cb := ComboBox {
+            model: [
+                "Two panels (one on each side of the screen)",
+                "Single panel at the top",
+                "Single panel at the bottom",
+            ];
+            current-index: Configuration.panel.layout == PanelLayout.TwoPanels
+                ? 0
+                : Configuration.panel.layout == PanelLayout.SingleTop
+                    ? 1
+                    : 2;
+            selected(current-value) => {
+                if (self.current-index == 0) {
+                    channels_cb.enabled = false;
+                    channels_cb.current-index = 0;
+                } else {
+                    channels_cb.enabled = true;
+                }
+
+                if (self.current-index == 0) {
+                    Configuration.panel.layout = PanelLayout.TwoPanels;
+                } else if (self.current-index == 1) {
+                    Configuration.panel.layout = PanelLayout.SingleTop;
+                } else {
+                    Configuration.panel.layout = PanelLayout.SingleBottom;
+                }
+                Configuration.panel_layout_changed(Configuration.panel);
+            }
+        }
+    }
+    Row {
+        Text {
+            text: "Panel Layer";
+            vertical-alignment: TextVerticalAlignment.center;
+        }
+        layer_cb := ComboBox {
+            model: [
+                "Overlay",
+                "Top",
+                "Bottom",
+                "Background",
+            ];
+            current-index: Configuration.panel.layer == PanelLayer.Overlay
+                ? 0
+                : Configuration.panel.layer == PanelLayer.Top
+                    ? 1
+                    : Configuration.panel.layer == PanelLayer.Bottom
+                        ? 2
+                        : 3;
+            selected(current-value) => {
+                if (self.current-index == 0) {
+                    Configuration.panel.layer = PanelLayer.Overlay;
+                } else if (self.current-index == 1) {
+                    Configuration.panel.layer = PanelLayer.Top;
+                } else if (self.current-index == 2) {
+                    Configuration.panel.layer = PanelLayer.Bottom;
+                } else {
+                    Configuration.panel.layer = PanelLayer.Background;
+                }
+                Configuration.panel_layer_changed(Configuration.panel);
+            }
+        }
+    }
+    Row {
+        Text { text: "Height/Width"; }
+        LabeledSlider {
+            value: Configuration.panel.width;
+            minimum: 1;
+            maximum: 800;
+            precision: 1;
+            unit: " px";
+            changed => {
+                Configuration.panel.width = self.value;
+                Configuration.panel_width_changed(Configuration.panel);
+            }
+        }
+    }
+    Row {
+        Text { text: "Height/Width Exclusive"; }
+        LabeledSlider {
+            value: Configuration.panel.exclusive_ratio * 100;
+            minimum: 0;
+            maximum: 100;
+            precision: 1;
+            unit: " %";
+            changed => {
+                Configuration.panel.exclusive_ratio = self.value / 100;
+                Configuration.panel_exclusive_ratio_changed(Configuration.panel);
+            }
+        }
+    }
+    Rectangle { }
+}
+
+component ColorTab inherits VerticalBox {
     function update_waveform_config() {
         Configuration.waveform.fill_color = Colors.hsv(fill_color.h, fill_color.s, fill_color.v, fill_color.a);
         Configuration.waveform.stroke_color = Colors.hsv(stroke_color.h, stroke_color.s, stroke_color.v, stroke_color.a);
         Configuration.waveform_config_changed();
     }
 
+    fill_color := HsvColorSelection {
+        changed => { update_waveform_config(); }
+        title: "Fill";
+        h: Configuration.waveform.fill_color.to_hsv().hue;
+        s: Configuration.waveform.fill_color.to_hsv().saturation;
+        v: Configuration.waveform.fill_color.to_hsv().value;
+        a: Configuration.waveform.fill_color.to_hsv().alpha;
+    }
+    stroke_color := HsvColorSelection {
+        title: "Stroke";
+        changed => { update_waveform_config(); }
+        h: Configuration.waveform.stroke_color.to_hsv().hue;
+        s: Configuration.waveform.stroke_color.to_hsv().saturation;
+        v: Configuration.waveform.stroke_color.to_hsv().value;
+        a: Configuration.waveform.stroke_color.to_hsv().alpha;
+    }
+}
+
+struct ControlPoint {
+    t: float,
+    v: float,
+}
+
+export global TimeCurveConfiguration {
+    callback control_point_changed(int, ControlPoint);
+    callback control_point_added(ControlPoint);
+    callback control_point_removed(int);
+    pure callback draw_curve(length, length, bool) -> string;
+    // This is just to dirty the commands binding so that draw_curve gets called again.
+    in property<bool> dummy_dep: false;
+    in-out property<float> min_t: -3;
+    in-out property<[ControlPoint]> control_points: [{t: -1, v: 0.15, tan: 0.5}, {t: -1/5, v: 0.3, tan: 0.5}, {t: -1/30, v: 0.5, tan: 0.5}, {t: -1/60, v: 0.6, tan: 0.5}];
+}
+
+component ControlPointHandle inherits TouchArea {
+    in property<string> label;
+    height: 40px;
+    width: 40px;
+    Rectangle {
+        background:
+            parent.pressed
+                ? Palette.selection-background.with-alpha(0.75)
+                : parent.has-hover
+                    ? Palette.control-background.with-alpha(0.75)
+                    : Palette.control-background.with-alpha(0.4);
+        width: 50%;
+        height: 50%;
+        border-radius: 8px;
+        border-color: Palette.control-foreground;
+        border-width: 1px;
+    }
+    Text {
+        x: -self.width;
+        visible: parent.has-hover || parent.pressed;
+        text: label;
+        horizontal-alignment: TextHorizontalAlignment.right;
+        color: Palette.selection-background;
+    }
+}
+
+component TimeCurveTab inherits VerticalBox {
+    TouchArea {
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                TimeCurveConfiguration.control_point_added({
+                    t: TimeCurveConfiguration.min_t * (1.0 - (self.mouse-x / parent.width)),
+                    v: 1.0 - self.mouse-y / parent.height,
+                });
+            } else if e.kind == PointerEventKind.move && self.pressed {
+                // The just added point is the last one.
+                TimeCurveConfiguration.control_point_changed(TimeCurveConfiguration.control_points.length - 1, {
+                    t: TimeCurveConfiguration.min_t * (1.0 - max(0.0, min(1.0, (self.mouse-x / parent.width)))),
+                    v: 1.0 - max(0.0, min(1.0, self.mouse-y / parent.height)),
+                });
+            }
+        }
+
+        Path {
+            stroke: Palette.accent-background;
+            stroke-width: 5px;
+            viewbox-width: (self.width - self.stroke-width) / 1px;
+            viewbox-height: (self.height - self.stroke-width) / 1px;
+            clip: true;
+
+            commands: TimeCurveConfiguration.draw_curve(self.width, self.height, TimeCurveConfiguration.dummy_dep);
+        }
+        Rectangle {
+            border-color: Palette.alternate-foreground;
+            border-width: 2px;
+        }
+        for cp[i] in TimeCurveConfiguration.control_points:
+        ControlPointHandle {
+            x: (1.0 - cp.t / TimeCurveConfiguration.min_t) * parent.width - self.width / 2.0;
+            y: (1.0 - cp.v) * parent.height - self.height / 2.0;
+            label: round(cp.t * 1000) / 1000 + "s: " + cp.v;
+            moved => {
+                TimeCurveConfiguration.control_point_changed(i, {
+                    t: TimeCurveConfiguration.min_t * (1.0 - max(0.0, min(1.0, (self.x + self.width / 2.0 + self.mouse-x - self.pressed-x) / parent.width))),
+                    v: max(0.0, min(1.0, 1.0 - (self.y + self.height / 2.0 + self.mouse-y - self.pressed-y) / parent.height)),
+                });
+            }
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+                    TimeCurveConfiguration.control_point_removed(i);
+                }
+            }
+        }
+    }
+}
+
+export component ConfigurationWindow inherits Window {
     preferred-width: 800px;
     preferred-height: 600px;
 
     TabWidget {
         Tab {
             title: "General";
-            GridBox {
-                Row {
-                    Text {
-                        text: "Channels per window/panel";
-                        vertical-alignment: TextVerticalAlignment.center;
-                    }
-                    channels_cb := ComboBox {
-                        enabled: layout_cb.current-value != "Two panels (one on each side of the screen)";
-                        model: [
-                            "Only left",
-                            "Both left and right",
-                        ];
-                        current-index: Configuration.panel.channels == RenderChannels.Single ? 0 : 1;
-                        selected(current-value) => {
-                            if (self.current-index == 0) {
-                                Configuration.panel.channels = RenderChannels.Single;
-                            } else {
-                                Configuration.panel.channels = RenderChannels.Both;
-                            }
-                            Configuration.panel_channels_changed(Configuration.panel);
-                        }
-                    }
-                }
-                Row {
-                    Text {
-                        text: "Panel layout";
-                        vertical-alignment: TextVerticalAlignment.center;
-                    }
-                    layout_cb := ComboBox {
-                        model: [
-                            "Two panels (one on each side of the screen)",
-                            "Single panel at the top",
-                            "Single panel at the bottom",
-                        ];
-                        current-index: Configuration.panel.layout == PanelLayout.TwoPanels
-                            ? 0 
-                            : Configuration.panel.layout == PanelLayout.SingleTop
-                                ? 1
-                                : 2;
-                        selected(current-value) => {
-                            if (self.current-index == 0) {
-                                channels_cb.enabled = false;
-                                channels_cb.current-index = 0;
-                            } else {
-                                channels_cb.enabled = true;
-                            }
-
-                            if (self.current-index == 0) {
-                                Configuration.panel.layout = PanelLayout.TwoPanels;
-                            } else if (self.current-index == 1) {
-                                Configuration.panel.layout = PanelLayout.SingleTop;
-                            } else {
-                                Configuration.panel.layout = PanelLayout.SingleBottom;
-                            }
-                            Configuration.panel_layout_changed(Configuration.panel);
-                        }
-                    }
-                }
-                Row {
-                    Text {
-                        text: "Panel Layer";
-                        vertical-alignment: TextVerticalAlignment.center;
-                    }
-                    layer_cb := ComboBox {
-                        model: [
-                            "Overlay",
-                            "Top",
-                            "Bottom",
-                            "Background",
-                        ];
-                        current-index: Configuration.panel.layer == PanelLayer.Overlay
-                            ? 0
-                            : Configuration.panel.layer == PanelLayer.Top
-                                ? 1
-                                : Configuration.panel.layer == PanelLayer.Bottom
-                                    ? 2
-                                    : 3;
-                        selected(current-value) => {
-                            if (self.current-index == 0) {
-                                Configuration.panel.layer = PanelLayer.Overlay;
-                            } else if (self.current-index == 1) {
-                                Configuration.panel.layer = PanelLayer.Top;
-                            } else if (self.current-index == 2) {
-                                Configuration.panel.layer = PanelLayer.Bottom;
-                            } else {
-                                Configuration.panel.layer = PanelLayer.Background;
-                            }
-                            Configuration.panel_layer_changed(Configuration.panel);
-                        }
-                    }
-                }
-                Row {
-                    Text { text: "Height/Width"; }
-                    LabeledSlider {
-                        value: Configuration.panel.width;
-                        minimum: 1;
-                        maximum: 800;
-                        precision: 1;
-                        unit: " px";
-                        changed => {
-                            Configuration.panel.width = self.value;
-                            Configuration.panel_width_changed(Configuration.panel);
-                        }
-                    }
-                }
-                Row {
-                    Text { text: "Height/Width Exclusive"; }
-                    LabeledSlider {
-                        value: Configuration.panel.exclusive_ratio * 100;
-                        minimum: 0;
-                        maximum: 100;
-                        precision: 1;
-                        unit: " %";
-                        changed => {
-                            Configuration.panel.exclusive_ratio = self.value / 100;
-                            Configuration.panel_exclusive_ratio_changed(Configuration.panel);
-                        }
-                    }
-                }
-                Rectangle { }
-            }
+            GeneralTab { }
         }
         Tab {
             title: "Color";
-            VerticalBox {
-                fill_color := HsvColorSelection {
-                    changed => { update_waveform_config(); }
-                    title: "Fill";
-                    h: Configuration.waveform.fill_color.to_hsv().hue;
-                    s: Configuration.waveform.fill_color.to_hsv().saturation;
-                    v: Configuration.waveform.fill_color.to_hsv().value;
-                    a: Configuration.waveform.fill_color.to_hsv().alpha;
-                }
-                stroke_color := HsvColorSelection {
-                    title: "Stroke";
-                    changed => { update_waveform_config(); }
-                    h: Configuration.waveform.stroke_color.to_hsv().hue;
-                    s: Configuration.waveform.stroke_color.to_hsv().saturation;
-                    v: Configuration.waveform.stroke_color.to_hsv().value;
-                    a: Configuration.waveform.stroke_color.to_hsv().alpha;
-                }
-            }
+            ColorTab { }
+        }
+        Tab {
+            title: "Time Curve";
+            TimeCurveTab { }
         }
     }
 }

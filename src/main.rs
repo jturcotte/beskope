@@ -6,6 +6,7 @@ use ringbuf::traits::{Consumer, Observer, Producer, RingBuffer, Split};
 use ringbuf::wrap::caching::Caching;
 use ringbuf::{HeapRb, SharedRb};
 use rustfft::{Fft, FftDirection, FftPlanner};
+use slint::{Model, VecModel};
 use splines::Interpolation;
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -158,6 +159,8 @@ struct WaveformView {
     y_value_write_offset: usize,
     waveform_config: WaveformConfigUniform,
     waveform_config_dirty: bool,
+    time_curve_control_points_dirty: bool,
+    time_curve_control_points: Vec<ControlPoint>,
 }
 
 impl WaveformWindow {
@@ -213,45 +216,10 @@ impl WaveformView {
         audio_sample_skip: usize,
         transform_matrix: [[f32; 4]; 4],
     ) -> WaveformView {
-        // Define control points for the spline used to make the waveform look more compressed for older samples.
-        let cps = vec![
-            (0.0, 0.0, Interpolation::Linear),
-            (0.0, 0.0, Interpolation::CatmullRom),
-            (
-                VERTEX_BUFFER_SIZE as f32 - 44100.0,
-                0.15,
-                Interpolation::CatmullRom,
-            ),
-            (
-                VERTEX_BUFFER_SIZE as f32 - 44100.0 / 5.0,
-                0.3,
-                Interpolation::CatmullRom,
-            ),
-            (
-                VERTEX_BUFFER_SIZE as f32 - 44100.0 / 30.0,
-                0.5,
-                Interpolation::CatmullRom,
-            ),
-            (
-                VERTEX_BUFFER_SIZE as f32 - 44100.0 / 60.0,
-                0.6,
-                Interpolation::CatmullRom,
-            ),
-            ((VERTEX_BUFFER_SIZE - 1) as f32, 1.0, Interpolation::Linear),
-            ((VERTEX_BUFFER_SIZE) as f32, 1.0, Interpolation::Linear),
-        ];
-
-        // Create the spline
-        let spline = splines::Spline::from_vec(
-            cps.iter()
-                .map(|(x, y, interpolation)| splines::Key::new(*x, *y, *interpolation))
-                .collect(),
-        );
-
-        // Sample the spline for every waveform vertex so that the position of older samples are closer together
+        // Initialize the vertex buffers with a linear time curve
         let fill_vertices: Vec<Vertex> = (0..VERTEX_BUFFER_SIZE)
             .flat_map(|i| {
-                let x = spline.sample(i as f32).unwrap() * 2.0 - 1.0;
+                let x = i as f32 / VERTEX_BUFFER_SIZE as f32 * 2.0 - 1.0;
                 vec![
                     Vertex {
                         position: [x, -1.0],
@@ -268,7 +236,7 @@ impl WaveformView {
             .collect();
         let stroke_vertices: Vec<Vertex> = (0..VERTEX_BUFFER_SIZE)
             .map(|i| Vertex {
-                position: [spline.sample(i as f32).unwrap() * 2.0 - 1.0, 0.0],
+                position: [i as f32 / VERTEX_BUFFER_SIZE as f32 * 2.0 - 1.0, 0.0],
                 waveform_index: i as u32,
                 should_offset: 1.0,
             })
@@ -282,7 +250,7 @@ impl WaveformView {
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("Fill Vertex Buffer"),
                     contents: bytemuck::cast_slice(&fill_vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 });
 
         let stroke_vertex_buffer =
@@ -292,7 +260,7 @@ impl WaveformView {
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("Stroke Vertex Buffer"),
                     contents: bytemuck::cast_slice(&stroke_vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 });
 
         let y_value_buffer =
@@ -510,6 +478,8 @@ impl WaveformView {
                 stroke_color: [1.0, 1.0, 1.0, 1.0],
             },
             waveform_config_dirty: true,
+            time_curve_control_points_dirty: false,
+            time_curve_control_points: vec![],
         }
     }
 
@@ -537,6 +507,79 @@ impl WaveformView {
                 bytemuck::cast_slice(&[self.waveform_config]),
             );
             self.waveform_config_dirty = false;
+        }
+
+        if self.time_curve_control_points_dirty {
+            let control_points_with_prefix_suffix_iter =
+                std::iter::once((0.0, 0.0, Interpolation::Linear))
+                    .chain(self.time_curve_control_points.iter().map(|cp| {
+                        (
+                            (cp.t / 3.0 + 1.0) * (VERTEX_BUFFER_SIZE - 1) as f32,
+                            cp.v,
+                            Interpolation::CatmullRom,
+                        )
+                    }))
+                    .chain(std::iter::once((
+                        (VERTEX_BUFFER_SIZE - 1) as f32,
+                        1.0,
+                        Interpolation::Linear,
+                    )))
+                    .chain(std::iter::once((
+                        (VERTEX_BUFFER_SIZE) as f32,
+                        1.0,
+                        Interpolation::Linear,
+                    )));
+
+            let new_spline = splines::Spline::from_vec(
+                control_points_with_prefix_suffix_iter
+                    .map(|(x, y, interpolation)| splines::Key::new(x, y, interpolation))
+                    .collect(),
+            );
+
+            let fill_vertices = (0..VERTEX_BUFFER_SIZE)
+                .flat_map(|i| {
+                    let x = new_spline.sample(i as f32).unwrap_or(0.0) * 2.0 - 1.0;
+                    vec![
+                        Vertex {
+                            position: [x, -1.0],
+                            waveform_index: i as u32,
+                            should_offset: 0.0,
+                        },
+                        Vertex {
+                            position: [x, 0.0],
+                            waveform_index: i as u32,
+                            should_offset: 1.0,
+                        },
+                    ]
+                })
+                .collect::<Vec<Vertex>>();
+
+            let stroke_vertices = (0..VERTEX_BUFFER_SIZE)
+                .map(|i| {
+                    let x = new_spline.sample(i as f32).unwrap_or(0.0) * 2.0 - 1.0;
+                    Vertex {
+                        position: [x, 0.0],
+                        waveform_index: i as u32,
+                        should_offset: 1.0,
+                    }
+                })
+                .collect::<Vec<Vertex>>();
+
+            // Update fill_vertex_buffer
+            self.wgpu_queue.write_buffer(
+                &self.fill_vertex_buffer,
+                0,
+                bytemuck::cast_slice(&fill_vertices),
+            );
+
+            // Update stroke_vertex_buffer
+            self.wgpu_queue.write_buffer(
+                &self.stroke_vertex_buffer,
+                0,
+                bytemuck::cast_slice(&stroke_vertices),
+            );
+
+            self.time_curve_control_points_dirty = false;
         }
     }
 
@@ -683,6 +726,11 @@ impl WaveformView {
             bytemuck::cast_slice(&[aligned_write_offset as u32]),
         );
     }
+
+    fn set_time_curve_control_points(&mut self, points: Vec<ControlPoint>) {
+        self.time_curve_control_points = points;
+        self.time_curve_control_points_dirty = true;
+    }
 }
 
 struct ApplicationState {
@@ -720,6 +768,7 @@ struct WindowedApplicationState {
     left_waveform_view: Option<WaveformView>,
     right_waveform_view: Option<WaveformView>,
     waveform_config: WaveformConfig,
+    time_curve_control_points: Vec<ControlPoint>,
     audio_input_ringbuf_cons: Caching<Arc<SharedRb<Heap<f32>>>, false, true>,
     _stream: Option<cpal::Stream>,
     last_fps_dump_time: Instant,
@@ -821,6 +870,7 @@ impl WindowedApplicationState {
             left_waveform_view: None,
             right_waveform_view: None,
             waveform_config: WaveformConfig::default(),
+            time_curve_control_points: vec![],
             audio_input_ringbuf_cons,
             _stream: stream,
             last_fps_dump_time: Instant::now(),
@@ -881,6 +931,7 @@ impl WindowedApplicationState {
                 transform_matrix.into(),
             );
             view.set_waveform_config(self.waveform_config.clone());
+            view.set_time_curve_control_points(self.time_curve_control_points.clone());
             view
         })
     }
@@ -1022,6 +1073,16 @@ impl WindowedApplicationState {
         }
         if let Some(view) = &mut self.right_waveform_view {
             view.set_waveform_config(config);
+        }
+    }
+
+    fn set_time_curve_control_points(&mut self, points: Vec<ControlPoint>) {
+        self.time_curve_control_points = points.clone();
+        if let Some(view) = &mut self.left_waveform_view {
+            view.set_time_curve_control_points(points.clone());
+        }
+        if let Some(view) = &mut self.right_waveform_view {
+            view.set_time_curve_control_points(points);
         }
     }
 }
@@ -1209,6 +1270,129 @@ pub fn main() {
                     state.set_waveform_config(config);
                 },
             )));
+        }
+    });
+
+    let time_curve_configuration = TimeCurveConfiguration::get(&window);
+    // Send the initial config to the UI
+    {
+        let control_points = time_curve_configuration.get_control_points();
+
+        let updated_points: Vec<_> = (0..control_points.row_count())
+            .map(|i| control_points.row_data(i).unwrap())
+            .collect();
+
+        send_ui_msg(UiMessage::ApplicationStateCallback(Box::new(move |ws| {
+            ws.set_time_curve_control_points(updated_points);
+        })));
+    }
+
+    time_curve_configuration.on_control_point_changed({
+        let window_weak = window.as_weak();
+        let send = send_ui_msg.clone();
+        move |i, cp| {
+            println!("Control point {} changed: {:?}", i, cp);
+            let window = window_weak.upgrade().unwrap();
+            let time_curve_configuration = TimeCurveConfiguration::get(&window);
+            time_curve_configuration.set_dummy_dep(!time_curve_configuration.get_dummy_dep());
+            let control_points = time_curve_configuration.get_control_points();
+            control_points.set_row_data(i as usize, cp);
+
+            let updated_points: Vec<_> = (0..control_points.row_count())
+                .map(|i| control_points.row_data(i).unwrap())
+                .collect();
+
+            send(UiMessage::ApplicationStateCallback(Box::new(move |ws| {
+                ws.set_time_curve_control_points(updated_points);
+            })));
+        }
+    });
+    time_curve_configuration.on_control_point_added({
+        let window_weak = window.as_weak();
+        let send = send_ui_msg.clone();
+        move |cp| {
+            println!("Control point added: {:?}", cp);
+            let window = window_weak.upgrade().unwrap();
+            let time_curve_configuration = TimeCurveConfiguration::get(&window);
+            time_curve_configuration.set_dummy_dep(!time_curve_configuration.get_dummy_dep());
+            let control_points = time_curve_configuration.get_control_points();
+            let vec_model = control_points
+                .as_any()
+                .downcast_ref::<VecModel<ControlPoint>>()
+                .unwrap();
+            vec_model.push(cp);
+
+            let updated_points: Vec<_> = (0..control_points.row_count())
+                .map(|i| control_points.row_data(i).unwrap())
+                .collect();
+
+            send(UiMessage::ApplicationStateCallback(Box::new(move |ws| {
+                ws.set_time_curve_control_points(updated_points);
+            })));
+        }
+    });
+    time_curve_configuration.on_control_point_removed({
+        let window_weak = window.as_weak();
+        let send = send_ui_msg.clone();
+        move |i| {
+            println!("Control point removed: {:?}", i);
+            let window = window_weak.upgrade().unwrap();
+            let time_curve_configuration = TimeCurveConfiguration::get(&window);
+            time_curve_configuration.set_dummy_dep(!time_curve_configuration.get_dummy_dep());
+            let control_points = time_curve_configuration.get_control_points();
+            let vec_model = control_points
+                .as_any()
+                .downcast_ref::<VecModel<ControlPoint>>()
+                .unwrap();
+            vec_model.remove(i as usize);
+
+            let updated_points: Vec<_> = (0..control_points.row_count())
+                .map(|i| control_points.row_data(i).unwrap())
+                .collect();
+
+            send(UiMessage::ApplicationStateCallback(Box::new(move |ws| {
+                ws.set_time_curve_control_points(updated_points);
+            })));
+        }
+    });
+    time_curve_configuration.on_draw_curve({
+        let window_weak = window.as_weak();
+        move |width, height, _| {
+            let window = window_weak.upgrade().unwrap();
+            let time_curve_configuration = TimeCurveConfiguration::get(&window);
+            let control_points = time_curve_configuration.get_control_points();
+
+            let control_points_iter: Vec<_> = (0..control_points.row_count())
+                .map(|i| {
+                    let row_data = control_points.row_data(i).unwrap();
+                    (row_data.t, row_data.v, Interpolation::CatmullRom)
+                })
+                .collect();
+            // println!("Control points: {:?}", control_points_iter);
+            let control_points_with_prefix_suffix_iter =
+                std::iter::once((-3.0, 0.0, Interpolation::Linear))
+                    .chain(control_points_iter)
+                    .chain(std::iter::once((0.0, 1.0, Interpolation::Linear)))
+                    .chain(std::iter::once((0.001, 1.0, Interpolation::Linear)));
+
+            // Create the spline
+            let spline = splines::Spline::from_vec(
+                control_points_with_prefix_suffix_iter
+                    .map(|(x, y, interpolation)| splines::Key::new(x, y, interpolation))
+                    .collect(),
+            );
+
+            let mut svg_path = String::new();
+            let mut command = 'M';
+            for i in 0..(width as usize) {
+                let t = (i as f32 / width as f32) * 3.0 - 3.0;
+                if let Some(y) = spline.sample(t) {
+                    svg_path.push_str(&format!("{}{},{}", command, i, (1.0 - y) * height as f32));
+                }
+                command = 'L';
+            }
+
+            svg_path.into()
         }
     });
 

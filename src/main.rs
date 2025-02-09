@@ -1,18 +1,23 @@
 use cgmath::{Matrix4, Rad, SquareMatrix, Vector3};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use directories::ProjectDirs;
 use num_complex::Complex;
 use ringbuf::storage::Heap;
 use ringbuf::traits::{Consumer, Observer, Producer, RingBuffer, Split};
 use ringbuf::wrap::caching::Caching;
 use ringbuf::{HeapRb, SharedRb};
 use rustfft::{Fft, FftDirection, FftPlanner};
-use slint::{Model, VecModel};
+use slint::{Model, ModelRc, VecModel};
 use splines::Interpolation;
+use std::fmt::Error;
+use std::io::ErrorKind;
 use std::rc::Rc;
+use std::str::FromStr;
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use std::{borrow::Cow, sync::Arc};
+use toml_edit::{table, value, DocumentMut};
 use wayland_client::{Connection, QueueHandle};
 use wgpu::util::DeviceExt;
 use wgpu::{BufferUsages, CommandEncoder, TextureFormat, TextureView};
@@ -1224,10 +1229,158 @@ enum UiMessage {
     ),
 }
 
+fn get_config_path() -> Option<std::path::PathBuf> {
+    let project_dirs = ProjectDirs::from("", "", "soundsift")?;
+    Some(project_dirs.config_dir().join("config.toml"))
+}
+
+fn save_configuration(configuration: &Configuration) -> Result<(), Box<dyn std::error::Error>> {
+    let config_path = get_config_path().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "Config directory not found")
+    })?;
+
+    let mut doc = if config_path.exists() {
+        let existing_data = std::fs::read_to_string(&config_path)?;
+        existing_data
+            .parse::<DocumentMut>()
+            .unwrap_or_else(|_| DocumentMut::new())
+    } else {
+        DocumentMut::new()
+    };
+
+    let waveform = configuration.get_waveform();
+    doc["waveform"] = table();
+    // Use "#rrggbbaa" format for colors
+    doc["waveform"]["fill_color"] = value(format!(
+        "#{:02x}{:02x}{:02x}{:02x}",
+        waveform.fill_color.red(),
+        waveform.fill_color.green(),
+        waveform.fill_color.blue(),
+        waveform.fill_color.alpha()
+    ));
+    doc["waveform"]["stroke_color"] = value(format!(
+        "#{:02x}{:02x}{:02x}{:02x}",
+        waveform.stroke_color.red(),
+        waveform.stroke_color.green(),
+        waveform.stroke_color.blue(),
+        waveform.stroke_color.alpha()
+    ));
+
+    let panel = configuration.get_panel();
+    doc["panel"] = table();
+    doc["panel"]["layout"] = value(format!("{:?}", panel.layout));
+    doc["panel"]["width"] = value(panel.width as i64);
+    doc["panel"]["exclusive_ratio"] = value(panel.exclusive_ratio as f64);
+
+    let control_points = configuration.get_time_curve_control_points();
+    let mut sorted_points: Vec<ControlPoint> = control_points.iter().collect();
+    sorted_points.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap());
+    let points_array: toml_edit::ArrayOfTables = sorted_points
+        .iter()
+        .map(|cp| {
+            let mut table = toml_edit::Table::new();
+            table["t"] = value(cp.t as f64);
+            table["v"] = value(cp.v as f64);
+            table
+        })
+        .collect();
+
+    doc["time_curve"] = table();
+    doc["time_curve"]["control_points"] = toml_edit::Item::ArrayOfTables(points_array);
+
+    std::fs::create_dir_all(config_path.parent().unwrap())?;
+    std::fs::write(config_path, doc.to_string())?;
+    Ok(())
+}
+
+fn load_configuration(configuration: &Configuration) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(config_path) = get_config_path() {
+        if !config_path.exists() {
+            return Ok(());
+        }
+        let existing_data = std::fs::read_to_string(&config_path)?;
+        let doc = existing_data.parse::<DocumentMut>()?;
+
+        if let Some(waveform_item) = doc.get("waveform") {
+            let mut waveform = configuration.get_waveform();
+            if let Some(color) = waveform_item.get("fill_color").and_then(|i| i.as_str()) {
+                waveform.fill_color = parse_color(color)?;
+            }
+            if let Some(color) = waveform_item.get("stroke_color").and_then(|i| i.as_str()) {
+                waveform.stroke_color = parse_color(color)?;
+            }
+            configuration.set_waveform(waveform);
+        }
+
+        if let Some(panel_item) = doc.get("panel") {
+            let mut panel = PanelConfig::default();
+            if let Some(panel_layout) = panel_item["layout"].as_str().and_then(parse_panel_layout) {
+                panel.layout = panel_layout.into();
+            }
+            if let Some(p_width) = panel_item["width"].as_integer() {
+                panel.width = p_width as i32;
+            }
+            if let Some(exclusive) = panel_item["exclusive_ratio"].as_float() {
+                panel.exclusive_ratio = exclusive as f32;
+            }
+            configuration.set_panel(panel);
+        }
+        if let Some(time_curve_item) = doc.get("time_curve") {
+            if let Some(control_points) = time_curve_item
+                .get("control_points")
+                .and_then(|i| i.as_array_of_tables())
+            {
+                let mut parsed_control_points = Vec::new();
+                for table in control_points.iter() {
+                    if let (Some(t), Some(v)) = (
+                        table.get("t").and_then(|t| t.as_float()),
+                        table.get("v").and_then(|v| v.as_float()),
+                    ) {
+                        parsed_control_points.push(ControlPoint {
+                            t: t as f32,
+                            v: v as f32,
+                        });
+                    }
+                }
+                println!("Parsed control points: {:?}", parsed_control_points);
+                configuration.set_time_curve_control_points(ModelRc::new(VecModel::from(
+                    parsed_control_points,
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn parse_color(s: &str) -> Result<slint::Color, Box<dyn std::error::Error>> {
+    if s.starts_with('#') && s.len() == 9 {
+        let r = u8::from_str_radix(&s[1..3], 16)?;
+        let g = u8::from_str_radix(&s[3..5], 16)?;
+        let b = u8::from_str_radix(&s[5..7], 16)?;
+        let a = u8::from_str_radix(&s[7..9], 16)?;
+        Ok(slint::Color::from_argb_u8(a, r, g, b))
+    } else {
+        Err(std::io::Error::new(ErrorKind::InvalidData, "Invalid color format").into())
+    }
+}
+
+fn parse_panel_layout(s: &str) -> Option<PanelLayout> {
+    match s {
+        "TwoPanels" => Some(PanelLayout::TwoPanels),
+        "SingleTop" => Some(PanelLayout::SingleTop),
+        "SingleBottom" => Some(PanelLayout::SingleBottom),
+        _ => None,
+    }
+}
+
 pub fn main() {
     let (ui_msg_tx, ui_msg_rx) = mpsc::channel::<UiMessage>();
     let window = ConfigurationWindow::new().unwrap();
     let configuration = Configuration::get(&window);
+
+    if let Err(e) = load_configuration(&configuration) {
+        eprintln!("Failed to load configuration: {}", e);
+    }
     let panel_config = configuration.get_panel();
 
     let request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>> =
@@ -1273,10 +1426,10 @@ pub fn main() {
         }
     });
 
-    let time_curve_configuration = TimeCurveConfiguration::get(&window);
+    let time_curve_drawer = TimeCurveDrawer::get(&window);
     // Send the initial config to the UI
     {
-        let control_points = time_curve_configuration.get_control_points();
+        let control_points = configuration.get_time_curve_control_points();
 
         let updated_points: Vec<_> = (0..control_points.row_count())
             .map(|i| control_points.row_data(i).unwrap())
@@ -1287,15 +1440,16 @@ pub fn main() {
         })));
     }
 
-    time_curve_configuration.on_control_point_changed({
+    configuration.on_time_curve_control_point_changed({
         let window_weak = window.as_weak();
         let send = send_ui_msg.clone();
         move |i, cp| {
             println!("Control point {} changed: {:?}", i, cp);
             let window = window_weak.upgrade().unwrap();
-            let time_curve_configuration = TimeCurveConfiguration::get(&window);
-            time_curve_configuration.set_dummy_dep(!time_curve_configuration.get_dummy_dep());
-            let control_points = time_curve_configuration.get_control_points();
+            let time_curve_drawer = TimeCurveDrawer::get(&window);
+            time_curve_drawer.set_dummy_dep(!time_curve_drawer.get_dummy_dep());
+            let configuration = Configuration::get(&window);
+            let control_points = configuration.get_time_curve_control_points();
             control_points.set_row_data(i as usize, cp);
 
             let updated_points: Vec<_> = (0..control_points.row_count())
@@ -1307,15 +1461,16 @@ pub fn main() {
             })));
         }
     });
-    time_curve_configuration.on_control_point_added({
+    configuration.on_time_curve_control_point_added({
         let window_weak = window.as_weak();
         let send = send_ui_msg.clone();
         move |cp| {
             println!("Control point added: {:?}", cp);
             let window = window_weak.upgrade().unwrap();
-            let time_curve_configuration = TimeCurveConfiguration::get(&window);
-            time_curve_configuration.set_dummy_dep(!time_curve_configuration.get_dummy_dep());
-            let control_points = time_curve_configuration.get_control_points();
+            let time_curve_drawer = TimeCurveDrawer::get(&window);
+            time_curve_drawer.set_dummy_dep(!time_curve_drawer.get_dummy_dep());
+            let configuration = Configuration::get(&window);
+            let control_points = configuration.get_time_curve_control_points();
             let vec_model = control_points
                 .as_any()
                 .downcast_ref::<VecModel<ControlPoint>>()
@@ -1331,15 +1486,16 @@ pub fn main() {
             })));
         }
     });
-    time_curve_configuration.on_control_point_removed({
+    configuration.on_time_curve_control_point_removed({
         let window_weak = window.as_weak();
         let send = send_ui_msg.clone();
         move |i| {
             println!("Control point removed: {:?}", i);
             let window = window_weak.upgrade().unwrap();
-            let time_curve_configuration = TimeCurveConfiguration::get(&window);
-            time_curve_configuration.set_dummy_dep(!time_curve_configuration.get_dummy_dep());
-            let control_points = time_curve_configuration.get_control_points();
+            let time_curve_drawer = TimeCurveDrawer::get(&window);
+            time_curve_drawer.set_dummy_dep(!time_curve_drawer.get_dummy_dep());
+            let configuration = Configuration::get(&window);
+            let control_points = configuration.get_time_curve_control_points();
             let vec_model = control_points
                 .as_any()
                 .downcast_ref::<VecModel<ControlPoint>>()
@@ -1355,12 +1511,12 @@ pub fn main() {
             })));
         }
     });
-    time_curve_configuration.on_draw_curve({
+    time_curve_drawer.on_draw_curve({
         let window_weak = window.as_weak();
         move |width, height, _| {
             let window = window_weak.upgrade().unwrap();
-            let time_curve_configuration = TimeCurveConfiguration::get(&window);
-            let control_points = time_curve_configuration.get_control_points();
+            let configuration = Configuration::get(&window);
+            let control_points = configuration.get_time_curve_control_points();
 
             let control_points_iter: Vec<_> = (0..control_points.row_count())
                 .map(|i| {
@@ -1447,8 +1603,22 @@ pub fn main() {
         }
     });
 
+    window.on_ok_clicked({
+        let window_weak = window.as_weak();
+        move || {
+            let window = window_weak.upgrade().unwrap();
+            let configuration = Configuration::get(&window);
+            // TODO: Save the configuration here
+            if let Err(e) = save_configuration(&configuration) {
+                eprintln!("Failed to save configuration: {}", e);
+            }
+            window.hide().unwrap();
+        }
+    });
+
     // Apply the initial configuration from the UI
     configuration.invoke_waveform_config_changed();
 
-    window.run().unwrap();
+    window.show().unwrap();
+    slint::run_event_loop_until_quit().unwrap();
 }

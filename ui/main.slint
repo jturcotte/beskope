@@ -1,4 +1,4 @@
-import { VerticalBox, Slider, HorizontalBox, GroupBox, TabWidget, ComboBox, LineEdit, GridBox, AboutSlint, Palette } from "std-widgets.slint";
+import { VerticalBox, Slider, HorizontalBox, GroupBox, TabWidget, ComboBox, LineEdit, GridBox, AboutSlint, Palette, StandardButton } from "std-widgets.slint";
 
 enum RenderChannels {
     Single,
@@ -31,19 +31,24 @@ struct WaveformConfig {
     stroke_color: color,
 }
 
+struct ControlPoint {
+    t: float,
+    v: float,
+}
+
 export global Configuration {
     callback waveform_config_changed();
+
+    in-out property<WaveformConfig> waveform: {
+        fill_color: Colors.rgba(32, 32, 32, 0.8),
+        stroke_color: Colors.rgba(205, 205, 205, 0.8),
+    };
 
     callback panel_channels_changed(PanelConfig);
     callback panel_layout_changed(PanelConfig);
     callback panel_layer_changed(PanelConfig);
     callback panel_width_changed(PanelConfig);
     callback panel_exclusive_ratio_changed(PanelConfig);
-
-    in-out property<WaveformConfig> waveform: {
-        fill_color: Colors.rgba(32, 32, 32, 0.8),
-        stroke_color: Colors.rgba(205, 205, 205, 0.8),
-    };
 
     in-out property<PanelConfig> panel: {
         channels: RenderChannels.Both,
@@ -52,6 +57,13 @@ export global Configuration {
         width: 80,
         exclusive_ratio: 0.5,
     };
+
+    callback time_curve_control_point_changed(int, ControlPoint);
+    callback time_curve_control_point_added(ControlPoint);
+    callback time_curve_control_point_removed(int);
+
+    in-out property<float> time_curve_min_t: -3;
+    in-out property<[ControlPoint]> time_curve_control_points: [{t: -1, v: 0.15, tan: 0.5}, {t: -1/5, v: 0.3, tan: 0.5}, {t: -1/30, v: 0.5, tan: 0.5}, {t: -1/60, v: 0.6, tan: 0.5}];
 }
 
 component LabeledSlider {
@@ -256,20 +268,10 @@ component ColorTab inherits VerticalBox {
     }
 }
 
-struct ControlPoint {
-    t: float,
-    v: float,
-}
-
-export global TimeCurveConfiguration {
-    callback control_point_changed(int, ControlPoint);
-    callback control_point_added(ControlPoint);
-    callback control_point_removed(int);
+export global TimeCurveDrawer {
     pure callback draw_curve(length, length, bool) -> string;
     // This is just to dirty the commands binding so that draw_curve gets called again.
     in property<bool> dummy_dep: false;
-    in-out property<float> min_t: -3;
-    in-out property<[ControlPoint]> control_points: [{t: -1, v: 0.15, tan: 0.5}, {t: -1/5, v: 0.3, tan: 0.5}, {t: -1/30, v: 0.5, tan: 0.5}, {t: -1/60, v: 0.6, tan: 0.5}];
 }
 
 component ControlPointHandle inherits TouchArea {
@@ -302,15 +304,15 @@ component TimeCurveTab inherits VerticalBox {
     TouchArea {
         pointer-event(e) => {
             if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
-                TimeCurveConfiguration.control_point_added({
-                    t: TimeCurveConfiguration.min_t * (1.0 - (self.mouse-x / parent.width)),
-                    v: 1.0 - self.mouse-y / parent.height,
+                Configuration.time_curve_control_point_added({
+                    t: Configuration.time_curve_min_t * (1.0 - (self.mouse-x / self.width)),
+                    v: 1.0 - self.mouse-y / self.height,
                 });
             } else if e.kind == PointerEventKind.move && self.pressed {
                 // The just added point is the last one.
-                TimeCurveConfiguration.control_point_changed(TimeCurveConfiguration.control_points.length - 1, {
-                    t: TimeCurveConfiguration.min_t * (1.0 - max(0.0, min(1.0, (self.mouse-x / parent.width)))),
-                    v: 1.0 - max(0.0, min(1.0, self.mouse-y / parent.height)),
+                Configuration.time_curve_control_point_changed(Configuration.time_curve_control_points.length - 1, {
+                    t: Configuration.time_curve_min_t * (1.0 - max(0.0, min(1.0, (self.mouse-x / self.width)))),
+                    v: 1.0 - max(0.0, min(1.0, self.mouse-y / self.height)),
                 });
             }
         }
@@ -322,33 +324,33 @@ component TimeCurveTab inherits VerticalBox {
             viewbox-height: (self.height - self.stroke-width) / 1px;
             clip: true;
 
-            commands: TimeCurveConfiguration.draw_curve(self.width, self.height, TimeCurveConfiguration.dummy_dep);
+            commands: TimeCurveDrawer.draw_curve(self.width, self.height, TimeCurveDrawer.dummy_dep);
         }
         Rectangle {
             border-color: Palette.alternate-foreground;
             border-width: 2px;
         }
-        for cp[i] in TimeCurveConfiguration.control_points:
+        for cp[i] in Configuration.time_curve_control_points:
         ControlPointHandle {
-            x: (1.0 - cp.t / TimeCurveConfiguration.min_t) * parent.width - self.width / 2.0;
+            x: (1.0 - cp.t / Configuration.time_curve_min_t) * parent.width - self.width / 2.0;
             y: (1.0 - cp.v) * parent.height - self.height / 2.0;
             label: round(cp.t * 1000) / 1000 + "s: " + cp.v;
             moved => {
-                TimeCurveConfiguration.control_point_changed(i, {
-                    t: TimeCurveConfiguration.min_t * (1.0 - max(0.0, min(1.0, (self.x + self.width / 2.0 + self.mouse-x - self.pressed-x) / parent.width))),
+                Configuration.time_curve_control_point_changed(i, {
+                    t: Configuration.time_curve_min_t * (1.0 - max(0.0, min(1.0, (self.x + self.width / 2.0 + self.mouse-x - self.pressed-x) / parent.width))),
                     v: max(0.0, min(1.0, 1.0 - (self.y + self.height / 2.0 + self.mouse-y - self.pressed-y) / parent.height)),
                 });
             }
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                    TimeCurveConfiguration.control_point_removed(i);
+                    Configuration.time_curve_control_point_removed(i);
                 }
             }
         }
     }
 }
 
-export component ConfigurationWindow inherits Window {
+export component ConfigurationWindow inherits Dialog {
     preferred-width: 800px;
     preferred-height: 600px;
 
@@ -365,5 +367,8 @@ export component ConfigurationWindow inherits Window {
             title: "Time Curve";
             TimeCurveTab { }
         }
+    }
+    StandardButton {
+        kind: StandardButtonKind.ok;
     }
 }

@@ -1,21 +1,18 @@
 use cgmath::{Matrix4, Rad, SquareMatrix, Vector3};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use directories::ProjectDirs;
 use num_complex::Complex;
 use ringbuf::storage::Heap;
 use ringbuf::traits::{Consumer, Observer, Producer, RingBuffer, Split};
 use ringbuf::wrap::caching::Caching;
 use ringbuf::{HeapRb, SharedRb};
 use rustfft::{Fft, FftDirection, FftPlanner};
-use slint::{Model, ModelRc, VecModel};
+use slint::{Global, Model};
 use splines::Interpolation;
-use std::io::ErrorKind;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use std::{borrow::Cow, sync::Arc};
-use toml_edit::{table, value, DocumentMut};
 use wayland_client::{Connection, QueueHandle};
 use wgpu::util::DeviceExt;
 use wgpu::{BufferUsages, CommandEncoder, TextureFormat, TextureView};
@@ -28,6 +25,8 @@ use winit::{
 };
 use wlr_layers::{PanelAnchorPosition, WlrLayerApplicationHandler, WlrWaylandEventHandler};
 
+mod config;
+mod ui;
 mod wlr_layers;
 
 const VERTEX_BUFFER_SIZE: usize = 44100 * 3;
@@ -163,7 +162,7 @@ struct WaveformView {
     waveform_config: WaveformConfigUniform,
     waveform_config_dirty: bool,
     time_curve_control_points_dirty: bool,
-    time_curve_control_points: Vec<ControlPoint>,
+    time_curve_control_points: Vec<ui::ControlPoint>,
 }
 
 impl WaveformWindow {
@@ -486,7 +485,7 @@ impl WaveformView {
         }
     }
 
-    fn set_waveform_config(&mut self, config: WaveformConfig) {
+    fn set_waveform_config(&mut self, config: ui::WaveformConfig) {
         self.waveform_config.fill_color = [
             config.fill_color.red() as f32 / 255.0,
             config.fill_color.green() as f32 / 255.0,
@@ -730,7 +729,7 @@ impl WaveformView {
         );
     }
 
-    fn set_time_curve_control_points(&mut self, points: Vec<ControlPoint>) {
+    fn set_time_curve_control_points(&mut self, points: Vec<ui::ControlPoint>) {
         self.time_curve_control_points = points;
         self.time_curve_control_points_dirty = true;
     }
@@ -770,8 +769,8 @@ struct WindowedApplicationState {
     secondary_waveform_window: Option<WaveformWindow>,
     left_waveform_view: Option<WaveformView>,
     right_waveform_view: Option<WaveformView>,
-    waveform_config: WaveformConfig,
-    time_curve_control_points: Vec<ControlPoint>,
+    waveform_config: ui::WaveformConfig,
+    time_curve_control_points: Vec<ui::ControlPoint>,
     audio_input_ringbuf_cons: Caching<Arc<SharedRb<Heap<f32>>>, false, true>,
     _stream: Option<cpal::Stream>,
     last_fps_dump_time: Instant,
@@ -872,7 +871,7 @@ impl WindowedApplicationState {
             secondary_waveform_window: None,
             left_waveform_view: None,
             right_waveform_view: None,
-            waveform_config: WaveformConfig::default(),
+            waveform_config: ui::WaveformConfig::default(),
             time_curve_control_points: vec![],
             audio_input_ringbuf_cons,
             _stream: stream,
@@ -890,7 +889,7 @@ impl WindowedApplicationState {
         window: &WaveformWindow,
         render_window: RenderWindow,
         anchor_position: PanelAnchorPosition,
-        channels: RenderChannels,
+        channels: ui::RenderChannels,
         left: bool,
     ) -> Option<WaveformView> {
         // Identity transform is a horizontal waveform scrolling from right to left.
@@ -901,24 +900,30 @@ impl WindowedApplicationState {
         let translate_half_left = Matrix4::from_translation(Vector3::new(-1.0, 0.0, 0.0));
         let translate_half_right = Matrix4::from_translation(Vector3::new(1.0, 0.0, 0.0));
         let transform_matrix = match (render_window, anchor_position, channels, left) {
-            (RenderWindow::Primary, PanelAnchorPosition::Top, RenderChannels::Single, _) => {
+            (RenderWindow::Primary, PanelAnchorPosition::Top, ui::RenderChannels::Single, _) => {
                 Some(mirror_v)
             }
-            (RenderWindow::Primary, PanelAnchorPosition::Top, RenderChannels::Both, true) => {
+            (RenderWindow::Primary, PanelAnchorPosition::Top, ui::RenderChannels::Both, true) => {
                 Some(mirror_v * half * translate_half_left)
             }
-            (RenderWindow::Primary, PanelAnchorPosition::Top, RenderChannels::Both, false) => {
+            (RenderWindow::Primary, PanelAnchorPosition::Top, ui::RenderChannels::Both, false) => {
                 Some(mirror_v * half * translate_half_right * mirror_h)
             }
-            (RenderWindow::Primary, PanelAnchorPosition::Bottom, RenderChannels::Single, _) => {
+            (RenderWindow::Primary, PanelAnchorPosition::Bottom, ui::RenderChannels::Single, _) => {
                 Some(Matrix4::identity())
             }
-            (RenderWindow::Primary, PanelAnchorPosition::Bottom, RenderChannels::Both, true) => {
-                Some(half * translate_half_left)
-            }
-            (RenderWindow::Primary, PanelAnchorPosition::Bottom, RenderChannels::Both, false) => {
-                Some(half * translate_half_right * mirror_h)
-            }
+            (
+                RenderWindow::Primary,
+                PanelAnchorPosition::Bottom,
+                ui::RenderChannels::Both,
+                true,
+            ) => Some(half * translate_half_left),
+            (
+                RenderWindow::Primary,
+                PanelAnchorPosition::Bottom,
+                ui::RenderChannels::Both,
+                false,
+            ) => Some(half * translate_half_right * mirror_h),
             (RenderWindow::Primary, PanelAnchorPosition::Left, _, _) => Some(rotation * mirror_h),
             (RenderWindow::Secondary, PanelAnchorPosition::Right, _, _) => {
                 Some(rotation * mirror_v * mirror_h)
@@ -943,7 +948,7 @@ impl WindowedApplicationState {
         &mut self,
         wgpu_surface: Rc<dyn WgpuSurface>,
         anchor_position: PanelAnchorPosition,
-        channels: RenderChannels,
+        channels: ui::RenderChannels,
     ) {
         let window = WaveformWindow::new(wgpu_surface.clone());
 
@@ -977,7 +982,7 @@ impl WindowedApplicationState {
             &window,
             RenderWindow::Secondary,
             anchor_position,
-            RenderChannels::Both,
+            ui::RenderChannels::Both,
             false,
         ) {
             self.right_waveform_view = Some(view);
@@ -1069,7 +1074,7 @@ impl WindowedApplicationState {
         }
     }
 
-    fn set_waveform_config(&mut self, config: WaveformConfig) {
+    fn set_waveform_config(&mut self, config: ui::WaveformConfig) {
         self.waveform_config = config.clone();
         if let Some(view) = &mut self.left_waveform_view {
             view.set_waveform_config(config.clone());
@@ -1079,7 +1084,7 @@ impl WindowedApplicationState {
         }
     }
 
-    fn set_time_curve_control_points(&mut self, points: Vec<ControlPoint>) {
+    fn set_time_curve_control_points(&mut self, points: Vec<ui::ControlPoint>) {
         self.time_curve_control_points = points.clone();
         if let Some(view) = &mut self.left_waveform_view {
             view.set_time_curve_control_points(points.clone());
@@ -1102,7 +1107,7 @@ impl WlrLayerApplicationHandler for ApplicationState {
         &mut self,
         wgpu_surface: Rc<dyn WgpuSurface>,
         anchor_position: PanelAnchorPosition,
-        channels: RenderChannels,
+        channels: ui::RenderChannels,
     ) {
         self.windowed_state
             .as_mut()
@@ -1162,7 +1167,7 @@ impl ApplicationHandler for ApplicationState {
                 .configure_primary_wgpu_surface(
                     Self::create_winit_window_and_wgpu_surface(event_loop),
                     PanelAnchorPosition::Bottom,
-                    RenderChannels::Both,
+                    ui::RenderChannels::Both,
                 );
         }
     }
@@ -1212,8 +1217,6 @@ impl ApplicationHandler for ApplicationState {
     }
 }
 
-slint::include_modules!();
-
 enum UiMessage {
     ApplicationStateCallback(Box<dyn FnOnce(&mut WindowedApplicationState) + Send>),
     WlrWaylandEventHandlerCallback(
@@ -1227,154 +1230,39 @@ enum UiMessage {
     ),
 }
 
-fn get_config_path() -> Option<std::path::PathBuf> {
-    let project_dirs = ProjectDirs::from("", "", "soundsift")?;
-    Some(project_dirs.config_dir().join("config.toml"))
-}
-
-fn save_configuration(configuration: &Configuration) -> Result<(), Box<dyn std::error::Error>> {
-    let config_path = get_config_path().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "Config directory not found")
-    })?;
-
-    let mut doc = if config_path.exists() {
-        let existing_data = std::fs::read_to_string(&config_path)?;
-        existing_data
-            .parse::<DocumentMut>()
-            .unwrap_or_else(|_| DocumentMut::new())
-    } else {
-        DocumentMut::new()
-    };
-
-    let waveform = configuration.get_waveform();
-    doc["waveform"] = table();
-    // Use "#rrggbbaa" format for colors
-    doc["waveform"]["fill_color"] = value(format!(
-        "#{:02x}{:02x}{:02x}{:02x}",
-        waveform.fill_color.red(),
-        waveform.fill_color.green(),
-        waveform.fill_color.blue(),
-        waveform.fill_color.alpha()
-    ));
-    doc["waveform"]["stroke_color"] = value(format!(
-        "#{:02x}{:02x}{:02x}{:02x}",
-        waveform.stroke_color.red(),
-        waveform.stroke_color.green(),
-        waveform.stroke_color.blue(),
-        waveform.stroke_color.alpha()
-    ));
-
-    doc["panel"] = table();
-    doc["panel"]["layout"] = value(format!("{:?}", configuration.get_panel_layout()));
-    doc["panel"]["width"] = value(configuration.get_panel_width() as i64);
-    doc["panel"]["exclusive_ratio"] = value(configuration.get_panel_exclusive_ratio() as f64);
-
-    let control_points = configuration.get_time_curve_control_points();
-    let mut sorted_points: Vec<ControlPoint> = control_points.iter().collect();
-    sorted_points.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap());
-    let points_array: toml_edit::ArrayOfTables = sorted_points
-        .iter()
-        .map(|cp| {
-            let mut table = toml_edit::Table::new();
-            table["t"] = value(cp.t as f64);
-            table["v"] = value(cp.v as f64);
-            table
-        })
-        .collect();
-
-    doc["time_curve"] = table();
-    doc["time_curve"]["control_points"] = toml_edit::Item::ArrayOfTables(points_array);
-
-    std::fs::create_dir_all(config_path.parent().unwrap())?;
-    std::fs::write(config_path, doc.to_string())?;
-    Ok(())
-}
-
-fn load_configuration(configuration: &Configuration) -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(config_path) = get_config_path() {
-        if !config_path.exists() {
-            return Ok(());
-        }
-        let existing_data = std::fs::read_to_string(&config_path)?;
-        let doc = existing_data.parse::<DocumentMut>()?;
-
-        if let Some(waveform_item) = doc.get("waveform") {
-            let mut waveform = configuration.get_waveform();
-            if let Some(color) = waveform_item.get("fill_color").and_then(|i| i.as_str()) {
-                waveform.fill_color = parse_color(color)?;
-            }
-            if let Some(color) = waveform_item.get("stroke_color").and_then(|i| i.as_str()) {
-                waveform.stroke_color = parse_color(color)?;
-            }
-            configuration.set_waveform(waveform);
-        }
-
-        if let Some(panel_item) = doc.get("panel") {
-            if let Some(panel_layout) = panel_item["layout"].as_str().and_then(parse_panel_layout) {
-                configuration.set_panel_layout(panel_layout.into());
-            }
-            if let Some(p_width) = panel_item["width"].as_integer() {
-                configuration.set_panel_width(p_width as i32);
-            }
-            if let Some(exclusive) = panel_item["exclusive_ratio"].as_float() {
-                configuration.set_panel_exclusive_ratio(exclusive as f32);
-            }
-        }
-        if let Some(time_curve_item) = doc.get("time_curve") {
-            if let Some(control_points) = time_curve_item
-                .get("control_points")
-                .and_then(|i| i.as_array_of_tables())
-            {
-                let mut parsed_control_points = Vec::new();
-                for table in control_points.iter() {
-                    if let (Some(t), Some(v)) = (
-                        table.get("t").and_then(|t| t.as_float()),
-                        table.get("v").and_then(|v| v.as_float()),
-                    ) {
-                        parsed_control_points.push(ControlPoint {
-                            t: t as f32,
-                            v: v as f32,
-                        });
-                    }
-                }
-                println!("Parsed control points: {:?}", parsed_control_points);
-                configuration.set_time_curve_control_points(ModelRc::new(VecModel::from(
-                    parsed_control_points,
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn parse_color(s: &str) -> Result<slint::Color, Box<dyn std::error::Error>> {
-    if s.starts_with('#') && s.len() == 9 {
-        let r = u8::from_str_radix(&s[1..3], 16)?;
-        let g = u8::from_str_radix(&s[3..5], 16)?;
-        let b = u8::from_str_radix(&s[5..7], 16)?;
-        let a = u8::from_str_radix(&s[7..9], 16)?;
-        Ok(slint::Color::from_argb_u8(a, r, g, b))
-    } else {
-        Err(std::io::Error::new(ErrorKind::InvalidData, "Invalid color format").into())
-    }
-}
-
-fn parse_panel_layout(s: &str) -> Option<PanelLayout> {
-    match s {
-        "TwoPanels" => Some(PanelLayout::TwoPanels),
-        "SingleTop" => Some(PanelLayout::SingleTop),
-        "SingleBottom" => Some(PanelLayout::SingleBottom),
-        _ => None,
-    }
-}
-
 pub fn main() {
     let (ui_msg_tx, ui_msg_rx) = mpsc::channel::<UiMessage>();
-    let window = ConfigurationWindow::new().unwrap();
-    let configuration = Configuration::get(&window);
+    let request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>> =
+        Arc::new(Mutex::new(Arc::new(|| {})));
 
-    if let Err(e) = load_configuration(&configuration) {
+    let send_ui_msg = {
+        let request_redraw_callback = request_redraw_callback.clone();
+        move |msg| {
+            ui_msg_tx.send(msg).unwrap();
+            request_redraw_callback.lock().unwrap()();
+        }
+    };
+
+    let config_window = ui::init(send_ui_msg.clone());
+    let configuration = ui::Configuration::get(&config_window);
+
+    if let Err(e) = config::load_configuration(&configuration) {
         eprintln!("Failed to load configuration: {}", e);
+    }
+
+    // Apply the initial waveform and time curve configuration explicitly since it won't be passed in as parameter like the panel config
+    {
+        let waveform = configuration.get_waveform();
+
+        let control_points = configuration.get_time_curve_control_points();
+        let updated_points: Vec<_> = (0..control_points.row_count())
+            .map(|i| control_points.row_data(i).unwrap())
+            .collect();
+
+        send_ui_msg(UiMessage::ApplicationStateCallback(Box::new(move |ws| {
+            ws.set_waveform_config(waveform);
+            ws.set_time_curve_control_points(updated_points);
+        })));
     }
 
     let panel_config = wlr_layers::PanelConfig {
@@ -1385,10 +1273,8 @@ pub fn main() {
         exclusive_ratio: configuration.get_panel_exclusive_ratio(),
     };
 
-    let request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>> =
-        Arc::new(Mutex::new(Arc::new(|| {})));
+    // Spawn the wlr panel rendering in a separate thread, this is supported with wayland
     std::thread::spawn({
-        let request_redraw_callback = request_redraw_callback.clone();
         move || {
             let mut app_state = ApplicationState::new(request_redraw_callback.clone());
 
@@ -1407,242 +1293,6 @@ pub fn main() {
         }
     });
 
-    let send_ui_msg = {
-        move |msg| {
-            ui_msg_tx.send(msg).unwrap();
-            request_redraw_callback.lock().unwrap()();
-        }
-    };
-
-    // Apply the initial waveform configuration explicitly since it wasn't passed in as parameter like the panel config
-    let config = configuration.get_waveform();
-    send_ui_msg(UiMessage::ApplicationStateCallback(Box::new(
-        move |state| {
-            state.set_waveform_config(config);
-        },
-    )));
-
-    configuration.on_waveform_changed({
-        let send = send_ui_msg.clone();
-        move |config| {
-            send(UiMessage::ApplicationStateCallback(Box::new(
-                move |state| {
-                    state.set_waveform_config(config);
-                },
-            )));
-        }
-    });
-
-    let time_curve_drawer = TimeCurveDrawer::get(&window);
-    // Send the initial config to the UI
-    {
-        let control_points = configuration.get_time_curve_control_points();
-
-        let updated_points: Vec<_> = (0..control_points.row_count())
-            .map(|i| control_points.row_data(i).unwrap())
-            .collect();
-
-        send_ui_msg(UiMessage::ApplicationStateCallback(Box::new(move |ws| {
-            ws.set_time_curve_control_points(updated_points);
-        })));
-    }
-
-    configuration.on_time_curve_control_point_changed({
-        let window_weak = window.as_weak();
-        let send = send_ui_msg.clone();
-        move |i, cp| {
-            println!("Control point {} changed: {:?}", i, cp);
-            let window = window_weak.upgrade().unwrap();
-            let time_curve_drawer = TimeCurveDrawer::get(&window);
-            time_curve_drawer.set_dummy_dep(!time_curve_drawer.get_dummy_dep());
-            let configuration = Configuration::get(&window);
-            let control_points = configuration.get_time_curve_control_points();
-            control_points.set_row_data(i as usize, cp);
-
-            let updated_points: Vec<_> = (0..control_points.row_count())
-                .map(|i| control_points.row_data(i).unwrap())
-                .collect();
-
-            send(UiMessage::ApplicationStateCallback(Box::new(move |ws| {
-                ws.set_time_curve_control_points(updated_points);
-            })));
-        }
-    });
-    configuration.on_time_curve_control_point_added({
-        let window_weak = window.as_weak();
-        let send = send_ui_msg.clone();
-        move |cp| {
-            println!("Control point added: {:?}", cp);
-            let window = window_weak.upgrade().unwrap();
-            let time_curve_drawer = TimeCurveDrawer::get(&window);
-            time_curve_drawer.set_dummy_dep(!time_curve_drawer.get_dummy_dep());
-            let configuration = Configuration::get(&window);
-            let control_points = configuration.get_time_curve_control_points();
-            let vec_model = control_points
-                .as_any()
-                .downcast_ref::<VecModel<ControlPoint>>()
-                .unwrap();
-            vec_model.push(cp);
-
-            let updated_points: Vec<_> = (0..control_points.row_count())
-                .map(|i| control_points.row_data(i).unwrap())
-                .collect();
-
-            send(UiMessage::ApplicationStateCallback(Box::new(move |ws| {
-                ws.set_time_curve_control_points(updated_points);
-            })));
-        }
-    });
-    configuration.on_time_curve_control_point_removed({
-        let window_weak = window.as_weak();
-        let send = send_ui_msg.clone();
-        move |i| {
-            println!("Control point removed: {:?}", i);
-            let window = window_weak.upgrade().unwrap();
-            let time_curve_drawer = TimeCurveDrawer::get(&window);
-            time_curve_drawer.set_dummy_dep(!time_curve_drawer.get_dummy_dep());
-            let configuration = Configuration::get(&window);
-            let control_points = configuration.get_time_curve_control_points();
-            let vec_model = control_points
-                .as_any()
-                .downcast_ref::<VecModel<ControlPoint>>()
-                .unwrap();
-            vec_model.remove(i as usize);
-
-            let updated_points: Vec<_> = (0..control_points.row_count())
-                .map(|i| control_points.row_data(i).unwrap())
-                .collect();
-
-            send(UiMessage::ApplicationStateCallback(Box::new(move |ws| {
-                ws.set_time_curve_control_points(updated_points);
-            })));
-        }
-    });
-    configuration.on_all_time_curve_control_points_changed({
-        let send = send_ui_msg.clone();
-        move |control_points_model| {
-            let control_points = control_points_model.iter().collect();
-            send(UiMessage::ApplicationStateCallback(Box::new(move |ws| {
-                ws.set_time_curve_control_points(control_points);
-            })));
-        }
-    });
-    time_curve_drawer.on_draw_curve({
-        let window_weak = window.as_weak();
-        move |width, height, _| {
-            let window = window_weak.upgrade().unwrap();
-            let configuration = Configuration::get(&window);
-            let control_points = configuration.get_time_curve_control_points();
-
-            let control_points_iter: Vec<_> = (0..control_points.row_count())
-                .map(|i| {
-                    let row_data = control_points.row_data(i).unwrap();
-                    (row_data.t, row_data.v, Interpolation::CatmullRom)
-                })
-                .collect();
-            // println!("Control points: {:?}", control_points_iter);
-            let control_points_with_prefix_suffix_iter =
-                std::iter::once((-3.0, 0.0, Interpolation::Linear))
-                    .chain(control_points_iter)
-                    .chain(std::iter::once((0.0, 1.0, Interpolation::Linear)))
-                    .chain(std::iter::once((0.001, 1.0, Interpolation::Linear)));
-
-            // Create the spline
-            let spline = splines::Spline::from_vec(
-                control_points_with_prefix_suffix_iter
-                    .map(|(x, y, interpolation)| splines::Key::new(x, y, interpolation))
-                    .collect(),
-            );
-
-            let mut svg_path = String::new();
-            let mut command = 'M';
-            for i in 0..(width as usize) {
-                let t = (i as f32 / width as f32) * 3.0 - 3.0;
-                if let Some(y) = spline.sample(t) {
-                    svg_path.push_str(&format!("{}{},{}", command, i, (1.0 - y) * height as f32));
-                }
-                command = 'L';
-            }
-
-            svg_path.into()
-        }
-    });
-
-    configuration.on_panel_channels_changed({
-        let send = send_ui_msg.clone();
-        move |config| {
-            send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
-                move |handler, conn, qh| {
-                    handler.set_panel_channels(config, conn, qh);
-                },
-            )));
-        }
-    });
-    configuration.on_panel_layout_changed({
-        let send = send_ui_msg.clone();
-        move |config| {
-            send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
-                move |handler, conn, qh| {
-                    handler.set_panel_layout(config, conn, qh);
-                },
-            )));
-        }
-    });
-    configuration.on_panel_layer_changed({
-        let send = send_ui_msg.clone();
-        move |config| {
-            send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
-                move |handler, _, _| {
-                    handler.set_panel_layer(config);
-                },
-            )));
-        }
-    });
-    configuration.on_panel_width_changed({
-        let send = send_ui_msg.clone();
-        move |config| {
-            send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
-                move |handler, _, _| {
-                    handler.set_panel_width(config as u32);
-                },
-            )));
-        }
-    });
-    configuration.on_panel_exclusive_ratio_changed({
-        let send = send_ui_msg.clone();
-        move |config| {
-            send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
-                move |handler, _, _| {
-                    handler.set_panel_exclusive_ratio(config);
-                },
-            )));
-        }
-    });
-
-    window.on_ok_clicked({
-        let window_weak = window.as_weak();
-        move || {
-            let window = window_weak.upgrade().unwrap();
-            let configuration = Configuration::get(&window);
-            if let Err(e) = save_configuration(&configuration) {
-                eprintln!("Failed to save configuration: {}", e);
-            }
-            window.hide().unwrap();
-        }
-    });
-
-    window.on_cancel_clicked({
-        let window_weak = window.as_weak();
-        move || {
-            let window = window_weak.upgrade().unwrap();
-            let configuration = Configuration::get(&window);
-            if let Err(e) = load_configuration(&configuration) {
-                eprintln!("Failed to reload the configuration from file: {}", e);
-            }
-            window.hide().unwrap();
-        }
-    });
-
-    window.show().unwrap();
+    // Tie the main thread to the config window, since winit needs to be there on some platforms.
     slint::run_event_loop_until_quit().unwrap();
 }

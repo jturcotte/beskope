@@ -26,7 +26,8 @@ use wayland_client::{
     Connection, Proxy, QueueHandle,
 };
 
-use crate::{ApplicationState, PanelLayer, PanelLayout, RenderChannels, UiMessage, WgpuSurface};
+use crate::ui::{PanelLayer, PanelLayout, RenderChannels};
+use crate::{ApplicationState, UiMessage, WgpuSurface};
 
 impl CompositorHandler for WlrWaylandEventHandler {
     fn scale_factor_changed(
@@ -281,7 +282,7 @@ impl WlrWaylandEventHandler {
     }
     pub fn set_panel_layout(
         &mut self,
-        panel_layout: crate::PanelLayout,
+        panel_layout: crate::ui::PanelLayout,
         conn: &Connection,
         qh: &QueueHandle<Self>,
     ) {
@@ -300,7 +301,7 @@ impl WlrWaylandEventHandler {
         }
 
         let (primary_wgpu_and_anchor, secondary_wgpu_and_anchor) = match self.panel_config.layout {
-            crate::PanelLayout::TwoPanels => (
+            crate::ui::PanelLayout::TwoPanels => (
                 Some((
                     self.create_surface(Anchor::TOP | Anchor::LEFT | Anchor::BOTTOM, conn, qh),
                     PanelAnchorPosition::Left,
@@ -311,7 +312,7 @@ impl WlrWaylandEventHandler {
                     PanelAnchorPosition::Right,
                 )),
             ),
-            crate::PanelLayout::SingleTop => (
+            crate::ui::PanelLayout::SingleTop => (
                 Some((
                     self.create_surface(Anchor::LEFT | Anchor::TOP | Anchor::RIGHT, conn, qh),
                     PanelAnchorPosition::Top,
@@ -319,7 +320,7 @@ impl WlrWaylandEventHandler {
                 )),
                 None,
             ),
-            crate::PanelLayout::SingleBottom => (
+            crate::ui::PanelLayout::SingleBottom => (
                 Some((
                     self.create_surface(Anchor::LEFT | Anchor::BOTTOM | Anchor::RIGHT, conn, qh),
                     PanelAnchorPosition::Bottom,
@@ -380,8 +381,8 @@ impl WlrWaylandEventHandler {
 
     pub fn set_panel_width(&mut self, width: u32) {
         self.panel_config.width = width;
-        let (width, height) = if self.panel_config.layout == crate::PanelLayout::SingleTop
-            || self.panel_config.layout == crate::PanelLayout::SingleBottom
+        let (width, height) = if self.panel_config.layout == crate::ui::PanelLayout::SingleTop
+            || self.panel_config.layout == crate::ui::PanelLayout::SingleBottom
         {
             (0, width as u32)
         } else {

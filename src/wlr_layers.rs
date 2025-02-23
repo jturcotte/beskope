@@ -26,7 +26,7 @@ use wayland_client::{
     Connection, Proxy, QueueHandle,
 };
 
-use crate::{ApplicationState, PanelConfig, PanelLayer, RenderChannels, UiMessage, WgpuSurface};
+use crate::{ApplicationState, PanelLayer, PanelLayout, RenderChannels, UiMessage, WgpuSurface};
 
 impl CompositorHandler for WlrWaylandEventHandler {
     fn scale_factor_changed(
@@ -378,7 +378,7 @@ impl WlrWaylandEventHandler {
         Rc::new(WlrWgpuSurface::new(conn.clone(), qh, layer))
     }
 
-    pub fn set_panel_width(&mut self, width: i32) {
+    pub fn set_panel_width(&mut self, width: u32) {
         self.panel_config.width = width;
         let (width, height) = if self.panel_config.layout == crate::PanelLayout::SingleTop
             || self.panel_config.layout == crate::PanelLayout::SingleBottom
@@ -473,6 +473,14 @@ pub enum PanelAnchorPosition {
     Bottom,
     Left,
     Right,
+}
+
+pub struct PanelConfig {
+    pub channels: RenderChannels,
+    pub layout: PanelLayout,
+    pub layer: PanelLayer,
+    pub width: u32,
+    pub exclusive_ratio: f32,
 }
 
 pub trait WlrLayerApplicationHandler {

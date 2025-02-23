@@ -9,10 +9,8 @@ use ringbuf::{HeapRb, SharedRb};
 use rustfft::{Fft, FftDirection, FftPlanner};
 use slint::{Model, ModelRc, VecModel};
 use splines::Interpolation;
-use std::fmt::Error;
 use std::io::ErrorKind;
 use std::rc::Rc;
-use std::str::FromStr;
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -1266,11 +1264,10 @@ fn save_configuration(configuration: &Configuration) -> Result<(), Box<dyn std::
         waveform.stroke_color.alpha()
     ));
 
-    let panel = configuration.get_panel();
     doc["panel"] = table();
-    doc["panel"]["layout"] = value(format!("{:?}", panel.layout));
-    doc["panel"]["width"] = value(panel.width as i64);
-    doc["panel"]["exclusive_ratio"] = value(panel.exclusive_ratio as f64);
+    doc["panel"]["layout"] = value(format!("{:?}", configuration.get_panel_layout()));
+    doc["panel"]["width"] = value(configuration.get_panel_width() as i64);
+    doc["panel"]["exclusive_ratio"] = value(configuration.get_panel_exclusive_ratio() as f64);
 
     let control_points = configuration.get_time_curve_control_points();
     let mut sorted_points: Vec<ControlPoint> = control_points.iter().collect();
@@ -1313,17 +1310,15 @@ fn load_configuration(configuration: &Configuration) -> Result<(), Box<dyn std::
         }
 
         if let Some(panel_item) = doc.get("panel") {
-            let mut panel = PanelConfig::default();
             if let Some(panel_layout) = panel_item["layout"].as_str().and_then(parse_panel_layout) {
-                panel.layout = panel_layout.into();
+                configuration.set_panel_layout(panel_layout.into());
             }
             if let Some(p_width) = panel_item["width"].as_integer() {
-                panel.width = p_width as i32;
+                configuration.set_panel_width(p_width as i32);
             }
             if let Some(exclusive) = panel_item["exclusive_ratio"].as_float() {
-                panel.exclusive_ratio = exclusive as f32;
+                configuration.set_panel_exclusive_ratio(exclusive as f32);
             }
-            configuration.set_panel(panel);
         }
         if let Some(time_curve_item) = doc.get("time_curve") {
             if let Some(control_points) = time_curve_item
@@ -1381,7 +1376,14 @@ pub fn main() {
     if let Err(e) = load_configuration(&configuration) {
         eprintln!("Failed to load configuration: {}", e);
     }
-    let panel_config = configuration.get_panel();
+
+    let panel_config = wlr_layers::PanelConfig {
+        channels: configuration.get_panel_channels(),
+        layout: configuration.get_panel_layout(),
+        layer: configuration.get_panel_layer(),
+        width: configuration.get_panel_width() as u32,
+        exclusive_ratio: configuration.get_panel_exclusive_ratio(),
+    };
 
     let request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>> =
         Arc::new(Mutex::new(Arc::new(|| {})));
@@ -1411,13 +1413,18 @@ pub fn main() {
             request_redraw_callback.lock().unwrap()();
         }
     };
-    configuration.on_waveform_config_changed({
+
+    // Apply the initial waveform configuration explicitly since it wasn't passed in as parameter like the panel config
+    let config = configuration.get_waveform();
+    send_ui_msg(UiMessage::ApplicationStateCallback(Box::new(
+        move |state| {
+            state.set_waveform_config(config);
+        },
+    )));
+
+    configuration.on_waveform_changed({
         let send = send_ui_msg.clone();
-        let window = window.as_weak();
-        move || {
-            let window = window.upgrade().unwrap();
-            let configuration = Configuration::get(&window);
-            let config = configuration.get_waveform();
+        move |config| {
             send(UiMessage::ApplicationStateCallback(Box::new(
                 move |state| {
                     state.set_waveform_config(config);
@@ -1511,6 +1518,15 @@ pub fn main() {
             })));
         }
     });
+    configuration.on_all_time_curve_control_points_changed({
+        let send = send_ui_msg.clone();
+        move |control_points_model| {
+            let control_points = control_points_model.iter().collect();
+            send(UiMessage::ApplicationStateCallback(Box::new(move |ws| {
+                ws.set_time_curve_control_points(control_points);
+            })));
+        }
+    });
     time_curve_drawer.on_draw_curve({
         let window_weak = window.as_weak();
         move |width, height, _| {
@@ -1557,7 +1573,7 @@ pub fn main() {
         move |config| {
             send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
                 move |handler, conn, qh| {
-                    handler.set_panel_channels(config.channels, conn, qh);
+                    handler.set_panel_channels(config, conn, qh);
                 },
             )));
         }
@@ -1567,7 +1583,7 @@ pub fn main() {
         move |config| {
             send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
                 move |handler, conn, qh| {
-                    handler.set_panel_layout(config.layout, conn, qh);
+                    handler.set_panel_layout(config, conn, qh);
                 },
             )));
         }
@@ -1577,7 +1593,7 @@ pub fn main() {
         move |config| {
             send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
                 move |handler, _, _| {
-                    handler.set_panel_layer(config.layer);
+                    handler.set_panel_layer(config);
                 },
             )));
         }
@@ -1587,7 +1603,7 @@ pub fn main() {
         move |config| {
             send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
                 move |handler, _, _| {
-                    handler.set_panel_width(config.width);
+                    handler.set_panel_width(config as u32);
                 },
             )));
         }
@@ -1597,7 +1613,7 @@ pub fn main() {
         move |config| {
             send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
                 move |handler, _, _| {
-                    handler.set_panel_exclusive_ratio(config.exclusive_ratio);
+                    handler.set_panel_exclusive_ratio(config);
                 },
             )));
         }
@@ -1608,7 +1624,6 @@ pub fn main() {
         move || {
             let window = window_weak.upgrade().unwrap();
             let configuration = Configuration::get(&window);
-            // TODO: Save the configuration here
             if let Err(e) = save_configuration(&configuration) {
                 eprintln!("Failed to save configuration: {}", e);
             }
@@ -1616,8 +1631,17 @@ pub fn main() {
         }
     });
 
-    // Apply the initial configuration from the UI
-    configuration.invoke_waveform_config_changed();
+    window.on_cancel_clicked({
+        let window_weak = window.as_weak();
+        move || {
+            let window = window_weak.upgrade().unwrap();
+            let configuration = Configuration::get(&window);
+            if let Err(e) = load_configuration(&configuration) {
+                eprintln!("Failed to reload the configuration from file: {}", e);
+            }
+            window.hide().unwrap();
+        }
+    });
 
     window.show().unwrap();
     slint::run_event_loop_until_quit().unwrap();

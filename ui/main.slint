@@ -18,14 +18,6 @@ enum PanelLayer {
     Background,
 }
 
-struct PanelConfig {
-    channels: RenderChannels,
-    layout: PanelLayout,
-    layer: PanelLayer,
-    width: int,
-    exclusive_ratio: float,
-}
-
 struct WaveformConfig {
     fill_color: color,
     stroke_color: color,
@@ -37,33 +29,49 @@ struct ControlPoint {
 }
 
 export global Configuration {
-    callback waveform_config_changed();
+    callback waveform_changed(WaveformConfig);
+    callback panel_channels_changed(RenderChannels);
+    callback panel_layout_changed(PanelLayout);
+    callback panel_layer_changed(PanelLayer);
+    callback panel_width_changed(int);
+    callback panel_exclusive_ratio_changed(float);
+    callback all_time_curve_control_points_changed([ControlPoint]);
 
-    in-out property<WaveformConfig> waveform: {
-        fill_color: Colors.rgba(32, 32, 32, 0.8),
-        stroke_color: Colors.rgba(205, 205, 205, 0.8),
-    };
+    changed waveform => { waveform_changed(waveform); }
+    changed panel_channels => { panel_channels_changed(panel_channels); }
+    changed panel_layout => { panel_layout_changed(panel_layout); }
+    changed panel_layer => { panel_layer_changed(panel_layer); }
+    changed panel_width => { panel_width_changed(panel_width); }
+    changed panel_exclusive_ratio => { panel_exclusive_ratio_changed(panel_exclusive_ratio); }
+    // Only when the whole model is changed by load_configuration
+    changed time_curve_control_points => {
+        all_time_curve_control_points_changed(time_curve_control_points);
+    }
 
-    callback panel_channels_changed(PanelConfig);
-    callback panel_layout_changed(PanelConfig);
-    callback panel_layer_changed(PanelConfig);
-    callback panel_width_changed(PanelConfig);
-    callback panel_exclusive_ratio_changed(PanelConfig);
-
-    in-out property<PanelConfig> panel: {
-        channels: RenderChannels.Both,
-        layout: PanelLayout.TwoPanels,
-        layer: PanelLayer.Top,
-        width: 80,
-        exclusive_ratio: 0.5,
-    };
-
+    // Callbacks to edit the model from Rust
     callback time_curve_control_point_changed(int, ControlPoint);
     callback time_curve_control_point_added(ControlPoint);
     callback time_curve_control_point_removed(int);
 
+    in-out property<WaveformConfig> waveform: {
+        fill_color: Colors.rgba(32, 32, 32, 0.4),
+        stroke_color: Colors.rgba(205, 205, 205, 0.8),
+    };
+
+    in-out property<RenderChannels> panel_channels: RenderChannels.Both;
+    in-out property<PanelLayout> panel_layout: PanelLayout.TwoPanels;
+    in-out property<PanelLayer> panel_layer: PanelLayer.Top;
+    in-out property<int> panel_width: 64;
+    in-out property<float> panel_exclusive_ratio: 0.5;
+
     in-out property<float> time_curve_min_t: -3;
-    in-out property<[ControlPoint]> time_curve_control_points: [{t: -1, v: 0.15, tan: 0.5}, {t: -1/5, v: 0.3, tan: 0.5}, {t: -1/30, v: 0.5, tan: 0.5}, {t: -1/60, v: 0.6, tan: 0.5}];
+    in-out property<[ControlPoint]> time_curve_control_points: [
+        { t: -1.333, v: 0.10 },
+        { t: -0.75, v: 0.15 },
+        { t: -0.25, v: 0.25 },
+        { t: -1/15, v: 0.4 },
+        { t: -1/60, v: 0.6 }
+    ];
 }
 
 component LabeledSlider {
@@ -133,14 +141,13 @@ component GeneralTab inherits GridBox {
                 "Only left",
                 "Both left and right",
             ];
-            current-index: Configuration.panel.channels == RenderChannels.Single ? 0 : 1;
+            current-index: Configuration.panel_channels == RenderChannels.Single ? 0 : 1;
             selected(current-value) => {
                 if (self.current-index == 0) {
-                    Configuration.panel.channels = RenderChannels.Single;
+                    Configuration.panel_channels = RenderChannels.Single;
                 } else {
-                    Configuration.panel.channels = RenderChannels.Both;
+                    Configuration.panel_channels = RenderChannels.Both;
                 }
-                Configuration.panel_channels_changed(Configuration.panel);
             }
         }
     }
@@ -155,9 +162,9 @@ component GeneralTab inherits GridBox {
                 "Single panel at the top",
                 "Single panel at the bottom",
             ];
-            current-index: Configuration.panel.layout == PanelLayout.TwoPanels
+            current-index: Configuration.panel_layout == PanelLayout.TwoPanels
                 ? 0
-                : Configuration.panel.layout == PanelLayout.SingleTop
+                : Configuration.panel_layout == PanelLayout.SingleTop
                     ? 1
                     : 2;
             selected(current-value) => {
@@ -169,13 +176,12 @@ component GeneralTab inherits GridBox {
                 }
 
                 if (self.current-index == 0) {
-                    Configuration.panel.layout = PanelLayout.TwoPanels;
+                    Configuration.panel_layout = PanelLayout.TwoPanels;
                 } else if (self.current-index == 1) {
-                    Configuration.panel.layout = PanelLayout.SingleTop;
+                    Configuration.panel_layout = PanelLayout.SingleTop;
                 } else {
-                    Configuration.panel.layout = PanelLayout.SingleBottom;
+                    Configuration.panel_layout = PanelLayout.SingleBottom;
                 }
-                Configuration.panel_layout_changed(Configuration.panel);
             }
         }
     }
@@ -191,52 +197,49 @@ component GeneralTab inherits GridBox {
                 "Bottom",
                 "Background",
             ];
-            current-index: Configuration.panel.layer == PanelLayer.Overlay
+            current-index: Configuration.panel_layer == PanelLayer.Overlay
                 ? 0
-                : Configuration.panel.layer == PanelLayer.Top
+                : Configuration.panel_layer == PanelLayer.Top
                     ? 1
-                    : Configuration.panel.layer == PanelLayer.Bottom
+                    : Configuration.panel_layer == PanelLayer.Bottom
                         ? 2
                         : 3;
             selected(current-value) => {
                 if (self.current-index == 0) {
-                    Configuration.panel.layer = PanelLayer.Overlay;
+                    Configuration.panel_layer = PanelLayer.Overlay;
                 } else if (self.current-index == 1) {
-                    Configuration.panel.layer = PanelLayer.Top;
+                    Configuration.panel_layer = PanelLayer.Top;
                 } else if (self.current-index == 2) {
-                    Configuration.panel.layer = PanelLayer.Bottom;
+                    Configuration.panel_layer = PanelLayer.Bottom;
                 } else {
-                    Configuration.panel.layer = PanelLayer.Background;
+                    Configuration.panel_layer = PanelLayer.Background;
                 }
-                Configuration.panel_layer_changed(Configuration.panel);
             }
         }
     }
     Row {
         Text { text: "Height/Width"; }
         LabeledSlider {
-            value: Configuration.panel.width;
+            value: Configuration.panel_width;
             minimum: 1;
             maximum: 800;
             precision: 1;
             unit: " px";
             changed => {
-                Configuration.panel.width = self.value;
-                Configuration.panel_width_changed(Configuration.panel);
+                Configuration.panel_width = self.value;
             }
         }
     }
     Row {
         Text { text: "Height/Width Exclusive"; }
         LabeledSlider {
-            value: Configuration.panel.exclusive_ratio * 100;
+            value: Configuration.panel_exclusive_ratio * 100;
             minimum: 0;
             maximum: 100;
             precision: 1;
             unit: " %";
             changed => {
-                Configuration.panel.exclusive_ratio = self.value / 100;
-                Configuration.panel_exclusive_ratio_changed(Configuration.panel);
+                Configuration.panel_exclusive_ratio = self.value / 100;
             }
         }
     }
@@ -247,7 +250,6 @@ component ColorTab inherits VerticalBox {
     function update_waveform_config() {
         Configuration.waveform.fill_color = Colors.hsv(fill_color.h, fill_color.s, fill_color.v, fill_color.a);
         Configuration.waveform.stroke_color = Colors.hsv(stroke_color.h, stroke_color.s, stroke_color.v, stroke_color.a);
-        Configuration.waveform_config_changed();
     }
 
     fill_color := HsvColorSelection {
@@ -370,5 +372,8 @@ export component ConfigurationWindow inherits Dialog {
     }
     StandardButton {
         kind: StandardButtonKind.ok;
+    }
+    StandardButton {
+        kind: StandardButtonKind.cancel;
     }
 }

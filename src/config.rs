@@ -1,7 +1,7 @@
 use directories::ProjectDirs;
 use slint::{Model, ModelRc, VecModel};
 use std::io::ErrorKind;
-use toml_edit::{table, value, DocumentMut};
+use toml_edit::{DocumentMut, table, value};
 
 fn get_config_path() -> Option<std::path::PathBuf> {
     let project_dirs = ProjectDirs::from("", "", "soundsift")?;

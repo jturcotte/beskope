@@ -21,9 +21,9 @@ use smithay_client_toolkit::{
     },
 };
 use wayland_client::{
+    Connection, Proxy, QueueHandle,
     globals::registry_queue_init,
     protocol::{wl_output, wl_surface},
-    Connection, Proxy, QueueHandle,
 };
 
 use crate::ui::{PanelLayer, PanelLayout, RenderChannels};

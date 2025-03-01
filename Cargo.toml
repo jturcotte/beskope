@@ -22,9 +22,9 @@ wgpu = "23"
 winit = "0.30"
 
 [dependencies.slint]
-version = "1.9"
+version = "1"
 default-features = false
 features = ["compat-1-0", "backend-winit", "renderer-winit-femtovg"]
 
 [build-dependencies]
-slint-build = "1.9"
+slint-build = "1"

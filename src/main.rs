@@ -6,7 +6,8 @@ use ringbuf::traits::{Consumer, Observer, Producer, RingBuffer, Split};
 use ringbuf::wrap::caching::Caching;
 use ringbuf::{HeapRb, SharedRb};
 use rustfft::{Fft, FftDirection, FftPlanner};
-use slint::{Global, Model};
+use signal_hook::iterator::Signals;
+use slint::{ComponentHandle, Global, Model};
 use splines::Interpolation;
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -1274,22 +1275,37 @@ pub fn main() {
     };
 
     // Spawn the wlr panel rendering in a separate thread, this is supported with wayland
+    std::thread::spawn(move || {
+        let mut app_state = ApplicationState::new(request_redraw_callback.clone());
+
+        let mut layers_even_queue = wlr_layers::WlrWaylandEventLoop::new(
+            app_state,
+            ui_msg_rx,
+            panel_config,
+            request_redraw_callback,
+        );
+        layers_even_queue.run_event_loop();
+
+        // // This won't work on macOS, but by then let's hope we can render using wgpu directly in a Slint window.
+        // let event_loop = EventLoop::builder().with_any_thread(true).build().unwrap();
+        // FIXME: Handle ui_msg_rx
+        // event_loop.run_app(&mut loop_state).unwrap();
+    });
+
+    // The panels don't accept using input, so allow showing the config window again through SIGUSR1.
     std::thread::spawn({
+        let mut signals = Signals::new(&[signal_hook::consts::SIGUSR1]).unwrap();
+        let window_weak = config_window.as_weak();
         move || {
-            let mut app_state = ApplicationState::new(request_redraw_callback.clone());
-
-            let mut layers_even_queue = wlr_layers::WlrWaylandEventLoop::new(
-                app_state,
-                ui_msg_rx,
-                panel_config,
-                request_redraw_callback,
-            );
-            layers_even_queue.run_event_loop();
-
-            // // This won't work on macOS, but by then let's hope we can render using wgpu directly in a Slint window.
-            // let event_loop = EventLoop::builder().with_any_thread(true).build().unwrap();
-            // FIXME: Handle ui_msg_rx
-            // event_loop.run_app(&mut loop_state).unwrap();
+            for sig in signals.forever() {
+                if sig == signal_hook::consts::SIGUSR1 {
+                    window_weak
+                        .upgrade_in_event_loop(|window| {
+                            window.show().unwrap();
+                        })
+                        .unwrap();
+                }
+            }
         }
     });
 

@@ -4674,7 +4674,6 @@ dependencies = [
  "toml_edit 0.22.24",
  "wayland-client",
  "wgpu",
- "winit",
 ]
 
 [[package]]

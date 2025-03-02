@@ -16,13 +16,6 @@ use std::{borrow::Cow, sync::Arc};
 use wayland_client::{Connection, QueueHandle};
 use wgpu::util::DeviceExt;
 use wgpu::{BufferUsages, CommandEncoder, TextureFormat, TextureView};
-use winit::platform::wayland::EventLoopBuilderExtWayland;
-use winit::{
-    application::ApplicationHandler,
-    event::WindowEvent,
-    event_loop::{ActiveEventLoop, EventLoop},
-    window::{Window, WindowId},
-};
 use wlr_layers::{PanelAnchorPosition, WlrLayerApplicationHandler, WlrWaylandEventHandler};
 
 mod audio;
@@ -40,76 +33,6 @@ pub trait WgpuSurface {
     fn surface(&self) -> &wgpu::Surface<'static>;
     fn queue(&self) -> &Arc<wgpu::Queue>;
     fn request_redraw_callback(&self) -> &Arc<dyn Fn() + Send + Sync>;
-}
-
-pub struct WinitWgpuSurface {
-    adapter: wgpu::Adapter,
-    device: wgpu::Device,
-    surface: wgpu::Surface<'static>,
-    queue: Arc<wgpu::Queue>,
-    request_redraw_callback: Arc<dyn Fn() + Send + Sync>,
-
-    _window: Arc<Window>,
-}
-
-impl WinitWgpuSurface {
-    fn new(window: Arc<Window>) -> WinitWgpuSurface {
-        let mut size = window.inner_size();
-        size.width = size.width.max(1);
-        size.height = size.height.max(1);
-        println!("Window size: {:?}", size);
-
-        let instance = wgpu::Instance::default();
-
-        let surface = instance.create_surface(window.clone()).unwrap();
-        let adapter = pollster::block_on(wgpu::util::initialize_adapter_from_env_or_default(
-            &instance,
-            Some(&surface),
-        ))
-        .expect("Failed to find an appropriate adapter");
-
-        // Create the logical device and command queue
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: None,
-                required_features: wgpu::Features::empty(),
-                // Make sure we use the texture resolution limits from the adapter, so we can support images the size of the swapchain.
-                required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
-                memory_hints: wgpu::MemoryHints::MemoryUsage,
-            },
-            None,
-        ))
-        .expect("Failed to create device");
-
-        WinitWgpuSurface {
-            adapter,
-            device,
-            surface,
-            queue: Arc::new(queue),
-            request_redraw_callback: {
-                let window = window.clone();
-                Arc::new(move || window.request_redraw())
-            },
-            _window: window,
-        }
-    }
-}
-impl WgpuSurface for WinitWgpuSurface {
-    fn adapter(&self) -> &wgpu::Adapter {
-        &self.adapter
-    }
-    fn device(&self) -> &wgpu::Device {
-        &self.device
-    }
-    fn surface(&self) -> &wgpu::Surface<'static> {
-        &self.surface
-    }
-    fn queue(&self) -> &Arc<wgpu::Queue> {
-        &self.queue
-    }
-    fn request_redraw_callback(&self) -> &Arc<dyn Fn() + Send + Sync> {
-        &self.request_redraw_callback
-    }
 }
 
 #[repr(C)]
@@ -755,14 +678,6 @@ impl ApplicationState {
             request_redraw_callback,
         }
     }
-
-    fn create_winit_window_and_wgpu_surface(event_loop: &ActiveEventLoop) -> Rc<WinitWgpuSurface> {
-        #[allow(unused_mut)]
-        let mut attributes = Window::default_attributes();
-        let window = Arc::new(event_loop.create_window(attributes).unwrap());
-
-        Rc::new(WinitWgpuSurface::new(window))
-    }
 }
 
 struct WindowedApplicationState {
@@ -1115,69 +1030,6 @@ impl WlrLayerApplicationHandler for ApplicationState {
     }
 }
 
-impl ApplicationHandler for ApplicationState {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.windowed_state.is_none() {
-            self.windowed_state = Some(WindowedApplicationState::new(
-                self.process_audio.clone(),
-                self.request_redraw_callback.clone(),
-            ));
-            self.windowed_state
-                .as_mut()
-                .unwrap()
-                .configure_primary_wgpu_surface(
-                    Self::create_winit_window_and_wgpu_surface(event_loop),
-                    PanelAnchorPosition::Bottom,
-                    ui::RenderChannels::Both,
-                );
-        }
-    }
-
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _window_id: WindowId,
-        event: WindowEvent,
-    ) {
-        if let Some(state) = self.windowed_state.as_mut() {
-            match event {
-                WindowEvent::Resized(new_size) => {
-                    // FIXME: Check the window ID
-                    state
-                        .primary_waveform_window
-                        .as_mut()
-                        .or(state.secondary_waveform_window.as_mut())
-                        .unwrap()
-                        .reconfigure(new_size.width, new_size.height);
-                    // state.right_waveform_window.reconfigure(new_size);
-                }
-                WindowEvent::RedrawRequested => {
-                    state.render();
-                }
-                WindowEvent::CloseRequested => event_loop.exit(),
-                WindowEvent::KeyboardInput { event, .. } => {
-                    if let winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Space) =
-                        event.physical_key
-                    {
-                        if event.state == winit::event::ElementState::Pressed {
-                            let mut process_audio = self.process_audio.lock().unwrap();
-                            *process_audio = !*process_audio;
-                            (state
-                                .primary_waveform_window
-                                .as_ref()
-                                .unwrap()
-                                .wgpu
-                                .request_redraw_callback())();
-                            // (state.right_waveform_window.wgpu.request_redraw)();
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
 enum UiMessage {
     ApplicationStateCallback(Box<dyn FnOnce(&mut WindowedApplicationState) + Send>),
     WlrWaylandEventHandlerCallback(
@@ -1236,7 +1088,7 @@ pub fn main() {
 
     // Spawn the wlr panel rendering in a separate thread, this is supported with wayland
     std::thread::spawn(move || {
-        let mut app_state = ApplicationState::new(request_redraw_callback.clone());
+        let app_state = ApplicationState::new(request_redraw_callback.clone());
 
         let mut layers_even_queue = wlr_layers::WlrWaylandEventLoop::new(
             app_state,
@@ -1245,11 +1097,6 @@ pub fn main() {
             request_redraw_callback,
         );
         layers_even_queue.run_event_loop();
-
-        // // This won't work on macOS, but by then let's hope we can render using wgpu directly in a Slint window.
-        // let event_loop = EventLoop::builder().with_any_thread(true).build().unwrap();
-        // FIXME: Handle ui_msg_rx
-        // event_loop.run_app(&mut loop_state).unwrap();
     });
 
     // The panels don't accept using input, so allow showing the config window again through SIGUSR1.

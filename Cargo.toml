@@ -19,7 +19,6 @@ splines = "4"
 toml_edit = "0.22"
 wayland-client = "0.31"
 wgpu = "23"
-winit = "0.30"
 
 [dependencies.slint]
 version = "1"

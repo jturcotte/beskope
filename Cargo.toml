@@ -6,9 +6,9 @@ edition = "2024"
 [dependencies]
 bytemuck = { version = "1", features = ["derive"] }
 cgmath = "0.18"
-cpal = "0.15"
 directories = "6.0.0"
 num-complex = "0.4"
+pipewire = { version = "0.8.0", features = ["v0_3_77"] }
 pollster = "0.4"
 raw-window-handle = "0.6"
 ringbuf = "0.4"

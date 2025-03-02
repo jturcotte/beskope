@@ -1,8 +1,7 @@
 use cgmath::{Matrix4, Rad, SquareMatrix, Vector3};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use num_complex::Complex;
 use ringbuf::storage::Heap;
-use ringbuf::traits::{Consumer, Observer, Producer, RingBuffer, Split};
+use ringbuf::traits::{Consumer, Observer, RingBuffer, Split};
 use ringbuf::wrap::caching::Caching;
 use ringbuf::{HeapRb, SharedRb};
 use rustfft::{Fft, FftDirection, FftPlanner};
@@ -26,6 +25,7 @@ use winit::{
 };
 use wlr_layers::{PanelAnchorPosition, WlrLayerApplicationHandler, WlrWaylandEventHandler};
 
+mod audio;
 mod config;
 mod ui;
 mod wlr_layers;
@@ -773,7 +773,7 @@ struct WindowedApplicationState {
     waveform_config: ui::WaveformConfig,
     time_curve_control_points: Vec<ui::ControlPoint>,
     audio_input_ringbuf_cons: Caching<Arc<SharedRb<Heap<f32>>>, false, true>,
-    _stream: Option<cpal::Stream>,
+    // _stream: Option<cpal::Stream>,
     last_fps_dump_time: Instant,
     frame_count: u32,
     fft: Arc<dyn Fft<f32>>,
@@ -812,58 +812,18 @@ impl WindowedApplicationState {
         process_audio: Arc<Mutex<bool>>,
         request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
     ) -> WindowedApplicationState {
-        let (mut audio_input_ringbuf_prod, audio_input_ringbuf_cons) =
+        let (audio_input_ringbuf_prod, audio_input_ringbuf_cons) =
             HeapRb::<f32>::new(44100 * NUM_CHANNELS).split();
 
         let arc_process_audio = process_audio.clone();
 
-        // List all cpal input sources
-        let host = cpal::default_host();
-        // let devices = host.input_devices().unwrap();
-        // for device in devices {
-        //     println!("Input device: {}", device.name().unwrap());
-        // }
-
-        // Print all input configs for the default input device
-        let stream = if let Some(default_input_device) = host.default_input_device() {
-            println!(
-                "Default input device: {}",
-                default_input_device.name().unwrap()
+        std::thread::spawn(move || {
+            audio::initialize_audio_capture(
+                arc_process_audio,
+                audio_input_ringbuf_prod,
+                request_redraw_callback,
             );
-            // let configs = default_input_device.supported_input_configs().unwrap();
-            // for config in configs {
-            //     println!("Supported input config: {:?}", config);
-            // }
-
-            // Modify the data_callback to update the vertex buffer directly and trigger a redraw
-            let default_config = default_input_device.default_input_config().unwrap();
-            println!("Default input config: {:?}", default_config);
-            let stream: cpal::Stream = default_input_device
-                .build_input_stream(
-                    &cpal::StreamConfig {
-                        buffer_size: cpal::BufferSize::Fixed(512),
-                        ..default_config.into()
-                    },
-                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        let process_audio = *arc_process_audio.lock().unwrap();
-                        if process_audio {
-                            audio_input_ringbuf_prod.push_slice(data);
-
-                            request_redraw_callback.lock().unwrap()();
-                            // request_redraw();
-                        }
-                    },
-                    move |err| {
-                        eprintln!("Error: {}", err);
-                    },
-                    None,
-                )
-                .unwrap();
-            stream.play().unwrap();
-            Some(stream)
-        } else {
-            None
-        };
+        });
 
         let fft = FftPlanner::new().plan_fft(FFT_SIZE, FftDirection::Forward);
         let scratch_len = fft.get_inplace_scratch_len();
@@ -875,7 +835,7 @@ impl WindowedApplicationState {
             waveform_config: ui::WaveformConfig::default(),
             time_curve_control_points: vec![],
             audio_input_ringbuf_cons,
-            _stream: stream,
+            // _stream: stream,
             last_fps_dump_time: Instant::now(),
             frame_count: 0,
 

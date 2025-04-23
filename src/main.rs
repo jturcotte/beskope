@@ -32,7 +32,7 @@ pub trait WgpuSurface {
     fn device(&self) -> &wgpu::Device;
     fn surface(&self) -> &wgpu::Surface<'static>;
     fn queue(&self) -> &Arc<wgpu::Queue>;
-    fn request_redraw_callback(&self) -> &Arc<dyn Fn() + Send + Sync>;
+    fn surface_id(&self) -> u32;
 }
 
 #[repr(C)]
@@ -61,6 +61,7 @@ struct WaveformWindow {
     shader: wgpu::ShaderModule,
     config: wgpu::SurfaceConfiguration,
     swapchain_format: TextureFormat,
+    must_reconfigure: bool,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -120,6 +121,7 @@ impl WaveformWindow {
             shader,
             config,
             swapchain_format,
+            must_reconfigure: false,
         }
     }
 
@@ -127,11 +129,7 @@ impl WaveformWindow {
         // Reconfigure the surface with the new size
         self.config.width = width.max(1);
         self.config.height = height.max(1);
-        self.wgpu
-            .surface()
-            .configure(self.wgpu.device(), &self.config);
-        // On macos the window needs to be redrawn manually after resizing
-        (self.wgpu.request_redraw_callback())();
+        self.must_reconfigure = true;
     }
 }
 
@@ -683,14 +681,15 @@ impl ApplicationState {
 struct WindowedApplicationState {
     primary_waveform_window: Option<WaveformWindow>,
     secondary_waveform_window: Option<WaveformWindow>,
+    primary_last_fps_dump_time: Instant,
+    primary_frame_count: u32,
+    secondary_last_fps_dump_time: Instant,
+    secondary_frame_count: u32,
     left_waveform_view: Option<WaveformView>,
     right_waveform_view: Option<WaveformView>,
     waveform_config: ui::WaveformConfig,
     time_curve_control_points: Vec<ui::ControlPoint>,
     audio_input_ringbuf_cons: Caching<Arc<SharedRb<Heap<f32>>>, false, true>,
-    // _stream: Option<cpal::Stream>,
-    last_fps_dump_time: Instant,
-    frame_count: u32,
     fft: Arc<dyn Fft<f32>>,
     fft_inout_buffer: Vec<Complex<f32>>,
     fft_scratch: Vec<Complex<f32>>,
@@ -745,15 +744,15 @@ impl WindowedApplicationState {
         WindowedApplicationState {
             primary_waveform_window: None,
             secondary_waveform_window: None,
+            primary_last_fps_dump_time: Instant::now(),
+            primary_frame_count: 0,
+            secondary_last_fps_dump_time: Instant::now(),
+            secondary_frame_count: 0,
             left_waveform_view: None,
             right_waveform_view: None,
             waveform_config: ui::WaveformConfig::default(),
             time_curve_control_points: vec![],
             audio_input_ringbuf_cons,
-            // _stream: stream,
-            last_fps_dump_time: Instant::now(),
-            frame_count: 0,
-
             fft,
             fft_inout_buffer: vec![Complex::default(); FFT_SIZE],
             fft_scratch: vec![Complex::default(); scratch_len],
@@ -866,87 +865,119 @@ impl WindowedApplicationState {
         self.secondary_waveform_window = Some(window);
     }
 
-    fn render(&mut self) {
+    fn process_audio(&mut self) {
         let data: Vec<f32> = self.audio_input_ringbuf_cons.pop_iter().collect();
-
-        if let Some(window) = self.primary_waveform_window.as_ref() {
-            let frame = window
-                .wgpu
-                .surface()
-                .get_current_texture()
-                .expect("Failed to acquire next swap chain texture");
-            let view = frame
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor::default());
-
-            let mut encoder = window
-                .wgpu
-                .device()
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
-            if let Some(left_waveform_window) = &mut self.left_waveform_view {
-                left_waveform_window.update_config();
-                left_waveform_window.process_audio(
-                    &data,
-                    self.fft.as_ref(),
-                    &mut self.fft_inout_buffer,
-                    &mut self.fft_scratch,
-                );
-                left_waveform_window.render(&mut encoder, &view);
-            }
-            if let Some(right_waveform_window) = &mut self.right_waveform_view {
-                if right_waveform_window.render_window == RenderWindow::Primary {
-                    right_waveform_window.update_config();
-                    right_waveform_window.process_audio(
-                        &data,
-                        self.fft.as_ref(),
-                        &mut self.fft_inout_buffer,
-                        &mut self.fft_scratch,
+        if let Some(left_waveform_window) = &mut self.left_waveform_view {
+            left_waveform_window.process_audio(
+                &data,
+                self.fft.as_ref(),
+                &mut self.fft_inout_buffer,
+                &mut self.fft_scratch,
+            );
+        }
+        if let Some(right_waveform_window) = &mut self.right_waveform_view {
+            right_waveform_window.process_audio(
+                &data,
+                self.fft.as_ref(),
+                &mut self.fft_inout_buffer,
+                &mut self.fft_scratch,
+            );
+        }
+    }
+    fn render(&mut self, surface_id: u32) {
+        if let Some(window) = self.primary_waveform_window.as_mut() {
+            if window.wgpu.surface_id() == surface_id {
+                if window.must_reconfigure {
+                    println!(
+                        "Reconfiguring primary window with config: {:?}",
+                        window.config
                     );
-                    right_waveform_window.render(&mut encoder, &view);
+                    window
+                        .wgpu
+                        .surface()
+                        .configure(window.wgpu.device(), &window.config);
+                    window.must_reconfigure = false;
+                }
+
+                let frame = window
+                    .wgpu
+                    .surface()
+                    .get_current_texture()
+                    .expect("Failed to acquire next swap chain texture");
+                let view = frame
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+
+                let mut encoder = window
+                    .wgpu
+                    .device()
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+                if let Some(left_waveform_window) = &mut self.left_waveform_view {
+                    left_waveform_window.update_config();
+                    left_waveform_window.render(&mut encoder, &view);
+                }
+                if let Some(right_waveform_window) = &mut self.right_waveform_view {
+                    if right_waveform_window.render_window == RenderWindow::Primary {
+                        right_waveform_window.update_config();
+                        right_waveform_window.render(&mut encoder, &view);
+                    }
+                }
+                window.wgpu.queue().submit(Some(encoder.finish()));
+                frame.present();
+
+                let now = Instant::now();
+                self.primary_frame_count += 1;
+                if now.duration_since(self.primary_last_fps_dump_time) >= Duration::from_secs(1) {
+                    println!("FPS (P): {}", self.primary_frame_count);
+                    self.primary_frame_count = 0;
+                    self.primary_last_fps_dump_time = now;
                 }
             }
-            window.wgpu.queue().submit(Some(encoder.finish()));
-            frame.present();
         }
 
-        if let Some(window) = self.secondary_waveform_window.as_ref() {
-            let frame = window
-                .wgpu
-                .surface()
-                .get_current_texture()
-                .expect("Failed to acquire next swap chain texture");
-            let view = frame
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor::default());
+        if let Some(window) = self.secondary_waveform_window.as_mut() {
+            if window.wgpu.surface_id() == surface_id {
+                if window.must_reconfigure {
+                    println!(
+                        "Reconfiguring secondary window with config: {:?}",
+                        window.config
+                    );
+                    window
+                        .wgpu
+                        .surface()
+                        .configure(window.wgpu.device(), &window.config);
+                    window.must_reconfigure = false;
+                }
+                let frame = window
+                    .wgpu
+                    .surface()
+                    .get_current_texture()
+                    .expect("Failed to acquire next swap chain texture");
+                let view = frame
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
 
-            let mut encoder = window
-                .wgpu
-                .device()
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+                let mut encoder = window
+                    .wgpu
+                    .device()
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-            if let Some(right_waveform_window) = &mut self.right_waveform_view {
-                assert!(right_waveform_window.render_window == RenderWindow::Secondary);
-                right_waveform_window.update_config();
-                right_waveform_window.process_audio(
-                    &data,
-                    self.fft.as_ref(),
-                    &mut self.fft_inout_buffer,
-                    &mut self.fft_scratch,
-                );
-                right_waveform_window.render(&mut encoder, &view);
+                if let Some(right_waveform_window) = &mut self.right_waveform_view {
+                    right_waveform_window.update_config();
+                    right_waveform_window.render(&mut encoder, &view);
+                }
+                window.wgpu.queue().submit(Some(encoder.finish()));
+                frame.present();
+
+                let now = Instant::now();
+                self.secondary_frame_count += 1;
+                if now.duration_since(self.secondary_last_fps_dump_time) >= Duration::from_secs(1) {
+                    println!("FPS (S): {}", self.secondary_frame_count);
+                    self.secondary_frame_count = 0;
+                    self.secondary_last_fps_dump_time = now;
+                }
             }
-            window.wgpu.queue().submit(Some(encoder.finish()));
-            frame.present();
-        }
-
-        // FPS calculation
-        let now = Instant::now();
-        self.frame_count += 1;
-        if now.duration_since(self.last_fps_dump_time) >= Duration::from_secs(1) {
-            println!("FPS: {}", self.frame_count);
-            self.frame_count = 0;
-            self.last_fps_dump_time = now;
         }
     }
 
@@ -1024,9 +1055,11 @@ impl WlrLayerApplicationHandler for ApplicationState {
             waveform_window.reconfigure(width, height);
         }
     }
-
-    fn render(&mut self) {
-        self.windowed_state.as_mut().unwrap().render();
+    fn process_audio(&mut self) {
+        self.windowed_state.as_mut().unwrap().process_audio();
+    }
+    fn render(&mut self, surface_id: u32) {
+        self.windowed_state.as_mut().unwrap().render(surface_id);
     }
 }
 

@@ -7,6 +7,7 @@ use std::rc::Rc;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use wayland_client::EventQueue;
+use wayland_client::backend::ObjectId;
 
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::{
@@ -54,9 +55,10 @@ impl CompositorHandler for WlrWaylandEventHandler {
         &mut self,
         conn: &Connection,
         qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
+        surface: &wl_surface::WlSurface,
         _time: u32,
     ) {
+        // Process UI callbacks here since some require the wayland connection to recreate windows.
         while let Ok(message) = self.ui_msg_rx.try_recv() {
             match message {
                 UiMessage::ApplicationStateCallback(closure) => {
@@ -65,7 +67,14 @@ impl CompositorHandler for WlrWaylandEventHandler {
                 UiMessage::WlrWaylandEventHandlerCallback(closure) => closure(self, conn, qh),
             }
         }
-        self.app_state.render();
+
+        if !self.surfaces_with_pending_render.contains(&surface.id()) {
+            self.surfaces_with_pending_render.push(surface.id());
+
+            // Already tell the compositor that we want to draw again for the next output frame.
+            surface.frame(&qh, surface.clone());
+            surface.commit();
+        }
     }
 
     fn surface_enter(
@@ -132,7 +141,7 @@ impl LayerShellHandler for WlrWaylandEventHandler {
     fn configure(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         layer: &LayerSurface,
         configure: LayerSurfaceConfigure,
         _serial: u32,
@@ -144,27 +153,39 @@ impl LayerShellHandler for WlrWaylandEventHandler {
             self.app_state_initialized = true;
             self.app_state.initialize_app_state();
         }
-        if let Some((wgpu_surface, anchor_position, channels)) = self.primary_wgpu_holder.take() {
-            self.app_state
-                .configure_primary_wgpu_surface(wgpu_surface, anchor_position, channels);
-        }
-        if let Some((wgpu_surface, anchor_position)) = self.secondary_wgpu_holder.take() {
-            self.app_state
-                .configure_secondary_wgpu_surface(wgpu_surface, anchor_position);
+
+        if self.primary_layer.as_ref() == Some(layer) {
+            if let Some((wgpu_surface, anchor_position, channels)) = self.primary_wgpu_holder.take()
+            {
+                self.app_state.configure_primary_wgpu_surface(
+                    wgpu_surface,
+                    anchor_position,
+                    channels,
+                );
+                // Render once to let wgpu finalize the surface initialization.
+                self.app_state.render(layer.wl_surface().id().protocol_id());
+            } else if Some(layer) == self.primary_layer.as_ref() {
+                self.app_state.primary_resized(new_width, new_height);
+            }
+
+            // Kick off the animation
+            layer.wl_surface().frame(qh, layer.wl_surface().clone());
+            layer.wl_surface().commit();
         }
 
-        if Some(layer) == self.primary_layer.as_ref() {
-            self.app_state.primary_resized(new_width, new_height);
-        }
-        if Some(layer) == self.secondary_layer.as_ref() {
-            self.app_state.secondary_resized(new_width, new_height);
-        }
+        if self.secondary_layer.as_ref() == Some(layer) {
+            if let Some((wgpu_surface, anchor_position)) = self.secondary_wgpu_holder.take() {
+                self.app_state
+                    .configure_secondary_wgpu_surface(wgpu_surface, anchor_position);
+                // Render once to let wgpu finalize the surface initialization.
+                self.app_state.render(layer.wl_surface().id().protocol_id());
+            } else if Some(layer) == self.secondary_layer.as_ref() {
+                self.app_state.secondary_resized(new_width, new_height);
+            }
 
-        if Some(layer) == self.secondary_layer.as_ref() || self.secondary_layer.is_none() {
-            // Render once to let wgpu finalize the surface initialization.
-            // FIXME: I get a "layer_surface has never been configured" error from wlroots
-            // if I do this after the first layer, but putting this here seems to work.
-            self.app_state.render();
+            // Kick off the animation
+            layer.wl_surface().frame(qh, layer.wl_surface().clone());
+            layer.wl_surface().commit();
         }
     }
 }
@@ -174,15 +195,13 @@ pub struct WlrWgpuSurface {
     device: wgpu::Device,
     surface: wgpu::Surface<'static>,
     queue: Arc<wgpu::Queue>,
-    request_redraw_callback: Arc<dyn Fn() + Send + Sync>,
-
     pub layer: LayerSurface,
 }
 
 impl WlrWgpuSurface {
     fn new(
         conn: Connection,
-        qh: QueueHandle<WlrWaylandEventHandler>,
+        _qh: QueueHandle<WlrWaylandEventHandler>,
         layer: LayerSurface,
     ) -> WlrWgpuSurface {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -222,13 +241,6 @@ impl WlrWgpuSurface {
             device,
             surface,
             queue: Arc::new(queue),
-            request_redraw_callback: {
-                let surface = layer.wl_surface().clone();
-                Arc::new(move || {
-                    surface.frame(&qh, surface.clone());
-                    surface.commit();
-                })
-            },
             layer,
         }
     }
@@ -247,8 +259,8 @@ impl WgpuSurface for WlrWgpuSurface {
     fn queue(&self) -> &Arc<wgpu::Queue> {
         &self.queue
     }
-    fn request_redraw_callback(&self) -> &Arc<dyn Fn() + Send + Sync> {
-        &self.request_redraw_callback
+    fn surface_id(&self) -> u32 {
+        self.layer.wl_surface().id().protocol_id()
     }
 }
 
@@ -260,6 +272,7 @@ pub struct WlrWaylandEventHandler {
     output_state: OutputState,
 
     exit: bool,
+    surfaces_with_pending_render: Vec<ObjectId>,
     panel_config: PanelConfig,
     request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
     primary_layer: Option<LayerSurface>,
@@ -299,22 +312,32 @@ impl WlrWaylandEventHandler {
             app_state.left_waveform_view = None;
             app_state.right_waveform_view = None;
         }
+        // Unset the request redraw callback, holding references to old surfaces
+        *self.request_redraw_callback.lock().unwrap() = Arc::new(|| {});
 
         let (primary_wgpu_and_anchor, secondary_wgpu_and_anchor) = match self.panel_config.layout {
             crate::ui::PanelLayout::TwoPanels => (
                 Some((
-                    self.create_surface(Anchor::TOP | Anchor::LEFT | Anchor::BOTTOM, conn, qh),
+                    self.create_layer_surface(
+                        Anchor::TOP | Anchor::LEFT | Anchor::BOTTOM,
+                        conn,
+                        qh,
+                    ),
                     PanelAnchorPosition::Left,
                     RenderChannels::Single,
                 )),
                 Some((
-                    self.create_surface(Anchor::TOP | Anchor::RIGHT | Anchor::BOTTOM, conn, qh),
+                    self.create_layer_surface(
+                        Anchor::TOP | Anchor::RIGHT | Anchor::BOTTOM,
+                        conn,
+                        qh,
+                    ),
                     PanelAnchorPosition::Right,
                 )),
             ),
             crate::ui::PanelLayout::SingleTop => (
                 Some((
-                    self.create_surface(Anchor::LEFT | Anchor::TOP | Anchor::RIGHT, conn, qh),
+                    self.create_layer_surface(Anchor::LEFT | Anchor::TOP | Anchor::RIGHT, conn, qh),
                     PanelAnchorPosition::Top,
                     self.panel_config.channels,
                 )),
@@ -322,7 +345,11 @@ impl WlrWaylandEventHandler {
             ),
             crate::ui::PanelLayout::SingleBottom => (
                 Some((
-                    self.create_surface(Anchor::LEFT | Anchor::BOTTOM | Anchor::RIGHT, conn, qh),
+                    self.create_layer_surface(
+                        Anchor::LEFT | Anchor::BOTTOM | Anchor::RIGHT,
+                        conn,
+                        qh,
+                    ),
                     PanelAnchorPosition::Bottom,
                     self.panel_config.channels,
                 )),
@@ -340,7 +367,7 @@ impl WlrWaylandEventHandler {
         self.update_request_redraw_callback(qh.clone());
     }
 
-    fn create_surface(
+    fn create_layer_surface(
         &self,
         anchor: Anchor,
         conn: &Connection,
@@ -433,24 +460,25 @@ impl WlrWaylandEventHandler {
     }
 
     fn update_request_redraw_callback(&mut self, qh: QueueHandle<Self>) {
-        *self.request_redraw_callback.lock().unwrap() = {
-            let primary_surface = self.primary_layer.as_ref().map(|l| l.wl_surface().clone());
-            let secondary_surface = self
-                .secondary_layer
-                .as_ref()
-                .map(|l| l.wl_surface().clone());
-            Arc::new(move || {
-                if let Some(surface) = &primary_surface {
-                    surface.frame(&qh, surface.clone());
-                    surface.commit();
-                }
-                if let Some(surface) = &secondary_surface {
-                    surface.frame(&qh, surface.clone());
-                    surface.commit();
-                }
-                // conn.flush().unwrap();
-            })
-        };
+        // FIXME: Bring back for switching off rendering when no audio
+        // *self.request_redraw_callback.lock().unwrap() = {
+        //     let primary_surface = self.primary_layer.as_ref().map(|l| l.wl_surface().clone());
+        //     let secondary_surface = self
+        //         .secondary_layer
+        //         .as_ref()
+        //         .map(|l| l.wl_surface().clone());
+        //     Arc::new(move || {
+        //         if let Some(surface) = &primary_surface {
+        //             surface.frame(&qh, surface.clone());
+        //             surface.commit();
+        //         }
+        //         if let Some(surface) = &secondary_surface {
+        //             surface.frame(&qh, surface.clone());
+        //             surface.commit();
+        //         }
+        //         // conn.flush().unwrap();
+        //     })
+        // };
     }
 }
 
@@ -499,7 +527,8 @@ pub trait WlrLayerApplicationHandler {
     );
     fn primary_resized(&mut self, width: u32, height: u32);
     fn secondary_resized(&mut self, width: u32, height: u32);
-    fn render(&mut self);
+    fn process_audio(&mut self);
+    fn render(&mut self, surface_id: u32);
 }
 
 pub struct WlrWaylandEventLoop {
@@ -539,6 +568,7 @@ impl WlrWaylandEventLoop {
             registry_state,
             output_state,
             exit: false,
+            surfaces_with_pending_render: Vec::new(),
             panel_config,
             request_redraw_callback,
             primary_layer: None,
@@ -563,6 +593,17 @@ impl WlrWaylandEventLoop {
             if self.state.exit {
                 println!("exiting example");
                 break;
+            }
+
+            // With two windows, we have to render outside the frame callback, after we've
+            // drained the pending wayland messages, so that we can request new frame callbacks
+            // for both windows before we start interacting with the GPU for either of them
+            // and potentially block the thread.
+            if !self.state.surfaces_with_pending_render.is_empty() {
+                self.state.app_state.process_audio();
+            }
+            for surface_id in self.state.surfaces_with_pending_render.drain(..) {
+                self.state.app_state.render(surface_id.protocol_id());
             }
         }
     }

@@ -10,6 +10,7 @@ use slint::{ComponentHandle, Global, Model};
 use splines::Interpolation;
 use std::rc::Rc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use std::{borrow::Cow, sync::Arc};
@@ -658,13 +659,11 @@ impl WaveformView {
 }
 
 struct ApplicationState {
-    // See https://docs.rs/winit/latest/winit/changelog/v0_30/index.html#removed
-    // for the recommended practice regarding Window creation (from which everything depends)
-    // in winit >= 0.30.0.
-    // The actual state is in an Option because its initialization is now delayed to after
+    // The actual state is in an Option because its initialization is delayed to after
     // the even loop starts running.
     windowed_state: Option<WindowedApplicationState>,
-    process_audio: Arc<Mutex<bool>>,
+    process_audio: Arc<AtomicBool>,
+    animation_stopped: Arc<AtomicBool>,
     request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
 }
 
@@ -672,7 +671,8 @@ impl ApplicationState {
     fn new(request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>) -> ApplicationState {
         ApplicationState {
             windowed_state: None,
-            process_audio: Arc::new(Mutex::new(true)),
+            process_audio: Arc::new(AtomicBool::new(true)),
+            animation_stopped: Arc::new(AtomicBool::new(false)),
             request_redraw_callback,
         }
     }
@@ -685,6 +685,8 @@ struct WindowedApplicationState {
     primary_frame_count: u32,
     secondary_last_fps_dump_time: Instant,
     secondary_frame_count: u32,
+    last_non_zero_sample_age: usize,
+    animation_stopped: Arc<AtomicBool>,
     left_waveform_view: Option<WaveformView>,
     right_waveform_view: Option<WaveformView>,
     waveform_config: ui::WaveformConfig,
@@ -723,20 +725,23 @@ impl Vertex {
 
 impl WindowedApplicationState {
     fn new(
-        process_audio: Arc<Mutex<bool>>,
+        process_audio: Arc<AtomicBool>,
+        animation_stopped: Arc<AtomicBool>,
         request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
     ) -> WindowedApplicationState {
         let (audio_input_ringbuf_prod, audio_input_ringbuf_cons) =
             HeapRb::<f32>::new(44100 * NUM_CHANNELS).split();
 
-        let arc_process_audio = process_audio.clone();
-
-        std::thread::spawn(move || {
-            audio::initialize_audio_capture(
-                arc_process_audio,
-                audio_input_ringbuf_prod,
-                request_redraw_callback,
-            );
+        std::thread::spawn({
+            let animation_stopped = animation_stopped.clone();
+            move || {
+                audio::initialize_audio_capture(
+                    audio_input_ringbuf_prod,
+                    process_audio,
+                    animation_stopped,
+                    request_redraw_callback,
+                );
+            }
         });
 
         let fft = FftPlanner::new().plan_fft(FFT_SIZE, FftDirection::Forward);
@@ -748,6 +753,8 @@ impl WindowedApplicationState {
             primary_frame_count: 0,
             secondary_last_fps_dump_time: Instant::now(),
             secondary_frame_count: 0,
+            last_non_zero_sample_age: 0,
+            animation_stopped,
             left_waveform_view: None,
             right_waveform_view: None,
             waveform_config: ui::WaveformConfig::default(),
@@ -867,6 +874,18 @@ impl WindowedApplicationState {
 
     fn process_audio(&mut self) {
         let data: Vec<f32> = self.audio_input_ringbuf_cons.pop_iter().collect();
+
+        if data.iter().all(|&x| x == 0.0) {
+            self.last_non_zero_sample_age += data.len();
+            if self.last_non_zero_sample_age > VERTEX_BUFFER_SIZE * 2 {
+                // Stop requesting new frames and let the audio thread know if they
+                // should wake us up once non-zero samples are available.
+                self.animation_stopped.store(true, Ordering::Relaxed);
+            }
+        } else {
+            self.last_non_zero_sample_age = 0;
+        }
+
         if let Some(left_waveform_window) = &mut self.left_waveform_view {
             left_waveform_window.process_audio(
                 &data,
@@ -1006,6 +1025,7 @@ impl WlrLayerApplicationHandler for ApplicationState {
     fn initialize_app_state(&mut self) {
         self.windowed_state = Some(WindowedApplicationState::new(
             self.process_audio.clone(),
+            self.animation_stopped.clone(),
             self.request_redraw_callback.clone(),
         ));
     }

@@ -4,6 +4,7 @@ use raw_window_handle::{
 use smithay_client_toolkit::compositor::Region;
 use std::ptr::NonNull;
 use std::rc::Rc;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use wayland_client::EventQueue;
@@ -71,9 +72,11 @@ impl CompositorHandler for WlrWaylandEventHandler {
         if !self.surfaces_with_pending_render.contains(&surface.id()) {
             self.surfaces_with_pending_render.push(surface.id());
 
-            // Already tell the compositor that we want to draw again for the next output frame.
-            surface.frame(&qh, surface.clone());
-            surface.commit();
+            if !self.app_state.animation_stopped.load(Ordering::Relaxed) {
+                // Already tell the compositor that we want to draw again for the next output frame.
+                surface.frame(&qh, surface.clone());
+                surface.commit();
+            }
         }
     }
 
@@ -364,7 +367,7 @@ impl WlrWaylandEventHandler {
         self.primary_wgpu_holder = primary_wgpu_and_anchor;
         self.secondary_wgpu_holder = secondary_wgpu_and_anchor;
 
-        self.update_request_redraw_callback(qh.clone());
+        self.update_request_redraw_callback(conn.clone(), qh.clone());
     }
 
     fn create_layer_surface(
@@ -459,26 +462,27 @@ impl WlrWaylandEventHandler {
         }
     }
 
-    fn update_request_redraw_callback(&mut self, qh: QueueHandle<Self>) {
-        // FIXME: Bring back for switching off rendering when no audio
-        // *self.request_redraw_callback.lock().unwrap() = {
-        //     let primary_surface = self.primary_layer.as_ref().map(|l| l.wl_surface().clone());
-        //     let secondary_surface = self
-        //         .secondary_layer
-        //         .as_ref()
-        //         .map(|l| l.wl_surface().clone());
-        //     Arc::new(move || {
-        //         if let Some(surface) = &primary_surface {
-        //             surface.frame(&qh, surface.clone());
-        //             surface.commit();
-        //         }
-        //         if let Some(surface) = &secondary_surface {
-        //             surface.frame(&qh, surface.clone());
-        //             surface.commit();
-        //         }
-        //         // conn.flush().unwrap();
-        //     })
-        // };
+    fn update_request_redraw_callback(&mut self, conn: Connection, qh: QueueHandle<Self>) {
+        *self.request_redraw_callback.lock().unwrap() = {
+            let primary_surface = self.primary_layer.as_ref().map(|l| l.wl_surface().clone());
+            let secondary_surface = self
+                .secondary_layer
+                .as_ref()
+                .map(|l| l.wl_surface().clone());
+            Arc::new(move || {
+                if let Some(surface) = &primary_surface {
+                    surface.frame(&qh, surface.clone());
+                    surface.commit();
+                }
+                if let Some(surface) = &secondary_surface {
+                    surface.frame(&qh, surface.clone());
+                    surface.commit();
+                }
+                // The event loop might be idle, make sure the requests make it to the compositor
+                // so that we can get a response that gets us out of polling.
+                conn.flush().unwrap();
+            })
+        };
     }
 }
 
@@ -580,7 +584,7 @@ impl WlrWaylandEventLoop {
         };
 
         state.set_panel_layout(layout, &conn, &qh);
-        state.update_request_redraw_callback(qh);
+        state.update_request_redraw_callback(conn, qh);
 
         WlrWaylandEventLoop { event_queue, state }
     }

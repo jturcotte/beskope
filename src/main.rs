@@ -662,7 +662,6 @@ struct ApplicationState {
     // The actual state is in an Option because its initialization is delayed to after
     // the even loop starts running.
     windowed_state: Option<WindowedApplicationState>,
-    process_audio: Arc<AtomicBool>,
     animation_stopped: Arc<AtomicBool>,
     request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
 }
@@ -671,7 +670,6 @@ impl ApplicationState {
     fn new(request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>) -> ApplicationState {
         ApplicationState {
             windowed_state: None,
-            process_audio: Arc::new(AtomicBool::new(true)),
             animation_stopped: Arc::new(AtomicBool::new(false)),
             request_redraw_callback,
         }
@@ -725,7 +723,6 @@ impl Vertex {
 
 impl WindowedApplicationState {
     fn new(
-        process_audio: Arc<AtomicBool>,
         animation_stopped: Arc<AtomicBool>,
         request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
     ) -> WindowedApplicationState {
@@ -737,7 +734,6 @@ impl WindowedApplicationState {
             move || {
                 audio::initialize_audio_capture(
                     audio_input_ringbuf_prod,
-                    process_audio,
                     animation_stopped,
                     request_redraw_callback,
                 );
@@ -1024,7 +1020,6 @@ impl WindowedApplicationState {
 impl WlrLayerApplicationHandler for ApplicationState {
     fn initialize_app_state(&mut self) {
         self.windowed_state = Some(WindowedApplicationState::new(
-            self.process_audio.clone(),
             self.animation_stopped.clone(),
             self.request_redraw_callback.clone(),
         ));

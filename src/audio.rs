@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex};
 
 pub fn initialize_audio_capture(
     mut audio_input_ringbuf_prod: Caching<Arc<SharedRb<Heap<f32>>>, true, false>,
-    should_process_audio: Arc<AtomicBool>,
     animation_stopped: Arc<AtomicBool>,
     request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
 ) {
@@ -81,38 +80,36 @@ pub fn initialize_audio_capture(
                 let n_samples = data.chunk().size() as usize / std::mem::size_of::<f32>();
 
                 if let Some(samples) = data.data() {
-                    if should_process_audio.load(Ordering::Relaxed) {
-                        let f32_samples: &[f32] = unsafe {
-                            std::slice::from_raw_parts(samples.as_ptr() as *const f32, n_samples)
-                        };
+                    let f32_samples: &[f32] = unsafe {
+                        std::slice::from_raw_parts(samples.as_ptr() as *const f32, n_samples)
+                    };
 
-                        let mut should_forward_data = true;
+                    let mut should_forward_data = true;
 
-                        // Check if we need to restart the rendering
-                        if animation_stopped.load(Ordering::Relaxed) {
-                            let has_only_zeroes = f32_samples.iter().all(|&sample| sample == 0.0);
-                            if has_only_zeroes {
-                                should_forward_data = false;
-                            } else {
-                                animation_stopped.store(false, Ordering::Relaxed);
-                                request_redraw_callback.lock().unwrap()();
-                            }
+                    // Check if we need to restart the rendering
+                    if animation_stopped.load(Ordering::Relaxed) {
+                        let has_only_zeroes = f32_samples.iter().all(|&sample| sample == 0.0);
+                        if has_only_zeroes {
+                            should_forward_data = false;
+                        } else {
+                            animation_stopped.store(false, Ordering::Relaxed);
+                            request_redraw_callback.lock().unwrap()();
                         }
+                    }
 
-                        if should_forward_data {
-                            if n_channels == 1 {
-                                // Duplicate the channel sample to make it stereo
-                                let interleaved_samples =
-                                    f32_samples.iter().flat_map(|&sample| [sample, sample]);
-                                audio_input_ringbuf_prod.push_iter(interleaved_samples);
-                            } else {
-                                assert!(
-                                    n_channels == 2,
-                                    "Only support monitor port of mono or stereo audio devices"
-                                );
-                                // Just push the samples as is
-                                audio_input_ringbuf_prod.push_slice(f32_samples);
-                            }
+                    if should_forward_data {
+                        if n_channels == 1 {
+                            // Duplicate the channel sample to make it stereo
+                            let interleaved_samples =
+                                f32_samples.iter().flat_map(|&sample| [sample, sample]);
+                            audio_input_ringbuf_prod.push_iter(interleaved_samples);
+                        } else {
+                            assert!(
+                                n_channels == 2,
+                                "Only support monitor port of mono or stereo audio devices"
+                            );
+                            // Just push the samples as is
+                            audio_input_ringbuf_prod.push_slice(f32_samples);
                         }
                     }
                 }

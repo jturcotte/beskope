@@ -4,7 +4,7 @@ use std::io::ErrorKind;
 use toml_edit::{DocumentMut, table, value};
 
 fn get_config_path() -> Option<std::path::PathBuf> {
-    let project_dirs = ProjectDirs::from("", "", "soundsift")?;
+    let project_dirs = ProjectDirs::from("", "", "beskope")?;
     Some(project_dirs.config_dir().join("config.toml"))
 }
 

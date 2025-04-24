@@ -389,6 +389,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "beskope"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "cgmath",
+ "directories",
+ "num-complex",
+ "pipewire",
+ "pollster",
+ "raw-window-handle",
+ "ringbuf",
+ "rustfft",
+ "signal-hook",
+ "slint",
+ "slint-build",
+ "smithay-client-toolkit",
+ "splines",
+ "toml_edit 0.22.24",
+ "wayland-client",
+ "wgpu",
+]
+
+[[package]]
 name = "bindgen"
 version = "0.69.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4651,29 +4674,6 @@ dependencies = [
  "web-sys",
  "windows-sys 0.59.0",
  "x11rb",
-]
-
-[[package]]
-name = "soundsift"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "cgmath",
- "directories",
- "num-complex",
- "pipewire",
- "pollster",
- "raw-window-handle",
- "ringbuf",
- "rustfft",
- "signal-hook",
- "slint",
- "slint-build",
- "smithay-client-toolkit",
- "splines",
- "toml_edit 0.22.24",
- "wayland-client",
- "wgpu",
 ]
 
 [[package]]

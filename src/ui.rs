@@ -139,12 +139,22 @@ pub fn init(send_ui_msg: impl Fn(UiMessage) + Clone + 'static) -> ConfigurationW
         }
     });
 
+    configuration.on_style_changed({
+        let send = send_ui_msg.clone();
+        move |config| {
+            send(UiMessage::ApplicationStateCallback(Box::new(
+                move |state| {
+                    state.set_style(config);
+                },
+            )));
+        }
+    });
     configuration.on_panel_channels_changed({
         let send = send_ui_msg.clone();
         move |config| {
-            send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
-                move |handler, conn, qh| {
-                    handler.set_panel_channels(config, conn, qh);
+            send(UiMessage::ApplicationStateCallback(Box::new(
+                move |state| {
+                    state.set_channels(config);
                 },
             )));
         }
@@ -175,6 +185,11 @@ pub fn init(send_ui_msg: impl Fn(UiMessage) + Clone + 'static) -> ConfigurationW
             send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
                 move |handler, _, _| {
                     handler.set_panel_width(config as u32);
+                },
+            )));
+            send(UiMessage::ApplicationStateCallback(Box::new(
+                move |state| {
+                    state.set_panel_width(config as u32);
                 },
             )));
         }

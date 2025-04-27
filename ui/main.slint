@@ -1,5 +1,10 @@
 import { VerticalBox, Slider, HorizontalBox, GroupBox, TabWidget, ComboBox, LineEdit, GridBox, AboutSlint, Palette, StandardButton } from "std-widgets.slint";
 
+enum Style {
+    Ridgeline,
+    Compressed,
+}
+
 enum RenderChannels {
     Single,
     Both,
@@ -30,6 +35,7 @@ struct ControlPoint {
 
 export global Configuration {
     callback waveform_changed(WaveformConfig);
+    callback style_changed(Style);
     callback panel_channels_changed(RenderChannels);
     callback panel_layout_changed(PanelLayout);
     callback panel_layer_changed(PanelLayer);
@@ -38,6 +44,7 @@ export global Configuration {
     callback all_time_curve_control_points_changed([ControlPoint]);
 
     changed waveform => { waveform_changed(waveform); }
+    changed style => { style_changed(style); }
     changed panel_channels => { panel_channels_changed(panel_channels); }
     changed panel_layout => { panel_layout_changed(panel_layout); }
     changed panel_layer => { panel_layer_changed(panel_layer); }
@@ -58,6 +65,7 @@ export global Configuration {
         stroke_color: Colors.rgba(205, 205, 205, 0.8),
     };
 
+    in-out property<Style> style: Style.Ridgeline;
     in-out property<RenderChannels> panel_channels: RenderChannels.Both;
     in-out property<PanelLayout> panel_layout: PanelLayout.TwoPanels;
     in-out property<PanelLayer> panel_layer: PanelLayer.Top;
@@ -131,6 +139,26 @@ component HsvColorSelection inherits GroupBox {
 }
 
 component GeneralTab inherits GridBox {
+    Row {
+        Text {
+            text: "Style";
+            vertical-alignment: TextVerticalAlignment.center;
+        }
+        style_cb := ComboBox {
+            model: [
+                "Ridgeline plot",
+                "Compressed line",
+            ];
+            current-index: Configuration.style == Style.Ridgeline ? 0 : 1;
+            selected(current-value) => {
+                if (self.current-index == 0) {
+                    Configuration.style = Style.Ridgeline;
+                } else {
+                    Configuration.style = Style.Compressed;
+                }
+            }
+        }
+    }
     Row {
         Text {
             text: "Channels per window/panel";

@@ -28,7 +28,7 @@ use wayland_client::{
     protocol::{wl_output, wl_surface},
 };
 
-use crate::ui::{PanelLayer, PanelLayout, RenderChannels};
+use crate::ui::{PanelLayer, PanelLayout};
 use crate::{ApplicationState, UiMessage, WgpuSurface};
 
 impl CompositorHandler for WlrWaylandEventHandler {
@@ -39,7 +39,6 @@ impl CompositorHandler for WlrWaylandEventHandler {
         _surface: &wl_surface::WlSurface,
         _new_factor: i32,
     ) {
-        println!("Scale factor changed");
     }
 
     fn transform_changed(
@@ -49,7 +48,6 @@ impl CompositorHandler for WlrWaylandEventHandler {
         _surface: &wl_surface::WlSurface,
         _new_transform: wl_output::Transform,
     ) {
-        println!("Transform changed");
     }
 
     fn frame(
@@ -57,7 +55,7 @@ impl CompositorHandler for WlrWaylandEventHandler {
         conn: &Connection,
         qh: &QueueHandle<Self>,
         surface: &wl_surface::WlSurface,
-        _time: u32,
+        time: u32,
     ) {
         // Process UI callbacks here since some require the wayland connection to recreate windows.
         while let Ok(message) = self.ui_msg_rx.try_recv() {
@@ -78,26 +76,52 @@ impl CompositorHandler for WlrWaylandEventHandler {
                 surface.commit();
             }
         }
+
+        if self.primary_layer.as_ref().map(|l| l.wl_surface().id()) == Some(surface.id()) {
+            self.pending_render_timestamp = time;
+        }
     }
 
     fn surface_enter(
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _output: &wl_output::WlOutput,
+        surface: &wl_surface::WlSurface,
+        output: &wl_output::WlOutput,
     ) {
         println!("Surface entered");
+        // Assume that both layers are on the same output, so only process changes on the primary layer.
+        if Some(surface.id()) == self.primary_layer.as_ref().map(|l| l.wl_surface().id()) {
+            self.primary_surface_output = Some(output.id());
+            if let Some(size) = self
+                .output_state
+                .info(output)
+                .and_then(|info| info.logical_size)
+            {
+                self.app_state.set_screen_size(size.0 as u32, size.1 as u32);
+            }
+        }
     }
 
     fn surface_leave(
         &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _output: &wl_output::WlOutput,
+        conn: &Connection,
+        qh: &QueueHandle<Self>,
+        surface: &wl_surface::WlSurface,
+        output: &wl_output::WlOutput,
     ) {
         println!("Surface left");
+        if Some(surface.id()) == self.primary_layer.as_ref().map(|l| l.wl_surface().id()) {
+            if self.primary_surface_output == Some(output.id()) {
+                self.primary_surface_output = None;
+
+                // The surface might not be remapped for wlr_layer_shell,
+                // reconfigure them to map them to the new default output.
+                self.apply_panel_layout(conn, qh);
+            } else {
+                debug_assert!(false, "Surface leave called with a different output");
+            }
+        }
     }
 }
 
@@ -119,9 +143,18 @@ impl OutputHandler for WlrWaylandEventHandler {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
+        output: wl_output::WlOutput,
     ) {
         println!("Update output");
+        if self.primary_surface_output == Some(output.id()) {
+            if let Some(size) = self
+                .output_state
+                .info(&output)
+                .and_then(|info| info.logical_size)
+            {
+                self.app_state.set_screen_size(size.0 as u32, size.1 as u32);
+            }
+        }
     }
 
     fn output_destroyed(
@@ -135,10 +168,11 @@ impl OutputHandler for WlrWaylandEventHandler {
 }
 
 impl LayerShellHandler for WlrWaylandEventHandler {
-    fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {
+    fn closed(&mut self, conn: &Connection, qh: &QueueHandle<Self>, _layer: &LayerSurface) {
         println!("Layer closed");
-        // FIXME: handle instead
-        self.exit = true;
+        // The client should destroy the resource after receiving this event,
+        // and create a new surface if they so choose.
+        self.apply_panel_layout(conn, qh);
     }
 
     fn configure(
@@ -158,12 +192,12 @@ impl LayerShellHandler for WlrWaylandEventHandler {
         }
 
         if self.primary_layer.as_ref() == Some(layer) {
-            if let Some((wgpu_surface, anchor_position, channels)) = self.primary_wgpu_holder.take()
-            {
+            if let Some((wgpu_surface, anchor_position)) = self.primary_wgpu_holder.take() {
                 self.app_state.configure_primary_wgpu_surface(
                     wgpu_surface,
                     anchor_position,
-                    channels,
+                    new_width,
+                    new_height,
                 );
                 // Render once to let wgpu finalize the surface initialization.
                 self.app_state.render(layer.wl_surface().id().protocol_id());
@@ -178,8 +212,12 @@ impl LayerShellHandler for WlrWaylandEventHandler {
 
         if self.secondary_layer.as_ref() == Some(layer) {
             if let Some((wgpu_surface, anchor_position)) = self.secondary_wgpu_holder.take() {
-                self.app_state
-                    .configure_secondary_wgpu_surface(wgpu_surface, anchor_position);
+                self.app_state.configure_secondary_wgpu_surface(
+                    wgpu_surface,
+                    anchor_position,
+                    new_width,
+                    new_height,
+                );
                 // Render once to let wgpu finalize the surface initialization.
                 self.app_state.render(layer.wl_surface().id().protocol_id());
             } else if Some(layer) == self.secondary_layer.as_ref() {
@@ -274,28 +312,20 @@ pub struct WlrWaylandEventHandler {
     registry_state: RegistryState,
     output_state: OutputState,
 
-    exit: bool,
     surfaces_with_pending_render: Vec<ObjectId>,
+    pending_render_timestamp: u32,
     panel_config: PanelConfig,
     request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
     primary_layer: Option<LayerSurface>,
     secondary_layer: Option<LayerSurface>,
-    primary_wgpu_holder: Option<(Rc<WlrWgpuSurface>, PanelAnchorPosition, RenderChannels)>,
+    primary_wgpu_holder: Option<(Rc<WlrWgpuSurface>, PanelAnchorPosition)>,
     secondary_wgpu_holder: Option<(Rc<WlrWgpuSurface>, PanelAnchorPosition)>,
+    primary_surface_output: Option<ObjectId>,
     app_state: ApplicationState,
     app_state_initialized: bool,
 }
 
 impl WlrWaylandEventHandler {
-    pub fn set_panel_channels(
-        &mut self,
-        channels: RenderChannels,
-        conn: &Connection,
-        qh: &QueueHandle<Self>,
-    ) {
-        self.panel_config.channels = channels;
-        self.apply_panel_layout(conn, qh);
-    }
     pub fn set_panel_layout(
         &mut self,
         panel_layout: crate::ui::PanelLayout,
@@ -327,7 +357,6 @@ impl WlrWaylandEventHandler {
                         qh,
                     ),
                     PanelAnchorPosition::Left,
-                    RenderChannels::Single,
                 )),
                 Some((
                     self.create_layer_surface(
@@ -342,7 +371,6 @@ impl WlrWaylandEventHandler {
                 Some((
                     self.create_layer_surface(Anchor::LEFT | Anchor::TOP | Anchor::RIGHT, conn, qh),
                     PanelAnchorPosition::Top,
-                    self.panel_config.channels,
                 )),
                 None,
             ),
@@ -354,7 +382,6 @@ impl WlrWaylandEventHandler {
                         qh,
                     ),
                     PanelAnchorPosition::Bottom,
-                    self.panel_config.channels,
                 )),
                 None,
             ),
@@ -500,7 +527,7 @@ impl ProvidesRegistryState for WlrWaylandEventHandler {
     registry_handlers![OutputState];
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(PartialEq, Debug, Clone, Copy)]
 pub enum PanelAnchorPosition {
     Top,
     Bottom,
@@ -509,7 +536,6 @@ pub enum PanelAnchorPosition {
 }
 
 pub struct PanelConfig {
-    pub channels: RenderChannels,
     pub layout: PanelLayout,
     pub layer: PanelLayer,
     pub width: u32,
@@ -522,16 +548,20 @@ pub trait WlrLayerApplicationHandler {
         &mut self,
         wgpu_surface: Rc<dyn WgpuSurface>,
         anchor_position: PanelAnchorPosition,
-        channels: RenderChannels,
+        width: u32,
+        height: u32,
     );
     fn configure_secondary_wgpu_surface(
         &mut self,
         wgpu_surface: Rc<dyn WgpuSurface>,
         anchor_position: PanelAnchorPosition,
+        width: u32,
+        height: u32,
     );
+    fn set_screen_size(&mut self, width: u32, height: u32);
     fn primary_resized(&mut self, width: u32, height: u32);
     fn secondary_resized(&mut self, width: u32, height: u32);
-    fn process_audio(&mut self);
+    fn process_audio(&mut self, timestamp: u32);
     fn render(&mut self, surface_id: u32);
 }
 
@@ -571,14 +601,15 @@ impl WlrWaylandEventLoop {
             layer_shell,
             registry_state,
             output_state,
-            exit: false,
             surfaces_with_pending_render: Vec::new(),
+            pending_render_timestamp: 0,
             panel_config,
             request_redraw_callback,
             primary_layer: None,
             secondary_layer: None,
             primary_wgpu_holder: None,
             secondary_wgpu_holder: None,
+            primary_surface_output: None,
             app_state,
             app_state_initialized: false,
         };
@@ -594,17 +625,14 @@ impl WlrWaylandEventLoop {
         loop {
             self.event_queue.blocking_dispatch(&mut self.state).unwrap();
 
-            if self.state.exit {
-                println!("exiting example");
-                break;
-            }
-
             // With two windows, we have to render outside the frame callback, after we've
             // drained the pending wayland messages, so that we can request new frame callbacks
             // for both windows before we start interacting with the GPU for either of them
             // and potentially block the thread.
             if !self.state.surfaces_with_pending_render.is_empty() {
-                self.state.app_state.process_audio();
+                self.state
+                    .app_state
+                    .process_audio(self.state.pending_render_timestamp);
             }
             for surface_id in self.state.surfaces_with_pending_render.drain(..) {
                 self.state.app_state.render(surface_id.protocol_id());

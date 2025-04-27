@@ -42,6 +42,8 @@ pub fn save_configuration(
         waveform.stroke_color.alpha()
     ));
 
+    doc["style"] = value(format!("{:?}", configuration.get_style()));
+
     doc["panel"] = table();
     doc["panel"]["channels"] = value(format!("{:?}", configuration.get_panel_channels()));
     doc["panel"]["layout"] = value(format!("{:?}", configuration.get_panel_layout()));
@@ -78,6 +80,14 @@ pub fn load_configuration(
         }
         let existing_data = std::fs::read_to_string(&config_path)?;
         let doc = existing_data.parse::<DocumentMut>()?;
+
+        if let Some(style) = doc
+            .get("style")
+            .and_then(|i| i.as_str())
+            .and_then(parse_style)
+        {
+            configuration.set_style(style.into());
+        }
 
         if let Some(waveform_item) = doc.get("waveform") {
             let mut waveform = configuration.get_waveform();
@@ -147,6 +157,14 @@ fn parse_color(s: &str) -> Result<slint::Color, Box<dyn std::error::Error>> {
         Ok(slint::Color::from_argb_u8(a, r, g, b))
     } else {
         Err(std::io::Error::new(ErrorKind::InvalidData, "Invalid color format").into())
+    }
+}
+
+fn parse_style(s: &str) -> Option<crate::ui::Style> {
+    match s {
+        "Ridgeline" => Some(crate::ui::Style::Ridgeline),
+        "Compressed" => Some(crate::ui::Style::Compressed),
+        _ => None,
     }
 }
 

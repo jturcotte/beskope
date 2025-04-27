@@ -43,6 +43,7 @@ pub fn save_configuration(
     ));
 
     doc["panel"] = table();
+    doc["panel"]["channels"] = value(format!("{:?}", configuration.get_panel_channels()));
     doc["panel"]["layout"] = value(format!("{:?}", configuration.get_panel_layout()));
     doc["panel"]["width"] = value(configuration.get_panel_width() as i64);
     doc["panel"]["exclusive_ratio"] = value(configuration.get_panel_exclusive_ratio() as f64);
@@ -90,13 +91,24 @@ pub fn load_configuration(
         }
 
         if let Some(panel_item) = doc.get("panel") {
-            if let Some(panel_layout) = panel_item["layout"].as_str().and_then(parse_panel_layout) {
+            if let Some(panel_channels) = panel_item
+                .get("channels")
+                .and_then(|i| i.as_str())
+                .and_then(parse_panel_channels)
+            {
+                configuration.set_panel_channels(panel_channels.into());
+            }
+            if let Some(panel_layout) = panel_item
+                .get("layout")
+                .and_then(|i| i.as_str())
+                .and_then(parse_panel_layout)
+            {
                 configuration.set_panel_layout(panel_layout.into());
             }
-            if let Some(p_width) = panel_item["width"].as_integer() {
+            if let Some(p_width) = panel_item.get("width").and_then(|i| i.as_integer()) {
                 configuration.set_panel_width(p_width as i32);
             }
-            if let Some(exclusive) = panel_item["exclusive_ratio"].as_float() {
+            if let Some(exclusive) = panel_item.get("exclusive_ratio").and_then(|i| i.as_float()) {
                 configuration.set_panel_exclusive_ratio(exclusive as f32);
             }
         }
@@ -135,6 +147,14 @@ fn parse_color(s: &str) -> Result<slint::Color, Box<dyn std::error::Error>> {
         Ok(slint::Color::from_argb_u8(a, r, g, b))
     } else {
         Err(std::io::Error::new(ErrorKind::InvalidData, "Invalid color format").into())
+    }
+}
+
+fn parse_panel_channels(s: &str) -> Option<crate::ui::RenderChannels> {
+    match s {
+        "Single" => Some(crate::ui::RenderChannels::Single),
+        "Both" => Some(crate::ui::RenderChannels::Both),
+        _ => None,
     }
 }
 

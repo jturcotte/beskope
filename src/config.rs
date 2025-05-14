@@ -47,6 +47,7 @@ pub fn save_configuration(
     doc["panel"] = table();
     doc["panel"]["channels"] = value(format!("{:?}", configuration.get_panel_channels()));
     doc["panel"]["layout"] = value(format!("{:?}", configuration.get_panel_layout()));
+    doc["panel"]["layer"] = value(format!("{:?}", configuration.get_panel_layer()));
     doc["panel"]["width"] = value(configuration.get_panel_width() as i64);
     doc["panel"]["exclusive_ratio"] = value(configuration.get_panel_exclusive_ratio() as f64);
 
@@ -115,6 +116,13 @@ pub fn load_configuration(
             {
                 configuration.set_panel_layout(panel_layout.into());
             }
+            if let Some(panel_layer) = panel_item
+                .get("layer")
+                .and_then(|i| i.as_str())
+                .and_then(parse_panel_layer)
+            {
+                configuration.set_panel_layer(panel_layer.into());
+            }
             if let Some(p_width) = panel_item.get("width").and_then(|i| i.as_integer()) {
                 configuration.set_panel_width(p_width as i32);
             }
@@ -181,6 +189,16 @@ fn parse_panel_layout(s: &str) -> Option<crate::ui::PanelLayout> {
         "TwoPanels" => Some(crate::ui::PanelLayout::TwoPanels),
         "SingleTop" => Some(crate::ui::PanelLayout::SingleTop),
         "SingleBottom" => Some(crate::ui::PanelLayout::SingleBottom),
+        _ => None,
+    }
+}
+
+fn parse_panel_layer(s: &str) -> Option<crate::ui::PanelLayer> {
+    match s {
+        "Overlay" => Some(crate::ui::PanelLayer::Overlay),
+        "Top" => Some(crate::ui::PanelLayer::Top),
+        "Bottom" => Some(crate::ui::PanelLayer::Bottom),
+        "Background" => Some(crate::ui::PanelLayer::Background),
         _ => None,
     }
 }

@@ -130,8 +130,8 @@ impl WaveformWindow {
     ) {
         if self.must_reconfigure {
             println!(
-                "Reconfiguring primary window with config: {:?}",
-                self.config
+                "Reconfiguring {:?} window with config: {:?}",
+                self.render_window, self.config,
             );
             self.wgpu
                 .surface()

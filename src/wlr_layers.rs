@@ -424,6 +424,7 @@ impl WlrWaylandEventHandler {
         layer.set_exclusive_zone(
             (self.panel_config.width as f32 * self.panel_config.exclusive_ratio) as i32,
         );
+        layer.set_layer(Self::layer_to_wayland_layer(self.panel_config.layer));
 
         // In order for the layer surface to be mapped, we need to perform an initial commit with no attached\
         // buffer. For more info, see WaylandSurface::commit
@@ -470,14 +471,18 @@ impl WlrWaylandEventHandler {
         }
     }
 
-    pub fn set_panel_layer(&mut self, layer: PanelLayer) {
-        self.panel_config.layer = layer;
-        let wayland_layer = match layer {
+    fn layer_to_wayland_layer(layer: PanelLayer) -> Layer {
+        match layer {
             PanelLayer::Overlay => Layer::Overlay,
             PanelLayer::Top => Layer::Top,
             PanelLayer::Bottom => Layer::Bottom,
             PanelLayer::Background => Layer::Background,
-        };
+        }
+    }
+
+    pub fn set_panel_layer(&mut self, layer: PanelLayer) {
+        self.panel_config.layer = layer;
+        let wayland_layer = Self::layer_to_wayland_layer(layer);
         println!("Setting layer to {:?}", wayland_layer);
         if let Some(layer) = self.primary_layer.as_ref() {
             layer.set_layer(wayland_layer);

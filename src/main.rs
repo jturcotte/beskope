@@ -1013,7 +1013,7 @@ impl RidgelineWaveformView {
                         },
                         wgpu::BindGroupLayoutEntry {
                             binding: 3,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            visibility: wgpu::ShaderStages::VERTEX,
                             ty: wgpu::BindingType::Buffer {
                                 ty: wgpu::BufferBindingType::Uniform,
                                 has_dynamic_offset: false,
@@ -1070,13 +1070,13 @@ impl RidgelineWaveformView {
                     layout: Some(&pipeline_layout),
                     vertex: wgpu::VertexState {
                         module: &shader,
-                        entry_point: Some("vs_main"),
+                        entry_point: Some("vs_fill_main"),
                         buffers: &[Vertex::desc()],
                         compilation_options: Default::default(),
                     },
                     fragment: Some(wgpu::FragmentState {
                         module: &shader,
-                        entry_point: Some("fs_fill_main"),
+                        entry_point: Some("fs_main"),
                         compilation_options: Default::default(),
                         targets: &[Some(window.swapchain_format.into())],
                     }),
@@ -1092,7 +1092,7 @@ impl RidgelineWaveformView {
                     depth_stencil: Some(wgpu::DepthStencilState {
                         format: wgpu::TextureFormat::Depth32Float,
                         depth_write_enabled: true,
-                        depth_compare: wgpu::CompareFunction::Less,
+                        depth_compare: wgpu::CompareFunction::LessEqual,
                         stencil: wgpu::StencilState::default(),
                         bias: wgpu::DepthBiasState::default(),
                     }),
@@ -1110,13 +1110,13 @@ impl RidgelineWaveformView {
                     layout: Some(&pipeline_layout),
                     vertex: wgpu::VertexState {
                         module: &shader,
-                        entry_point: Some("vs_main"),
+                        entry_point: Some("vs_stroke_main"),
                         buffers: &[Vertex::desc()],
                         compilation_options: Default::default(),
                     },
                     fragment: Some(wgpu::FragmentState {
                         module: &shader,
-                        entry_point: Some("fs_stroke_main"),
+                        entry_point: Some("fs_main"),
                         compilation_options: Default::default(),
                         targets: &[Some(window.swapchain_format.into())],
                     }),

@@ -60,9 +60,7 @@ impl CompositorHandler for WlrWaylandEventHandler {
         // Process UI callbacks here since some require the wayland connection to recreate windows.
         while let Ok(message) = self.ui_msg_rx.try_recv() {
             match message {
-                UiMessage::ApplicationStateCallback(closure) => {
-                    closure(self.app_state.windowed_state.as_mut().unwrap())
-                }
+                UiMessage::ApplicationStateCallback(closure) => closure(&mut self.app_state),
                 UiMessage::WlrWaylandEventHandlerCallback(closure) => closure(self, conn, qh),
             }
         }
@@ -188,7 +186,7 @@ impl LayerShellHandler for WlrWaylandEventHandler {
 
         if !self.app_state_initialized {
             self.app_state_initialized = true;
-            self.app_state.initialize_app_state();
+            self.app_state.initialize_audio_and_fft();
         }
 
         if self.primary_layer.as_ref() == Some(layer) {
@@ -339,12 +337,11 @@ impl WlrWaylandEventHandler {
         // Already destroy existing layers and wgpu surfaces
         self.primary_layer = None;
         self.secondary_layer = None;
-        if let Some(app_state) = self.app_state.windowed_state.as_mut() {
-            app_state.primary_waveform_window = None;
-            app_state.secondary_waveform_window = None;
-            app_state.left_waveform_view = None;
-            app_state.right_waveform_view = None;
-        }
+        self.app_state.primary_waveform_window = None;
+        self.app_state.secondary_waveform_window = None;
+        self.app_state.left_waveform_view = None;
+        self.app_state.right_waveform_view = None;
+
         // Unset the request redraw callback, holding references to old surfaces
         *self.request_redraw_callback.lock().unwrap() = Arc::new(|| {});
 
@@ -545,29 +542,6 @@ pub struct PanelConfig {
     pub layer: PanelLayer,
     pub width: u32,
     pub exclusive_ratio: f32,
-}
-
-pub trait WlrLayerApplicationHandler {
-    fn initialize_app_state(&mut self);
-    fn configure_primary_wgpu_surface(
-        &mut self,
-        wgpu_surface: Rc<dyn WgpuSurface>,
-        anchor_position: PanelAnchorPosition,
-        width: u32,
-        height: u32,
-    );
-    fn configure_secondary_wgpu_surface(
-        &mut self,
-        wgpu_surface: Rc<dyn WgpuSurface>,
-        anchor_position: PanelAnchorPosition,
-        width: u32,
-        height: u32,
-    );
-    fn set_screen_size(&mut self, width: u32, height: u32);
-    fn primary_resized(&mut self, width: u32, height: u32);
-    fn secondary_resized(&mut self, width: u32, height: u32);
-    fn process_audio(&mut self, timestamp: u32);
-    fn render(&mut self, surface_id: u32);
 }
 
 pub struct WlrWaylandEventLoop {

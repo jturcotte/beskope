@@ -1,21 +1,25 @@
 import { VerticalBox, Slider, HorizontalBox, GroupBox, TabWidget, ComboBox, LineEdit, GridBox, AboutSlint, Palette, StandardButton } from "std-widgets.slint";
 
+@rust-attr(derive(serde::Serialize, serde::Deserialize))
 enum Style {
     Ridgeline,
     Compressed,
 }
 
+@rust-attr(derive(serde::Serialize, serde::Deserialize))
 enum RenderChannels {
     Single,
     Both,
 }
 
+@rust-attr(derive(serde::Serialize, serde::Deserialize))
 enum PanelLayout {
     TwoPanels,
     SingleTop,
     SingleBottom,
 }
 
+@rust-attr(derive(serde::Serialize, serde::Deserialize))
 enum PanelLayer {
     Overlay,
     Top,
@@ -23,17 +27,19 @@ enum PanelLayer {
     Background,
 }
 
+@rust-attr(derive(serde::Serialize, serde::Deserialize))
 struct WaveformConfig {
     fill_color: color,
     stroke_color: color,
 }
 
+@rust-attr(derive(serde::Serialize, serde::Deserialize))
 struct ControlPoint {
     t: float,
     v: float,
 }
 
-export global Configuration {
+export global Backend {
     callback waveform_changed(WaveformConfig);
     callback style_changed(Style);
     callback panel_channels_changed(RenderChannels);
@@ -41,46 +47,16 @@ export global Configuration {
     callback panel_layer_changed(PanelLayer);
     callback panel_width_changed(int);
     callback panel_exclusive_ratio_changed(float);
-    callback all_time_curve_control_points_changed([ControlPoint]);
+    callback time_curve_control_points_changed([ControlPoint]);
+}
 
-    changed waveform => { waveform_changed(waveform); }
-    changed style => { style_changed(style); }
-    changed panel_channels => { panel_channels_changed(panel_channels); }
-    changed panel_layout => { panel_layout_changed(panel_layout); }
-    changed panel_layer => { panel_layer_changed(panel_layer); }
-    changed panel_width => { panel_width_changed(panel_width); }
-    changed panel_exclusive_ratio => { panel_exclusive_ratio_changed(panel_exclusive_ratio); }
-    // Only when the whole model is changed by load_configuration
-    changed time_curve_control_points => {
-        all_time_curve_control_points_changed(time_curve_control_points);
-    }
-
+export global TimeCurveEditor {
     // Callbacks to edit the model from Rust
-    callback time_curve_control_point_changed(int, ControlPoint);
-    callback time_curve_control_point_added(ControlPoint);
-    callback time_curve_control_point_removed(int);
+    callback change_point([ControlPoint], int, ControlPoint);
+    callback add_point([ControlPoint], ControlPoint);
+    callback remove_point([ControlPoint], int);
 
-    in-out property<WaveformConfig> waveform: {
-        fill_color: Colors.rgba(32, 32, 32, 0.4),
-        stroke_color: Colors.rgba(205, 205, 205, 0.8),
-    };
-
-    in-out property<Style> style: Style.Ridgeline;
-    in-out property<RenderChannels> panel_channels: RenderChannels.Both;
-    in-out property<PanelLayout> panel_layout: PanelLayout.TwoPanels;
-    in-out property<PanelLayer> panel_layer: PanelLayer.Top;
-    in-out property<int> panel_width: 64;
-    in-out property<float> panel_exclusive_ratio: 0.5;
-
-    in-out property<float> time_curve_min_t: -3;
-    in-out property<[ControlPoint]> time_curve_control_points: [
-        { t: -3.0, v: 0.0 },
-        { t: -1.75, v: 0.025 },
-        { t: -0.75, v: 0.10 },
-        { t: -0.25, v: 0.25 },
-        { t: -1/15, v: 0.4 },
-        { t: -1/60, v: 0.6 }
-    ];
+    pure callback draw_curve([ControlPoint], length, length) -> string;
 }
 
 component LabeledSlider {
@@ -139,6 +115,13 @@ component HsvColorSelection inherits GroupBox {
 }
 
 component GeneralTab inherits GridBox {
+    callback set_style <=> style_cb.set_style;
+    callback set_panel_channels <=> channels_cb.set_panel_channels;
+    callback set_panel_layout <=> layout_cb.set_panel_layout;
+    callback set_panel_layer <=> layer_cb.set_panel_layer;
+    callback set_panel_width <=> panel_width_slider.set_panel_width;
+    callback set_panel_exclusive_ratio <=> panel_exclusive_ratio_slider.set_panel_exclusive_ratio;
+
     Row {
         Text {
             text: "Style";
@@ -149,12 +132,15 @@ component GeneralTab inherits GridBox {
                 "Ridgeline plot",
                 "Compressed line",
             ];
-            current-index: Configuration.style == Style.Ridgeline ? 0 : 1;
             selected(current-value) => {
-                if (self.current-index == 0) {
-                    Configuration.style = Style.Ridgeline;
+                Backend.style_changed(self.current-index == 0 ? Style.Ridgeline : Style.Compressed);
+            }
+            callback set_style(Style);
+            set_style(style) => {
+                if (style == Style.Ridgeline) {
+                    self.current-index = 0;
                 } else {
-                    Configuration.style = Style.Compressed;
+                    self.current-index = 1;
                 }
             }
         }
@@ -170,12 +156,19 @@ component GeneralTab inherits GridBox {
                 "Only left",
                 "Both left and right",
             ];
-            current-index: Configuration.panel_channels == RenderChannels.Single ? 0 : 1;
             selected(current-value) => {
                 if (self.current-index == 0) {
-                    Configuration.panel_channels = RenderChannels.Single;
+                    Backend.panel_channels_changed(RenderChannels.Single);
                 } else {
-                    Configuration.panel_channels = RenderChannels.Both;
+                    Backend.panel_channels_changed(RenderChannels.Both);
+                }
+            }
+            callback set_panel_channels(RenderChannels);
+            set_panel_channels(channels) => {
+                if (channels == RenderChannels.Single) {
+                    self.current-index = 0;
+                } else {
+                    self.current-index = 1;
                 }
             }
         }
@@ -191,11 +184,6 @@ component GeneralTab inherits GridBox {
                 "Single panel at the top",
                 "Single panel at the bottom",
             ];
-            current-index: Configuration.panel_layout == PanelLayout.TwoPanels
-                ? 0
-                : Configuration.panel_layout == PanelLayout.SingleTop
-                    ? 1
-                    : 2;
             selected(current-value) => {
                 if (self.current-index == 0) {
                     channels_cb.enabled = false;
@@ -205,11 +193,21 @@ component GeneralTab inherits GridBox {
                 }
 
                 if (self.current-index == 0) {
-                    Configuration.panel_layout = PanelLayout.TwoPanels;
+                    Backend.panel_layout_changed(PanelLayout.TwoPanels);
                 } else if (self.current-index == 1) {
-                    Configuration.panel_layout = PanelLayout.SingleTop;
+                    Backend.panel_layout_changed(PanelLayout.SingleTop);
                 } else {
-                    Configuration.panel_layout = PanelLayout.SingleBottom;
+                    Backend.panel_layout_changed(PanelLayout.SingleBottom);
+                }
+            }
+            callback set_panel_layout(PanelLayout);
+            set_panel_layout(layout) => {
+                if (layout == PanelLayout.TwoPanels) {
+                    self.current-index = 0;
+                } else if (layout == PanelLayout.SingleTop) {
+                    self.current-index = 1;
+                } else {
+                    self.current-index = 2;
                 }
             }
         }
@@ -226,49 +224,60 @@ component GeneralTab inherits GridBox {
                 "Bottom",
                 "Background",
             ];
-            current-index: Configuration.panel_layer == PanelLayer.Overlay
-                ? 0
-                : Configuration.panel_layer == PanelLayer.Top
-                    ? 1
-                    : Configuration.panel_layer == PanelLayer.Bottom
-                        ? 2
-                        : 3;
             selected(current-value) => {
                 if (self.current-index == 0) {
-                    Configuration.panel_layer = PanelLayer.Overlay;
+                    Backend.panel_layer_changed(PanelLayer.Overlay);
                 } else if (self.current-index == 1) {
-                    Configuration.panel_layer = PanelLayer.Top;
+                    Backend.panel_layer_changed(PanelLayer.Top);
                 } else if (self.current-index == 2) {
-                    Configuration.panel_layer = PanelLayer.Bottom;
+                    Backend.panel_layer_changed(PanelLayer.Bottom);
                 } else {
-                    Configuration.panel_layer = PanelLayer.Background;
+                    Backend.panel_layer_changed(PanelLayer.Background);
+                }
+            }
+            callback set_panel_layer(PanelLayer);
+            set_panel_layer(layer) => {
+                if (layer == PanelLayer.Overlay) {
+                    self.current-index = 0;
+                } else if (layer == PanelLayer.Top) {
+                    self.current-index = 1;
+                } else if (layer == PanelLayer.Bottom) {
+                    self.current-index = 2;
+                } else {
+                    self.current-index = 3;
                 }
             }
         }
     }
     Row {
         Text { text: "Height/Width"; }
-        LabeledSlider {
-            value: Configuration.panel_width;
+        panel_width_slider := LabeledSlider {
+            callback set_panel_width(int);
             minimum: 1;
             maximum: 800;
             precision: 1;
             unit: " px";
             changed => {
-                Configuration.panel_width = self.value;
+                Backend.panel_width_changed(self.value);
+            }
+            set_panel_width(width) => {
+                self.value = width;
             }
         }
     }
     Row {
         Text { text: "Height/Width Exclusive"; }
-        LabeledSlider {
-            value: Configuration.panel_exclusive_ratio * 100;
+        panel_exclusive_ratio_slider := LabeledSlider {
             minimum: 0;
             maximum: 100;
             precision: 1;
             unit: " %";
             changed => {
-                Configuration.panel_exclusive_ratio = self.value / 100;
+                Backend.panel_exclusive_ratio_changed(self.value / 100);
+            }
+            callback set_panel_exclusive_ratio(float);
+            set_panel_exclusive_ratio(ratio) => {
+                self.value = ratio * 100;
             }
         }
     }
@@ -276,33 +285,32 @@ component GeneralTab inherits GridBox {
 }
 
 component ColorTab inherits VerticalBox {
+    callback set_waveform_config(WaveformConfig);
+    set_waveform_config(waveform) => {
+        fill_color.h = waveform.fill_color.to_hsv().hue;
+        fill_color.s = waveform.fill_color.to_hsv().saturation;
+        fill_color.v = waveform.fill_color.to_hsv().value;
+        fill_color.a = waveform.fill_color.to_hsv().alpha;
+        stroke_color.h = waveform.stroke_color.to_hsv().hue;
+        stroke_color.s = waveform.stroke_color.to_hsv().saturation;
+        stroke_color.v = waveform.stroke_color.to_hsv().value;
+        stroke_color.a = waveform.stroke_color.to_hsv().alpha;
+    }
     function update_waveform_config() {
-        Configuration.waveform.fill_color = Colors.hsv(fill_color.h, fill_color.s, fill_color.v, fill_color.a);
-        Configuration.waveform.stroke_color = Colors.hsv(stroke_color.h, stroke_color.s, stroke_color.v, stroke_color.a);
+        Backend.waveform_changed({
+            fill_color: Colors.hsv(fill_color.h, fill_color.s, fill_color.v, fill_color.a),
+            stroke_color: Colors.hsv(stroke_color.h, stroke_color.s, stroke_color.v, stroke_color.a),
+        });
     }
 
     fill_color := HsvColorSelection {
         changed => { update_waveform_config(); }
         title: "Fill";
-        h: Configuration.waveform.fill_color.to_hsv().hue;
-        s: Configuration.waveform.fill_color.to_hsv().saturation;
-        v: Configuration.waveform.fill_color.to_hsv().value;
-        a: Configuration.waveform.fill_color.to_hsv().alpha;
     }
     stroke_color := HsvColorSelection {
         title: "Stroke";
         changed => { update_waveform_config(); }
-        h: Configuration.waveform.stroke_color.to_hsv().hue;
-        s: Configuration.waveform.stroke_color.to_hsv().saturation;
-        v: Configuration.waveform.stroke_color.to_hsv().value;
-        a: Configuration.waveform.stroke_color.to_hsv().alpha;
     }
-}
-
-export global TimeCurveDrawer {
-    pure callback draw_curve(length, length, bool) -> string;
-    // This is just to dirty the commands binding so that draw_curve gets called again.
-    in property<bool> dummy_dep: false;
 }
 
 component ControlPointHandle inherits TouchArea {
@@ -332,49 +340,80 @@ component ControlPointHandle inherits TouchArea {
 }
 
 component TimeCurveTab inherits VerticalBox {
+    // Must match VERTEX_BUFFER_SIZE for now
+    private property<float> time_curve_min_t: -3;
+
+    in property<[ControlPoint]> time_curve_control_points;
+    // Only when the whole model is changed by load_configuration
+    changed time_curve_control_points => {
+        Backend.time_curve_control_points_changed(time_curve_control_points);
+    }
+
     TouchArea {
         pointer-event(e) => {
             if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
-                Configuration.time_curve_control_point_added({
-                    t: Configuration.time_curve_min_t * (1.0 - (self.mouse-x / self.width)),
-                    v: 1.0 - self.mouse-y / self.height,
-                });
+                TimeCurveEditor.add_point(
+                    time_curve_control_points,
+                    {
+                        t: time_curve_min_t * (1.0 - (self.mouse-x / self.width)),
+                        v: 1.0 - self.mouse-y / self.height,
+                    }
+                );
+                Backend.time_curve_control_points_changed(time_curve_control_points);
+                path.dummy_dep = !path.dummy_dep;
             } else if e.kind == PointerEventKind.move && self.pressed {
                 // The just added point is the last one.
-                Configuration.time_curve_control_point_changed(Configuration.time_curve_control_points.length - 1, {
-                    t: Configuration.time_curve_min_t * (1.0 - max(0.0, min(1.0, (self.mouse-x / self.width)))),
-                    v: 1.0 - max(0.0, min(1.0, self.mouse-y / self.height)),
-                });
+                TimeCurveEditor.change_point(
+                    time_curve_control_points,
+                    time_curve_control_points.length - 1,
+                    {
+                        t: time_curve_min_t * (1.0 - max(0.0, min(1.0, (self.mouse-x / self.width)))),
+                        v: 1.0 - max(0.0, min(1.0, self.mouse-y / self.height)),
+                    }
+                );
+                Backend.time_curve_control_points_changed(time_curve_control_points);
+                path.dummy_dep = !path.dummy_dep;
             }
         }
 
-        Path {
+        path := Path {
             stroke: Palette.accent-background;
             stroke-width: 5px;
             viewbox-width: (self.width - self.stroke-width) / 1px;
             viewbox-height: (self.height - self.stroke-width) / 1px;
             clip: true;
 
-            commands: TimeCurveDrawer.draw_curve(self.width, self.height, TimeCurveDrawer.dummy_dep);
+            // This is just to dirty the commands binding so that draw_curve gets called again.
+            private property<bool> dummy_dep: false;
+
+            commands: TimeCurveEditor.draw_curve(time_curve_control_points, dummy_dep ? self.width : self.width, self.height);
         }
         Rectangle {
             border-color: Palette.alternate-foreground;
             border-width: 2px;
         }
-        for cp[i] in Configuration.time_curve_control_points:
+        for cp[i] in time_curve_control_points:
         ControlPointHandle {
-            x: (1.0 - cp.t / Configuration.time_curve_min_t) * parent.width - self.width / 2.0;
+            x: (1.0 - cp.t / time_curve_min_t) * parent.width - self.width / 2.0;
             y: (1.0 - cp.v) * parent.height - self.height / 2.0;
             label: round(cp.t * 1000) / 1000 + "s: " + cp.v;
             moved => {
-                Configuration.time_curve_control_point_changed(i, {
-                    t: Configuration.time_curve_min_t * (1.0 - max(0.0, min(1.0, (self.x + self.width / 2.0 + self.mouse-x - self.pressed-x) / parent.width))),
-                    v: max(0.0, min(1.0, 1.0 - (self.y + self.height / 2.0 + self.mouse-y - self.pressed-y) / parent.height)),
-                });
+                TimeCurveEditor.change_point(
+                    time_curve_control_points,
+                    i,
+                    {
+                        t: time_curve_min_t * (1.0 - max(0.0, min(1.0, (self.x + self.width / 2.0 + self.mouse-x - self.pressed-x) / parent.width))),
+                        v: max(0.0, min(1.0, 1.0 - (self.y + self.height / 2.0 + self.mouse-y - self.pressed-y) / parent.height)),
+                    }
+                );
+                Backend.time_curve_control_points_changed(time_curve_control_points);
+                path.dummy_dep = !path.dummy_dep;
             }
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                    Configuration.time_curve_control_point_removed(i);
+                    TimeCurveEditor.remove_point(time_curve_control_points, i);
+                    Backend.time_curve_control_points_changed(time_curve_control_points);
+                    path.dummy_dep = !path.dummy_dep;
                 }
             }
         }
@@ -382,21 +421,34 @@ component TimeCurveTab inherits VerticalBox {
 }
 
 export component ConfigurationWindow inherits Dialog {
+    // Callbacks to update the dialog from the application's state
+    callback set_waveform_config <=> color_tab.set_waveform_config;
+    callback set_style <=> general_tab.set_style;
+    callback set_panel_channels <=> general_tab.set_panel_channels;
+    callback set_panel_layout <=> general_tab.set_panel_layout;
+    callback set_panel_layer <=> general_tab.set_panel_layer;
+    callback set_panel_width <=> general_tab.set_panel_width;
+    callback set_panel_exclusive_ratio <=> general_tab.set_panel_exclusive_ratio;
+    callback set_time_curve_control_points([ControlPoint]);
+    set_time_curve_control_points(control_points) => {
+        time_curve_tab.time_curve_control_points = control_points;
+    }
+
     preferred-width: 800px;
     preferred-height: 600px;
 
     TabWidget {
         Tab {
             title: "General";
-            GeneralTab { }
+            general_tab := GeneralTab { }
         }
         Tab {
             title: "Color";
-            ColorTab { }
+            color_tab := ColorTab { }
         }
         Tab {
             title: "Time Curve";
-            TimeCurveTab { }
+            time_curve_tab := TimeCurveTab { }
         }
     }
     StandardButton {

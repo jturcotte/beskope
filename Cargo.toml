@@ -13,17 +13,18 @@ pollster = "0.4"
 raw-window-handle = "0.6"
 ringbuf = "0.4"
 rustfft = "6"
+serde = { version = "1", features = ["derive"] }
 signal-hook = "0.3.17"
 smithay-client-toolkit = "0.19"
 splines = "4"
-toml_edit = "0.22"
+toml = "0.8"
 wayland-client = "0.31"
 wgpu = "23"
 
 [dependencies.slint]
 version = "1"
 default-features = false
-features = ["compat-1-0", "backend-winit", "renderer-winit-femtovg"]
+features = ["compat-1-0", "backend-winit", "renderer-winit-femtovg", "serde"]
 
 [build-dependencies]
 slint-build = "1"

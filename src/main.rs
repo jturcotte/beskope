@@ -5,7 +5,7 @@ use ringbuf::wrap::caching::Caching;
 use ringbuf::{HeapRb, SharedRb};
 use rustfft::{Fft, FftDirection, FftPlanner};
 use signal_hook::iterator::Signals;
-use slint::{ComponentHandle, Global, Model};
+use slint::ComponentHandle;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -18,7 +18,6 @@ use wgpu::TextureFormat;
 use wlr_layers::{PanelAnchorPosition, WlrWaylandEventHandler};
 
 mod audio;
-mod config;
 mod ui;
 mod views;
 mod wlr_layers;
@@ -179,12 +178,8 @@ struct ApplicationState {
     animation_stopped: Arc<AtomicBool>,
     left_waveform_view: Option<Box<dyn WaveformView>>,
     right_waveform_view: Option<Box<dyn WaveformView>>,
+    pub config: ui::Configuration,
     screen_size: (u32, u32),
-    style: ui::Style,
-    channels: ui::RenderChannels,
-    panel_width: u32,
-    waveform_config: ui::WaveformConfig,
-    time_curve_control_points: Vec<ui::ControlPoint>,
     audio_input_ringbuf_cons: Option<Caching<Arc<SharedRb<Heap<f32>>>, false, true>>,
     fft: Option<Arc<dyn Fft<f32>>>,
     fft_inout_buffer: Option<Vec<Complex<f32>>>,
@@ -193,7 +188,10 @@ struct ApplicationState {
 }
 
 impl ApplicationState {
-    fn new(request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>) -> ApplicationState {
+    fn new(
+        config: ui::Configuration,
+        request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
+    ) -> ApplicationState {
         ApplicationState {
             primary_waveform_window: None,
             secondary_waveform_window: None,
@@ -201,17 +199,37 @@ impl ApplicationState {
             animation_stopped: Arc::new(AtomicBool::new(false)),
             left_waveform_view: None,
             right_waveform_view: None,
+            config,
             screen_size: (1, 1),
-            style: Default::default(),
-            channels: Default::default(),
-            panel_width: 0,
-            waveform_config: Default::default(),
-            time_curve_control_points: vec![],
             audio_input_ringbuf_cons: None,
             fft: None,
             fft_inout_buffer: None,
             fft_scratch: None,
             request_redraw_callback,
+        }
+    }
+
+    pub fn reload_configuration(&mut self) {
+        let config = match ui::Configuration::load() {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!("Failed to load configuration, will use default: {}", e);
+                ui::Configuration::default()
+            }
+        };
+        self.config = config;
+        // self.recreate_views();
+    }
+
+    fn for_each_view_mut<F>(&mut self, f: F)
+    where
+        F: Fn(&mut Box<dyn WaveformView>),
+    {
+        if let Some(view) = &mut self.left_waveform_view {
+            f(view);
+        }
+        if let Some(view) = &mut self.right_waveform_view {
+            f(view);
         }
     }
 
@@ -255,20 +273,24 @@ impl ApplicationState {
                 &window,
                 render_window,
                 *anchor_position,
-                self.channels,
+                self.config.panel.channels,
                 is_left_channel,
             )),
             ui::Style::Compressed => Box::new(views::CompressedWaveformView::new(
                 &window,
                 render_window,
                 *anchor_position,
-                self.channels,
+                self.config.panel.channels,
                 is_left_channel,
             )),
         };
-        view.update_transform(self.panel_width, self.screen_size.0, self.screen_size.1);
-        view.set_waveform_config(self.waveform_config.clone());
-        view.set_time_curve_control_points(self.time_curve_control_points.clone());
+        view.update_transform(
+            self.config.panel.width,
+            self.screen_size.0,
+            self.screen_size.1,
+        );
+        view.set_waveform_config(self.config.waveform.clone());
+        view.set_time_curve_control_points(self.config.time_curve.control_points.clone());
         view
     }
 
@@ -284,11 +306,11 @@ impl ApplicationState {
         self.primary_waveform_window = Some((window, anchor_position));
 
         self.left_waveform_view =
-            Some(self.create_waveform_view(self.style, RenderWindow::Primary, true));
+            Some(self.create_waveform_view(self.config.style, RenderWindow::Primary, true));
 
-        if self.channels == ui::RenderChannels::Both {
+        if self.config.panel.channels == ui::RenderChannels::Both {
             self.right_waveform_view =
-                Some(self.create_waveform_view(self.style, RenderWindow::Primary, false));
+                Some(self.create_waveform_view(self.config.style, RenderWindow::Primary, false));
         }
     }
 
@@ -304,7 +326,7 @@ impl ApplicationState {
         self.secondary_waveform_window = Some((window, anchor_position));
 
         self.right_waveform_view =
-            Some(self.create_waveform_view(self.style, RenderWindow::Secondary, false));
+            Some(self.create_waveform_view(self.config.style, RenderWindow::Secondary, false));
     }
 
     fn primary_resized(&mut self, width: u32, height: u32) {
@@ -377,65 +399,41 @@ impl ApplicationState {
         self.screen_size.0 = width;
         self.screen_size.1 = height;
         if let Some(view) = &mut self.left_waveform_view {
-            view.update_transform(self.panel_width, width, height);
+            view.update_transform(self.config.panel.width, width, height);
         }
         if let Some(view) = &mut self.right_waveform_view {
-            view.update_transform(self.panel_width, width, height);
+            view.update_transform(self.config.panel.width, width, height);
         }
     }
 
-    fn recreate_views(&mut self) {
+    pub fn recreate_views(&mut self) {
         if self.primary_waveform_window.is_some() {
             self.left_waveform_view =
-                Some(self.create_waveform_view(self.style, RenderWindow::Primary, true));
+                Some(self.create_waveform_view(self.config.style, RenderWindow::Primary, true));
 
-            if self.channels == ui::RenderChannels::Both {
-                self.right_waveform_view =
-                    Some(self.create_waveform_view(self.style, RenderWindow::Primary, false));
+            if self.config.panel.channels == ui::RenderChannels::Both {
+                self.right_waveform_view = Some(self.create_waveform_view(
+                    self.config.style,
+                    RenderWindow::Primary,
+                    false,
+                ));
             } else {
                 self.right_waveform_view = None;
             }
         }
         if self.secondary_waveform_window.is_some() {
             self.right_waveform_view =
-                Some(self.create_waveform_view(self.style, RenderWindow::Secondary, false));
+                Some(self.create_waveform_view(self.config.style, RenderWindow::Secondary, false));
         }
     }
 
-    fn set_style(&mut self, style: ui::Style) {
-        self.style = style;
-        self.recreate_views();
-    }
-    fn set_channels(&mut self, channels: ui::RenderChannels) {
-        self.channels = channels;
-        self.recreate_views();
-    }
     fn set_panel_width(&mut self, width: u32) {
-        self.panel_width = width;
+        self.config.panel.width = width;
         if let Some(view) = &mut self.left_waveform_view {
             view.update_transform(width, self.screen_size.0, self.screen_size.1);
         }
         if let Some(view) = &mut self.right_waveform_view {
             view.update_transform(width, self.screen_size.0, self.screen_size.1);
-        }
-    }
-    fn set_waveform_config(&mut self, config: ui::WaveformConfig) {
-        self.waveform_config = config.clone();
-        if let Some(view) = &mut self.left_waveform_view {
-            view.set_waveform_config(config.clone());
-        }
-        if let Some(view) = &mut self.right_waveform_view {
-            view.set_waveform_config(config);
-        }
-    }
-
-    fn set_time_curve_control_points(&mut self, points: Vec<ui::ControlPoint>) {
-        self.time_curve_control_points = points.clone();
-        if let Some(view) = &mut self.left_waveform_view {
-            view.set_time_curve_control_points(points.clone());
-        }
-        if let Some(view) = &mut self.right_waveform_view {
-            view.set_time_curve_control_points(points);
         }
     }
 }
@@ -459,6 +457,7 @@ pub fn main() {
         Arc::new(Mutex::new(Arc::new(|| {})));
 
     let send_ui_msg = {
+        let ui_msg_tx = ui_msg_tx.clone();
         let request_redraw_callback = request_redraw_callback.clone();
         move |msg| {
             ui_msg_tx.send(msg).unwrap();
@@ -466,62 +465,44 @@ pub fn main() {
         }
     };
 
-    let config_window = ui::init(send_ui_msg.clone());
-    let configuration = ui::Configuration::get(&config_window);
-
-    if let Err(e) = config::load_configuration(&configuration) {
-        eprintln!("Failed to load configuration: {}", e);
-    }
-
-    // Apply the initial waveform and time curve configuration explicitly since it won't be passed in as parameter like the panel config
-    {
-        let channels = configuration.get_panel_channels();
-        let waveform = configuration.get_waveform();
-
-        let control_points = configuration.get_time_curve_control_points();
-        let updated_points: Vec<_> = (0..control_points.row_count())
-            .map(|i| control_points.row_data(i).unwrap())
-            .collect();
-
-        send_ui_msg(UiMessage::ApplicationStateCallback(Box::new(move |ws| {
-            ws.set_channels(channels);
-            ws.set_waveform_config(waveform);
-            ws.set_time_curve_control_points(updated_points);
-        })));
-    }
-
-    let panel_config = wlr_layers::PanelConfig {
-        layout: configuration.get_panel_layout(),
-        layer: configuration.get_panel_layer(),
-        width: configuration.get_panel_width() as u32,
-        exclusive_ratio: configuration.get_panel_exclusive_ratio(),
+    let config = match ui::Configuration::load() {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Failed to load configuration: {}", e);
+            ui::Configuration::default()
+        }
     };
+    let config_window = ui::init(send_ui_msg.clone());
+    config_window.update_from_configuration(&config);
+    config_window.show().unwrap();
 
     // Spawn the wlr panel rendering in a separate thread, this is supported with wayland
     std::thread::spawn(move || {
-        let app_state = ApplicationState::new(request_redraw_callback.clone());
+        let app_state = ApplicationState::new(config, request_redraw_callback.clone());
 
-        let mut layers_even_queue = wlr_layers::WlrWaylandEventLoop::new(
-            app_state,
-            ui_msg_rx,
-            panel_config,
-            request_redraw_callback,
-        );
+        let mut layers_even_queue =
+            wlr_layers::WlrWaylandEventLoop::new(app_state, ui_msg_rx, request_redraw_callback);
         layers_even_queue.run_event_loop();
     });
 
     // The panels don't accept using input, so allow showing the config window again through SIGUSR1.
     std::thread::spawn({
         let mut signals = Signals::new(&[signal_hook::consts::SIGUSR1]).unwrap();
-        let window_weak = config_window.as_weak();
+        let config_window_weak = config_window.as_weak();
         move || {
             for sig in signals.forever() {
                 if sig == signal_hook::consts::SIGUSR1 {
-                    window_weak
-                        .upgrade_in_event_loop(|window| {
-                            window.show().unwrap();
-                        })
-                        .unwrap();
+                    let config_window_weak = config_window_weak.clone();
+                    send_ui_msg(UiMessage::ApplicationStateCallback(Box::new(move |app| {
+                        let config = app.config.clone();
+
+                        config_window_weak
+                            .upgrade_in_event_loop(move |window| {
+                                window.update_from_configuration(&config);
+                                window.show().unwrap();
+                            })
+                            .unwrap();
+                    })));
                 }
             }
         }

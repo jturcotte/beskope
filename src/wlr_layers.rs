@@ -28,7 +28,7 @@ use wayland_client::{
     protocol::{wl_output, wl_surface},
 };
 
-use crate::ui::{PanelLayer, PanelLayout};
+use crate::ui::PanelLayer;
 use crate::{ApplicationState, UiMessage, WgpuSurface};
 
 impl CompositorHandler for WlrWaylandEventHandler {
@@ -312,28 +312,19 @@ pub struct WlrWaylandEventHandler {
 
     surfaces_with_pending_render: Vec<ObjectId>,
     pending_render_timestamp: u32,
-    panel_config: PanelConfig,
+    // panel_config: PanelConfig,
     request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
     primary_layer: Option<LayerSurface>,
     secondary_layer: Option<LayerSurface>,
     primary_wgpu_holder: Option<(Rc<WlrWgpuSurface>, PanelAnchorPosition)>,
     secondary_wgpu_holder: Option<(Rc<WlrWgpuSurface>, PanelAnchorPosition)>,
     primary_surface_output: Option<ObjectId>,
-    app_state: ApplicationState,
+    pub app_state: ApplicationState,
     app_state_initialized: bool,
 }
 
 impl WlrWaylandEventHandler {
-    pub fn set_panel_layout(
-        &mut self,
-        panel_layout: crate::ui::PanelLayout,
-        conn: &Connection,
-        qh: &QueueHandle<Self>,
-    ) {
-        self.panel_config.layout = panel_layout;
-        self.apply_panel_layout(conn, qh);
-    }
-    fn apply_panel_layout(&mut self, conn: &Connection, qh: &QueueHandle<Self>) {
+    pub fn apply_panel_layout(&mut self, conn: &Connection, qh: &QueueHandle<Self>) {
         // Already destroy existing layers and wgpu surfaces
         self.primary_layer = None;
         self.secondary_layer = None;
@@ -345,7 +336,12 @@ impl WlrWaylandEventHandler {
         // Unset the request redraw callback, holding references to old surfaces
         *self.request_redraw_callback.lock().unwrap() = Arc::new(|| {});
 
-        let (primary_wgpu_and_anchor, secondary_wgpu_and_anchor) = match self.panel_config.layout {
+        let (primary_wgpu_and_anchor, secondary_wgpu_and_anchor) = match self
+            .app_state
+            .config
+            .panel
+            .layout
+        {
             crate::ui::PanelLayout::TwoPanels => (
                 Some((
                     self.create_layer_surface(
@@ -413,15 +409,18 @@ impl WlrWaylandEventHandler {
         // interactivity
         layer.set_anchor(anchor);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        let panel_width = self.app_state.config.panel.width as u32;
         if !anchor.intersects(Anchor::BOTTOM) || !anchor.intersects(Anchor::TOP) {
-            layer.set_size(0, self.panel_config.width as u32);
+            layer.set_size(0, panel_width);
         } else {
-            layer.set_size(self.panel_config.width as u32, 0);
+            layer.set_size(panel_width, 0);
         }
         layer.set_exclusive_zone(
-            (self.panel_config.width as f32 * self.panel_config.exclusive_ratio) as i32,
+            (panel_width as f32 * self.app_state.config.panel.exclusive_ratio) as i32,
         );
-        layer.set_layer(Self::layer_to_wayland_layer(self.panel_config.layer));
+        layer.set_layer(Self::layer_to_wayland_layer(
+            self.app_state.config.panel.layer,
+        ));
 
         // In order for the layer surface to be mapped, we need to perform an initial commit with no attached\
         // buffer. For more info, see WaylandSurface::commit
@@ -435,9 +434,9 @@ impl WlrWaylandEventHandler {
     }
 
     pub fn set_panel_width(&mut self, width: u32) {
-        self.panel_config.width = width;
-        let (width, height) = if self.panel_config.layout == crate::ui::PanelLayout::SingleTop
-            || self.panel_config.layout == crate::ui::PanelLayout::SingleBottom
+        let layout = self.app_state.config.panel.layout;
+        let (width, height) = if layout == crate::ui::PanelLayout::SingleTop
+            || layout == crate::ui::PanelLayout::SingleBottom
         {
             (0, width as u32)
         } else {
@@ -453,17 +452,16 @@ impl WlrWaylandEventHandler {
             layer.commit();
         }
         // Apply the ratio relatively to the new width
-        self.set_panel_exclusive_ratio(self.panel_config.exclusive_ratio);
+        self.set_panel_exclusive_ratio(self.app_state.config.panel.exclusive_ratio);
     }
 
     pub fn set_panel_exclusive_ratio(&mut self, ratio: f32) {
-        self.panel_config.exclusive_ratio = ratio;
         if let Some(layer) = self.primary_layer.as_ref() {
-            layer.set_exclusive_zone((self.panel_config.width as f32 * ratio) as i32);
+            layer.set_exclusive_zone((self.app_state.config.panel.width as f32 * ratio) as i32);
             layer.commit();
         }
         if let Some(layer) = self.secondary_layer.as_ref() {
-            layer.set_exclusive_zone((self.panel_config.width as f32 * ratio) as i32);
+            layer.set_exclusive_zone((self.app_state.config.panel.width as f32 * ratio) as i32);
             layer.commit();
         }
     }
@@ -478,7 +476,6 @@ impl WlrWaylandEventHandler {
     }
 
     pub fn set_panel_layer(&mut self, layer: PanelLayer) {
-        self.panel_config.layer = layer;
         let wayland_layer = Self::layer_to_wayland_layer(layer);
         println!("Setting layer to {:?}", wayland_layer);
         if let Some(layer) = self.primary_layer.as_ref() {
@@ -537,13 +534,6 @@ pub enum PanelAnchorPosition {
     Right,
 }
 
-pub struct PanelConfig {
-    pub layout: PanelLayout,
-    pub layer: PanelLayer,
-    pub width: u32,
-    pub exclusive_ratio: f32,
-}
-
 pub struct WlrWaylandEventLoop {
     event_queue: EventQueue<WlrWaylandEventHandler>,
     pub state: WlrWaylandEventHandler,
@@ -553,7 +543,6 @@ impl WlrWaylandEventLoop {
     pub fn new(
         app_state: ApplicationState,
         ui_msg_rx: Receiver<UiMessage>,
-        panel_config: PanelConfig,
         request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
     ) -> WlrWaylandEventLoop {
         // All Wayland apps start by connecting the compositor (server).
@@ -573,7 +562,6 @@ impl WlrWaylandEventLoop {
         let registry_state = RegistryState::new(&globals);
         let output_state = OutputState::new(&globals, &qh);
 
-        let layout = panel_config.layout;
         let mut state = WlrWaylandEventHandler {
             ui_msg_rx,
             compositor,
@@ -582,7 +570,6 @@ impl WlrWaylandEventLoop {
             output_state,
             surfaces_with_pending_render: Vec::new(),
             pending_render_timestamp: 0,
-            panel_config,
             request_redraw_callback,
             primary_layer: None,
             secondary_layer: None,
@@ -593,7 +580,7 @@ impl WlrWaylandEventLoop {
             app_state_initialized: false,
         };
 
-        state.set_panel_layout(layout, &conn, &qh);
+        state.apply_panel_layout(&conn, &qh);
         state.update_request_redraw_callback(conn, qh);
 
         WlrWaylandEventLoop { event_queue, state }

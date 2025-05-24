@@ -29,7 +29,7 @@ use wayland_client::{
 };
 
 use crate::ui::{self, PanelLayer};
-use crate::{ApplicationState, UiMessage, WgpuSurface};
+use crate::{AppMessage, ApplicationState, WgpuSurface};
 
 impl CompositorHandler for WlrWaylandEventHandler {
     fn scale_factor_changed(
@@ -60,8 +60,8 @@ impl CompositorHandler for WlrWaylandEventHandler {
         // Process UI callbacks here since some require the wayland connection to recreate windows.
         while let Ok(message) = self.ui_msg_rx.try_recv() {
             match message {
-                UiMessage::ApplicationStateCallback(closure) => closure(&mut self.app_state),
-                UiMessage::WlrWaylandEventHandlerCallback(closure) => closure(self, conn, qh),
+                AppMessage::ApplicationStateCallback(closure) => closure(&mut self.app_state),
+                AppMessage::WlrWaylandEventHandlerCallback(closure) => closure(self, conn, qh),
             }
         }
 
@@ -304,7 +304,7 @@ impl WgpuSurface for WlrWgpuSurface {
 }
 
 pub struct WlrWaylandEventHandler {
-    ui_msg_rx: Receiver<UiMessage>,
+    ui_msg_rx: Receiver<AppMessage>,
     compositor: CompositorState,
     layer_shell: LayerShell,
     registry_state: RegistryState,
@@ -565,7 +565,7 @@ pub struct WlrWaylandEventLoop {
 impl WlrWaylandEventLoop {
     pub fn new(
         app_state: ApplicationState,
-        ui_msg_rx: Receiver<UiMessage>,
+        ui_msg_rx: Receiver<AppMessage>,
         request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
     ) -> WlrWaylandEventLoop {
         // All Wayland apps start by connecting the compositor (server).

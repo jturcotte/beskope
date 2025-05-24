@@ -425,7 +425,7 @@ impl ApplicationState {
     }
 }
 
-enum UiMessage {
+enum AppMessage {
     ApplicationStateCallback(Box<dyn FnOnce(&mut ApplicationState) + Send>),
     WlrWaylandEventHandlerCallback(
         Box<
@@ -439,15 +439,15 @@ enum UiMessage {
 }
 
 pub fn main() {
-    let (ui_msg_tx, ui_msg_rx) = mpsc::channel::<UiMessage>();
+    let (app_msg_tx, app_msg_rx) = mpsc::channel::<AppMessage>();
     let request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>> =
         Arc::new(Mutex::new(Arc::new(|| {})));
 
-    let send_ui_msg = {
-        let ui_msg_tx = ui_msg_tx.clone();
+    let send_app_msg = {
+        let app_msg_tx = app_msg_tx.clone();
         let request_redraw_callback = request_redraw_callback.clone();
         move |msg| {
-            ui_msg_tx.send(msg).unwrap();
+            app_msg_tx.send(msg).unwrap();
             request_redraw_callback.lock().unwrap()();
         }
     };
@@ -459,7 +459,7 @@ pub fn main() {
             ui::Configuration::default()
         }
     };
-    let config_window = ui::init(send_ui_msg.clone());
+    let config_window = ui::init(send_app_msg.clone());
     config_window.update_from_configuration(&config);
     config_window.show().unwrap();
 
@@ -468,7 +468,7 @@ pub fn main() {
         let app_state = ApplicationState::new(config, request_redraw_callback.clone());
 
         let mut layers_even_queue =
-            wlr_layers::WlrWaylandEventLoop::new(app_state, ui_msg_rx, request_redraw_callback);
+            wlr_layers::WlrWaylandEventLoop::new(app_state, app_msg_rx, request_redraw_callback);
         layers_even_queue.run_event_loop();
     });
 
@@ -480,7 +480,7 @@ pub fn main() {
             for sig in signals.forever() {
                 if sig == signal_hook::consts::SIGUSR1 {
                     let config_window_weak = config_window_weak.clone();
-                    send_ui_msg(UiMessage::ApplicationStateCallback(Box::new(move |app| {
+                    send_app_msg(AppMessage::ApplicationStateCallback(Box::new(move |app| {
                         let config = app.config.clone();
 
                         config_window_weak

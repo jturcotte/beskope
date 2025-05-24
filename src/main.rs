@@ -438,6 +438,24 @@ enum AppMessage {
     ),
 }
 
+impl AppMessage {
+    pub fn to_app<F>(f: F) -> Self
+    where
+        F: FnOnce(&mut ApplicationState) + Send + 'static,
+    {
+        AppMessage::ApplicationStateCallback(Box::new(f))
+    }
+
+    pub fn to_event_handler<F>(f: F) -> Self
+    where
+        F: FnOnce(&mut WlrWaylandEventHandler, &Connection, &QueueHandle<WlrWaylandEventHandler>)
+            + Send
+            + 'static,
+    {
+        AppMessage::WlrWaylandEventHandlerCallback(Box::new(f))
+    }
+}
+
 pub fn main() {
     let (app_msg_tx, app_msg_rx) = mpsc::channel::<AppMessage>();
     let request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>> =

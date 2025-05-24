@@ -43,6 +43,7 @@ export global Backend {
     callback ridgeline_fill_color_changed(color);
     callback ridgeline_highlight_color_changed(color);
     callback ridgeline_stroke_color_changed(color);
+    callback ridgeline_horizon_offset_changed(float);
     callback compressed_panel_layer_changed(PanelLayer);
     callback compressed_panel_width_changed(int);
     callback compressed_panel_exclusive_ratio_changed(float);
@@ -126,6 +127,7 @@ component RidgelineSettings inherits GridBox {
     callback set_fill_color <=> fill_color.set_color;
     callback set_highlight_color <=> highlight_color.set_color;
     callback set_stroke_color <=> stroke_color.set_color;
+    callback set_horizon_offset <=> horizon_offset_slider.set_horizon_offset;
 
     Row {
         Text {
@@ -193,6 +195,22 @@ component RidgelineSettings inherits GridBox {
             callback set_panel_exclusive_ratio(float);
             set_panel_exclusive_ratio(ratio) => {
                 self.value = ratio * 100;
+            }
+        }
+    }
+    Row {
+        Text { text: "Horizon Offset"; }
+        horizon_offset_slider := LabeledSlider {
+            minimum: -100;
+            maximum: 100;
+            precision: 1;
+            unit: " %";
+            changed => {
+                Backend.ridgeline_horizon_offset_changed(self.value / 100);
+            }
+            callback set_horizon_offset(float);
+            set_horizon_offset(offset) => {
+                self.value = offset * 100;
             }
         }
     }
@@ -436,6 +454,7 @@ export component ConfigurationWindow inherits Dialog {
     callback set_ridgeline_fill_color <=> ridgeline_tab.set_fill_color;
     callback set_ridgeline_highlight_color <=> ridgeline_tab.set_highlight_color;
     callback set_ridgeline_stroke_color <=> ridgeline_tab.set_stroke_color;
+    callback set_ridgeline_horizon_offset <=> ridgeline_tab.set_horizon_offset;
     callback set_compressed_panel_layer <=> compressed_tab.set_panel_layer;
     callback set_compressed_panel_width <=> compressed_tab.set_panel_width;
     callback set_compressed_panel_exclusive_ratio <=> compressed_tab.set_panel_exclusive_ratio;

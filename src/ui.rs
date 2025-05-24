@@ -26,6 +26,7 @@ pub struct RidgelineConfig {
     pub fill_color: slint::Color,
     pub stroke_color: slint::Color,
     pub highlight_color: slint::Color,
+    pub horizon_offset: f32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -56,6 +57,7 @@ pub const RIDGELINE_WIDTH: usize = offset_of!(Configuration, ridgeline.width);
 pub const RIDGELINE_FILL_COLOR: usize = offset_of!(Configuration, ridgeline.fill_color);
 pub const RIDGELINE_STROKE_COLOR: usize = offset_of!(Configuration, ridgeline.stroke_color);
 pub const RIDGELINE_HIGHLIGHT_COLOR: usize = offset_of!(Configuration, ridgeline.highlight_color);
+pub const RIDGELINE_HORIZON_OFFSET: usize = offset_of!(Configuration, ridgeline.horizon_offset);
 pub const COMPRESSED_FILL_COLOR: usize = offset_of!(Configuration, compressed.fill_color);
 pub const COMPRESSED_STROKE_COLOR: usize = offset_of!(Configuration, compressed.stroke_color);
 pub const COMPRESSED_TIME_CURVE_CONTROL_POINTS: usize =
@@ -76,6 +78,7 @@ impl Default for Configuration {
                 fill_color: slint::Color::from_argb_u8(205, 64, 112, 172),
                 stroke_color: slint::Color::from_argb_u8(205, 0, 0, 0),
                 highlight_color: slint::Color::from_argb_u8(205, 255, 255, 255),
+                horizon_offset: 0.0,
             },
             compressed: CompressedConfig {
                 layer: PanelLayer::Top,
@@ -294,6 +297,17 @@ pub fn init(send_app_msg: impl Fn(AppMessage) + Clone + 'static) -> Configuratio
             }));
         }
     });
+    backend.on_ridgeline_horizon_offset_changed({
+        let send = send_app_msg.clone();
+        move |offset| {
+            send(AppMessage::to_app(move |app_state| {
+                app_state.config.ridgeline.horizon_offset = offset;
+                app_state
+                    .lazy_config_changes
+                    .insert(RIDGELINE_HORIZON_OFFSET);
+            }));
+        }
+    });
     backend.on_compressed_panel_layer_changed({
         let send = send_app_msg.clone();
         move |config| {
@@ -405,6 +419,7 @@ impl ConfigurationWindow {
         self.invoke_set_ridgeline_fill_color(config.ridgeline.fill_color.clone());
         self.invoke_set_ridgeline_stroke_color(config.ridgeline.stroke_color.clone());
         self.invoke_set_ridgeline_highlight_color(config.ridgeline.highlight_color.clone());
+        self.invoke_set_ridgeline_horizon_offset(config.ridgeline.horizon_offset as f32);
         self.invoke_set_compressed_panel_layer(config.compressed.layer.clone());
         self.invoke_set_compressed_panel_width(config.compressed.width as i32);
         self.invoke_set_compressed_panel_exclusive_ratio(config.compressed.exclusive_ratio as f32);

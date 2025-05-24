@@ -50,7 +50,6 @@ pub struct RidgelineWaveformView {
     bind_group: wgpu::BindGroup,
     fft_input_ringbuf: HeapRb<f32>,
     y_value_write_offset: usize,
-    panel_width: f32,
     screen_width: f32,
     screen_height: f32,
     screen_size_dirty: bool,
@@ -360,15 +359,14 @@ impl RidgelineWaveformView {
             bind_group,
             fft_input_ringbuf: HeapRb::<f32>::new(FFT_SIZE),
             y_value_write_offset: 0,
-            panel_width: 0.0,
             screen_width: 0.0,
             screen_height: 0.0,
             screen_size_dirty: true,
         }
     }
 
-    fn get_transform_matrix(&self) -> [[f32; 4]; 4] {
-        let panel_width = self.panel_width;
+    fn get_transform_matrix(&self, panel_width: u32, horizon_offset: f32) -> [[f32; 4]; 4] {
+        let panel_width = panel_width as f32;
         let screen_width = self.screen_width;
         let screen_height = self.screen_height;
 
@@ -376,12 +374,37 @@ impl RidgelineWaveformView {
         // Other panels positioned in-between could make the perspective transform incorrect
         // if they are large and this would require using the actual layer surface position
         // on the screen instead of using the anchor.
-        let (window_width, window_height, half_screen) = match self.anchor_position {
-            PanelAnchorPosition::Top => (screen_width, panel_width, screen_height / 2.0),
-            PanelAnchorPosition::Bottom => (screen_width, panel_width, screen_height / 2.0),
-            PanelAnchorPosition::Left => (panel_width, screen_height, screen_width / 2.0),
-            PanelAnchorPosition::Right => (panel_width, screen_height, screen_width / 2.0),
-        };
+        let (window_width, window_height, half_screen, horizontal_offset, vertical_offset) =
+            match self.anchor_position {
+                PanelAnchorPosition::Top => (
+                    screen_width,
+                    panel_width,
+                    screen_height / 2.0,
+                    -horizon_offset,
+                    0.0,
+                ),
+                PanelAnchorPosition::Bottom => (
+                    screen_width,
+                    panel_width,
+                    screen_height / 2.0,
+                    -horizon_offset,
+                    0.0,
+                ),
+                PanelAnchorPosition::Left => (
+                    panel_width,
+                    screen_height,
+                    screen_width / 2.0,
+                    0.0,
+                    -horizon_offset,
+                ),
+                PanelAnchorPosition::Right => (
+                    panel_width,
+                    screen_height,
+                    screen_width / 2.0,
+                    0.0,
+                    -horizon_offset,
+                ),
+            };
 
         // Identity transform is a horizontal waveform scrolling from right to left.
         let rotation = Matrix4::from_angle_z(Rad(-std::f32::consts::FRAC_PI_2));
@@ -443,10 +466,10 @@ impl RidgelineWaveformView {
             let near_z = 0.0;
             let far_z = 1.0;
 
-            let full_top = 1.0;
-            let full_bottom = -1.0;
-            let full_right = 1.0;
-            let full_left = -1.0;
+            let full_top = 1.0 + vertical_offset;
+            let full_bottom = -1.0 + vertical_offset;
+            let full_right = 1.0 + horizontal_offset;
+            let full_left = -1.0 + horizontal_offset;
 
             // Window bounds in pixels
             let win_left_px = window_x;
@@ -522,7 +545,10 @@ impl RidgelineWaveformView {
                 )
                 * move_scene_matrix;
 
-            (perspective_matrix * transform_matrix * compress_y_matrix).into()
+            let horizon_translate =
+                Matrix4::from_translation(Vector3::new(horizontal_offset, vertical_offset, 0.0));
+            // let transform_matrix = horizon_translate * transform_matrix;
+            (perspective_matrix * horizon_translate * transform_matrix * compress_y_matrix).into()
         } else {
             // If the transform matrix is not set, return an identity matrix
             Matrix4::<f32>::identity().into()
@@ -579,10 +605,13 @@ impl WaveformView for RidgelineWaveformView {
             );
         }
 
-        if self.screen_size_dirty || config_changes.is_none_or(|c| c.contains(&ui::RIDGELINE_WIDTH))
+        if self.screen_size_dirty
+            || config_changes.is_none_or(|c| {
+                c.contains(&ui::RIDGELINE_WIDTH) || c.contains(&ui::RIDGELINE_HORIZON_OFFSET)
+            })
         {
-            self.panel_width = config.ridgeline.width as f32;
-            let transform_matrix = self.get_transform_matrix();
+            let transform_matrix =
+                self.get_transform_matrix(config.ridgeline.width, config.ridgeline.horizon_offset);
             self.wgpu_queue.write_buffer(
                 &self.transform_buffer,
                 0,
@@ -612,7 +641,7 @@ impl WaveformView for RidgelineWaveformView {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &depth_texture_view,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
+                        load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,

@@ -147,6 +147,22 @@ impl WaveformWindow {
             .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
+        // Clear the depth texture before rendering the views
+        let _ = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Clear Depth Pass"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &depth_texture_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
         if let Some(waveform_view) = left_waveform_view {
             if waveform_view.render_window() == self.render_window {
                 waveform_view.render(&mut encoder, &view, &depth_texture_view);

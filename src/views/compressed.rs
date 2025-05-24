@@ -8,6 +8,7 @@ use ringbuf::HeapRb;
 use ringbuf::traits::{Consumer, Observer, RingBuffer};
 use rustfft::Fft;
 use splines::Interpolation;
+use std::collections::HashSet;
 use std::{borrow::Cow, sync::Arc};
 use wgpu::util::DeviceExt;
 use wgpu::{BufferUsages, CommandEncoder, TextureView};
@@ -28,10 +29,6 @@ pub struct CompressedWaveformView {
     bind_group: wgpu::BindGroup,
     fft_input_ringbuf: HeapRb<f32>,
     y_value_write_offset: usize,
-    waveform_config: WaveformConfigUniform,
-    waveform_config_dirty: bool,
-    time_curve_control_points_dirty: bool,
-    time_curve_control_points: Vec<ui::ControlPoint>,
 }
 
 impl CompressedWaveformView {
@@ -348,13 +345,6 @@ impl CompressedWaveformView {
             bind_group,
             fft_input_ringbuf: HeapRb::<f32>::new(FFT_SIZE),
             y_value_write_offset: 0,
-            waveform_config: WaveformConfigUniform {
-                fill_color: [1.0, 1.0, 1.0, 1.0],
-                stroke_color: [1.0, 1.0, 1.0, 1.0],
-            },
-            waveform_config_dirty: true,
-            time_curve_control_points_dirty: false,
-            time_curve_control_points: vec![],
         }
     }
 }
@@ -364,44 +354,55 @@ impl WaveformView for CompressedWaveformView {
         self.render_window
     }
 
-    fn update_transform(&mut self, _panel_width: u32, _screen_width: u32, _screen_height: u32) {}
+    fn set_screen_size(&mut self, _screen_width: u32, _screen_height: u32) {}
 
-    fn set_waveform_config(&mut self, config: ui::WaveformConfig) {
-        self.waveform_config.fill_color = [
-            config.fill_color.red() as f32 / 255.0,
-            config.fill_color.green() as f32 / 255.0,
-            config.fill_color.blue() as f32 / 255.0,
-            config.fill_color.alpha() as f32 / 255.0,
-        ];
-        self.waveform_config.stroke_color = [
-            config.stroke_color.red() as f32 / 255.0,
-            config.stroke_color.green() as f32 / 255.0,
-            config.stroke_color.blue() as f32 / 255.0,
-            config.stroke_color.alpha() as f32 / 255.0,
-        ];
-        self.waveform_config_dirty = true;
-    }
+    fn apply_lazy_config_changes(
+        &mut self,
+        config: &ui::Configuration,
+        config_changes: Option<&HashSet<usize>>,
+    ) {
+        if config_changes.is_none_or(|c| {
+            c.contains(&ui::COMPRESSED_FILL_COLOR) || c.contains(&ui::COMPRESSED_STROKE_COLOR)
+        }) {
+            let waveform_config = WaveformConfigUniform {
+                fill_color: [
+                    config.compressed.fill_color.red() as f32 / 255.0,
+                    config.compressed.fill_color.green() as f32 / 255.0,
+                    config.compressed.fill_color.blue() as f32 / 255.0,
+                    config.compressed.fill_color.alpha() as f32 / 255.0,
+                ],
+                stroke_color: [
+                    config.compressed.stroke_color.red() as f32 / 255.0,
+                    config.compressed.stroke_color.green() as f32 / 255.0,
+                    config.compressed.stroke_color.blue() as f32 / 255.0,
+                    config.compressed.stroke_color.alpha() as f32 / 255.0,
+                ],
+            };
 
-    fn update_config(&mut self) {
-        if self.waveform_config_dirty {
             self.wgpu_queue.write_buffer(
                 &self.waveform_config_buffer,
                 0,
-                bytemuck::cast_slice(&[self.waveform_config]),
+                bytemuck::cast_slice(&[waveform_config]),
             );
-            self.waveform_config_dirty = false;
         }
 
-        if self.time_curve_control_points_dirty {
+        if config_changes.is_none_or(|c| c.contains(&ui::COMPRESSED_TIME_CURVE_CONTROL_POINTS)) {
             let control_points_with_prefix_suffix_iter =
                 std::iter::once((0.0, 0.0, Interpolation::Linear))
-                    .chain(self.time_curve_control_points.iter().map(|cp| {
-                        (
-                            (cp.t / 3.0 + 1.0) * (VERTEX_BUFFER_SIZE - 1) as f32,
-                            cp.v,
-                            Interpolation::CatmullRom,
-                        )
-                    }))
+                    .chain(
+                        config
+                            .compressed
+                            .time_curve
+                            .control_points
+                            .iter()
+                            .map(|cp| {
+                                (
+                                    (cp.t / 3.0 + 1.0) * (VERTEX_BUFFER_SIZE - 1) as f32,
+                                    cp.v,
+                                    Interpolation::CatmullRom,
+                                )
+                            }),
+                    )
                     .chain(std::iter::once((
                         (VERTEX_BUFFER_SIZE - 1) as f32,
                         1.0,
@@ -461,8 +462,6 @@ impl WaveformView for CompressedWaveformView {
                 0,
                 bytemuck::cast_slice(&stroke_vertices),
             );
-
-            self.time_curve_control_points_dirty = false;
         }
     }
 
@@ -616,10 +615,5 @@ impl WaveformView for CompressedWaveformView {
             0,
             bytemuck::cast_slice(&[aligned_write_offset as u32]),
         );
-    }
-
-    fn set_time_curve_control_points(&mut self, points: Vec<ui::ControlPoint>) {
-        self.time_curve_control_points = points;
-        self.time_curve_control_points_dirty = true;
     }
 }

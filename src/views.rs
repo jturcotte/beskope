@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::{RenderWindow, ui};
 
 use num_complex::Complex;
@@ -11,12 +13,26 @@ pub use compressed::CompressedWaveformView;
 pub use ridgeline::RidgelineWaveformView;
 
 pub trait WaveformView {
+    /// Target render window of this view (e.g. right channel view is on the secondary window)
     fn render_window(&self) -> RenderWindow;
-    fn update_transform(&mut self, panel_width: u32, screen_width: u32, screen_height: u32);
-    fn set_waveform_config(&mut self, config: ui::WaveformConfig);
-    // FIXME: Remove? How will the view-specific config be abstracted?
-    fn set_time_curve_control_points(&mut self, _points: Vec<ui::ControlPoint>);
-    fn update_config(&mut self);
+
+    fn set_screen_size(&mut self, screen_width: u32, screen_height: u32);
+
+    /// Get the current configuration with a list of changes triggered by the UI since the last frame.
+    /// `config_changes=None` means that the view is new (everything changed).
+    fn apply_lazy_config_changes(
+        &mut self,
+        config: &ui::Configuration,
+        config_changes: Option<&HashSet<usize>>,
+    );
+
+    fn render(
+        &self,
+        encoder: &mut CommandEncoder,
+        view: &TextureView,
+        depth_texture_view: &TextureView,
+    );
+
     fn process_audio(
         self: &mut Self,
         timestamp: u32,
@@ -24,12 +40,6 @@ pub trait WaveformView {
         fft: &dyn Fft<f32>,
         fft_inout_buffer: &mut [Complex<f32>],
         fft_scratch: &mut [Complex<f32>],
-    );
-    fn render(
-        &self,
-        encoder: &mut CommandEncoder,
-        view: &TextureView,
-        depth_texture_view: &TextureView,
     );
 }
 

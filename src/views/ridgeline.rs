@@ -7,6 +7,7 @@ use num_complex::Complex;
 use ringbuf::HeapRb;
 use ringbuf::traits::{Consumer, Observer, RingBuffer};
 use rustfft::Fft;
+use std::collections::HashSet;
 use std::{borrow::Cow, sync::Arc};
 use wgpu::util::DeviceExt;
 use wgpu::{BufferUsages, CommandEncoder, TextureView};
@@ -41,10 +42,10 @@ pub struct RidgelineWaveformView {
     bind_group: wgpu::BindGroup,
     fft_input_ringbuf: HeapRb<f32>,
     y_value_write_offset: usize,
-    transform_matrix: [[f32; 4]; 4],
-    transform_matrix_dirty: bool,
-    waveform_config: WaveformConfigUniform,
-    waveform_config_dirty: bool,
+    panel_width: f32,
+    screen_width: f32,
+    screen_height: f32,
+    screen_size_dirty: bool,
 }
 
 impl RidgelineWaveformView {
@@ -135,7 +136,7 @@ impl RidgelineWaveformView {
             mapped_at_creation: false,
         });
 
-        // Must be updated by set_panel_width
+        // Must be updated by apply_lazy_config_changes
         let identity: [[f32; 4]; 4] = Matrix4::<f32>::identity().into();
         let transform_buffer =
             window
@@ -350,26 +351,17 @@ impl RidgelineWaveformView {
             bind_group,
             fft_input_ringbuf: HeapRb::<f32>::new(FFT_SIZE),
             y_value_write_offset: 0,
-            transform_matrix: Default::default(),
-            transform_matrix_dirty: false,
-            waveform_config: WaveformConfigUniform {
-                fill_color: [1.0, 1.0, 1.0, 1.0],
-                stroke_color: [1.0, 1.0, 1.0, 1.0],
-            },
-            waveform_config_dirty: false,
+            panel_width: 0.0,
+            screen_width: 0.0,
+            screen_height: 0.0,
+            screen_size_dirty: true,
         }
     }
-}
 
-impl WaveformView for RidgelineWaveformView {
-    fn render_window(&self) -> RenderWindow {
-        self.render_window
-    }
-
-    fn update_transform(&mut self, panel_width: u32, screen_width: u32, screen_height: u32) {
-        let panel_width = panel_width as f32;
-        let screen_width = screen_width as f32;
-        let screen_height = screen_height as f32;
+    fn get_transform_matrix(&self) -> [[f32; 4]; 4] {
+        let panel_width = self.panel_width;
+        let screen_width = self.screen_width;
+        let screen_height = self.screen_height;
 
         // This and the window_x/y assume that the surface is on screen edges.
         // Other panels positioned in-between could make the perspective transform incorrect
@@ -521,45 +513,65 @@ impl WaveformView for RidgelineWaveformView {
                 )
                 * move_scene_matrix;
 
-            self.transform_matrix =
-                (perspective_matrix * transform_matrix * compress_y_matrix).into();
-            self.transform_matrix_dirty = true;
+            (perspective_matrix * transform_matrix * compress_y_matrix).into()
+        } else {
+            // If the transform matrix is not set, return an identity matrix
+            Matrix4::<f32>::identity().into()
         }
     }
+}
 
-    fn set_waveform_config(&mut self, config: ui::WaveformConfig) {
-        self.waveform_config.fill_color = [
-            config.fill_color.red() as f32 / 255.0,
-            config.fill_color.green() as f32 / 255.0,
-            config.fill_color.blue() as f32 / 255.0,
-            config.fill_color.alpha() as f32 / 255.0,
-        ];
-        self.waveform_config.stroke_color = [
-            config.stroke_color.red() as f32 / 255.0,
-            config.stroke_color.green() as f32 / 255.0,
-            config.stroke_color.blue() as f32 / 255.0,
-            config.stroke_color.alpha() as f32 / 255.0,
-        ];
-        self.waveform_config_dirty = true;
+impl WaveformView for RidgelineWaveformView {
+    fn render_window(&self) -> RenderWindow {
+        self.render_window
     }
 
-    fn update_config(&mut self) {
-        if self.transform_matrix_dirty {
-            self.wgpu_queue.write_buffer(
-                &self.transform_buffer,
-                0,
-                bytemuck::cast_slice(&self.transform_matrix),
-            );
-            self.transform_matrix_dirty = false;
-        }
+    fn set_screen_size(&mut self, screen_width: u32, screen_height: u32) {
+        self.screen_width = screen_width as f32;
+        self.screen_height = screen_height as f32;
+        self.screen_size_dirty = true;
+    }
 
-        if self.waveform_config_dirty {
+    fn apply_lazy_config_changes(
+        &mut self,
+        config: &ui::Configuration,
+        config_changes: Option<&HashSet<usize>>,
+    ) {
+        if config_changes.is_none_or(|c| {
+            c.contains(&ui::RIDGELINE_FILL_COLOR) || c.contains(&ui::RIDGELINE_STROKE_COLOR)
+        }) {
+            let waveform_config = WaveformConfigUniform {
+                fill_color: [
+                    config.ridgeline.fill_color.red() as f32 / 255.0,
+                    config.ridgeline.fill_color.green() as f32 / 255.0,
+                    config.ridgeline.fill_color.blue() as f32 / 255.0,
+                    config.ridgeline.fill_color.alpha() as f32 / 255.0,
+                ],
+                stroke_color: [
+                    config.ridgeline.stroke_color.red() as f32 / 255.0,
+                    config.ridgeline.stroke_color.green() as f32 / 255.0,
+                    config.ridgeline.stroke_color.blue() as f32 / 255.0,
+                    config.ridgeline.stroke_color.alpha() as f32 / 255.0,
+                ],
+            };
+
             self.wgpu_queue.write_buffer(
                 &self.waveform_config_buffer,
                 0,
-                bytemuck::cast_slice(&[self.waveform_config]),
+                bytemuck::cast_slice(&[waveform_config]),
             );
-            self.waveform_config_dirty = false;
+        }
+
+        if self.screen_size_dirty || config_changes.is_none_or(|c| c.contains(&ui::RIDGELINE_WIDTH))
+        {
+            self.panel_width = config.ridgeline.width as f32;
+            let transform_matrix = self.get_transform_matrix();
+            self.wgpu_queue.write_buffer(
+                &self.transform_buffer,
+                0,
+                bytemuck::cast_slice(&transform_matrix),
+            );
+            self.screen_size_dirty = false;
         }
     }
 
@@ -761,6 +773,4 @@ impl WaveformView for RidgelineWaveformView {
             );
         }
     }
-
-    fn set_time_curve_control_points(&mut self, _points: Vec<ui::ControlPoint>) {}
 }

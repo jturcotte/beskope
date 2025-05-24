@@ -28,26 +28,26 @@ enum PanelLayer {
 }
 
 @rust-attr(derive(serde::Serialize, serde::Deserialize))
-struct WaveformConfig {
-    fill_color: color,
-    stroke_color: color,
-}
-
-@rust-attr(derive(serde::Serialize, serde::Deserialize))
 struct ControlPoint {
     t: float,
     v: float,
 }
 
 export global Backend {
-    callback waveform_changed(WaveformConfig);
     callback style_changed(Style);
-    callback panel_channels_changed(RenderChannels);
     callback panel_layout_changed(PanelLayout);
-    callback panel_layer_changed(PanelLayer);
-    callback panel_width_changed(int);
-    callback panel_exclusive_ratio_changed(float);
-    callback time_curve_control_points_changed([ControlPoint]);
+    callback panel_channels_changed(RenderChannels);
+    callback ridgeline_panel_layer_changed(PanelLayer);
+    callback ridgeline_panel_width_changed(int);
+    callback ridgeline_panel_exclusive_ratio_changed(float);
+    callback ridgeline_fill_color_changed(color);
+    callback ridgeline_stroke_color_changed(color);
+    callback compressed_panel_layer_changed(PanelLayer);
+    callback compressed_panel_width_changed(int);
+    callback compressed_panel_exclusive_ratio_changed(float);
+    callback compressed_fill_color_changed(color);
+    callback compressed_stroke_color_changed(color);
+    callback compressed_time_curve_control_points_changed([ControlPoint]);
 }
 
 export global TimeCurveEditor {
@@ -85,133 +85,46 @@ component LabeledSlider {
 
 
 component HsvColorSelection inherits GroupBox {
-    in-out property<float> h <=> h_slider.value;
-    in-out property<float> s <=> s_slider.value;
-    in-out property<float> v <=> v_slider.value;
-    in-out property<float> a <=> a_slider.value;
-    callback changed();
+    callback set_color(color);
+    set_color(color) => {
+        h.value = color.to_hsv().hue;
+        s.value = color.to_hsv().saturation;
+        v.value = color.to_hsv().value;
+        a.value = color.to_hsv().alpha;
+    }
+
+    callback changed(color);
     VerticalBox {
-        h_slider := LabeledSlider {
+        h := LabeledSlider {
             label: "H";
             maximum: 359.999;
-            changed(value) => { changed() }
+            changed(value) => { changed(Colors.hsv(h.value, s.value, v.value, a.value)) }
         }
-        s_slider := LabeledSlider {
+        s := LabeledSlider {
             label: "S";
             maximum: 1.0;
-            changed(value) => { changed() }
+            changed(value) => { changed(Colors.hsv(h.value, s.value, v.value, a.value)) }
         }
-        v_slider := LabeledSlider {
+        v := LabeledSlider {
             label: "V";
             maximum: 1.0;
-            changed(value) => { changed() }
+            changed(value) => { changed(Colors.hsv(h.value, s.value, v.value, a.value)) }
         }
-        a_slider := LabeledSlider {
+        a := LabeledSlider {
             label: "A";
             maximum: 1.0;
-            changed(value) => { changed() }
+            changed(value) => { changed(Colors.hsv(h.value, s.value, v.value, a.value)) }
         }
     }
 }
 
-component GeneralTab inherits GridBox {
-    callback set_style <=> style_cb.set_style;
-    callback set_panel_channels <=> channels_cb.set_panel_channels;
-    callback set_panel_layout <=> layout_cb.set_panel_layout;
+component RidgelineSettings inherits GridBox {
     callback set_panel_layer <=> layer_cb.set_panel_layer;
     callback set_panel_width <=> panel_width_slider.set_panel_width;
     callback set_panel_exclusive_ratio <=> panel_exclusive_ratio_slider.set_panel_exclusive_ratio;
+    callback set_fill_color <=> fill_color.set_color;
+    callback set_stroke_color <=> stroke_color.set_color;
 
-    Row {
-        Text {
-            text: "Style";
-            vertical-alignment: TextVerticalAlignment.center;
-        }
-        style_cb := ComboBox {
-            model: [
-                "Ridgeline plot",
-                "Compressed line",
-            ];
-            selected(current-value) => {
-                Backend.style_changed(self.current-index == 0 ? Style.Ridgeline : Style.Compressed);
-            }
-            callback set_style(Style);
-            set_style(style) => {
-                if (style == Style.Ridgeline) {
-                    self.current-index = 0;
-                } else {
-                    self.current-index = 1;
-                }
-            }
-        }
-    }
-    Row {
-        Text {
-            text: "Channels per window/panel";
-            vertical-alignment: TextVerticalAlignment.center;
-        }
-        channels_cb := ComboBox {
-            enabled: layout_cb.current-value != "Two panels (one on each side of the screen)";
-            model: [
-                "Only left",
-                "Both left and right",
-            ];
-            selected(current-value) => {
-                if (self.current-index == 0) {
-                    Backend.panel_channels_changed(RenderChannels.Single);
-                } else {
-                    Backend.panel_channels_changed(RenderChannels.Both);
-                }
-            }
-            callback set_panel_channels(RenderChannels);
-            set_panel_channels(channels) => {
-                if (channels == RenderChannels.Single) {
-                    self.current-index = 0;
-                } else {
-                    self.current-index = 1;
-                }
-            }
-        }
-    }
-    Row {
-        Text {
-            text: "Panel layout";
-            vertical-alignment: TextVerticalAlignment.center;
-        }
-        layout_cb := ComboBox {
-            model: [
-                "Two panels (one on each side of the screen)",
-                "Single panel at the top",
-                "Single panel at the bottom",
-            ];
-            selected(current-value) => {
-                if (self.current-index == 0) {
-                    channels_cb.enabled = false;
-                    channels_cb.current-index = 0;
-                } else {
-                    channels_cb.enabled = true;
-                }
-
-                if (self.current-index == 0) {
-                    Backend.panel_layout_changed(PanelLayout.TwoPanels);
-                } else if (self.current-index == 1) {
-                    Backend.panel_layout_changed(PanelLayout.SingleTop);
-                } else {
-                    Backend.panel_layout_changed(PanelLayout.SingleBottom);
-                }
-            }
-            callback set_panel_layout(PanelLayout);
-            set_panel_layout(layout) => {
-                if (layout == PanelLayout.TwoPanels) {
-                    self.current-index = 0;
-                } else if (layout == PanelLayout.SingleTop) {
-                    self.current-index = 1;
-                } else {
-                    self.current-index = 2;
-                }
-            }
-        }
-    }
     Row {
         Text {
             text: "Panel Layer";
@@ -226,13 +139,13 @@ component GeneralTab inherits GridBox {
             ];
             selected(current-value) => {
                 if (self.current-index == 0) {
-                    Backend.panel_layer_changed(PanelLayer.Overlay);
+                    Backend.ridgeline_panel_layer_changed(PanelLayer.Overlay);
                 } else if (self.current-index == 1) {
-                    Backend.panel_layer_changed(PanelLayer.Top);
+                    Backend.ridgeline_panel_layer_changed(PanelLayer.Top);
                 } else if (self.current-index == 2) {
-                    Backend.panel_layer_changed(PanelLayer.Bottom);
+                    Backend.ridgeline_panel_layer_changed(PanelLayer.Bottom);
                 } else {
-                    Backend.panel_layer_changed(PanelLayer.Background);
+                    Backend.ridgeline_panel_layer_changed(PanelLayer.Background);
                 }
             }
             callback set_panel_layer(PanelLayer);
@@ -258,7 +171,7 @@ component GeneralTab inherits GridBox {
             precision: 1;
             unit: " px";
             changed => {
-                Backend.panel_width_changed(self.value);
+                Backend.ridgeline_panel_width_changed(self.value);
             }
             set_panel_width(width) => {
                 self.value = width;
@@ -273,7 +186,7 @@ component GeneralTab inherits GridBox {
             precision: 1;
             unit: " %";
             changed => {
-                Backend.panel_exclusive_ratio_changed(self.value / 100);
+                Backend.ridgeline_panel_exclusive_ratio_changed(self.value / 100);
             }
             callback set_panel_exclusive_ratio(float);
             set_panel_exclusive_ratio(ratio) => {
@@ -281,36 +194,120 @@ component GeneralTab inherits GridBox {
             }
         }
     }
+    Row {
+        Rectangle {
+            colspan: 2;
+            vertical-stretch: 0;
+            HorizontalLayout {
+                fill_color := HsvColorSelection {
+                    width: 50%;
+                    changed(color) => { Backend.ridgeline_fill_color_changed(color); }
+                    title: "Fill Color";
+                }
+                stroke_color := HsvColorSelection {
+                    title: "Stroke Color";
+                    changed(color) => { Backend.ridgeline_stroke_color_changed(color); }
+                }
+            }
+        }
+    }
     Rectangle { }
 }
 
-component ColorTab inherits VerticalBox {
-    callback set_waveform_config(WaveformConfig);
-    set_waveform_config(waveform) => {
-        fill_color.h = waveform.fill_color.to_hsv().hue;
-        fill_color.s = waveform.fill_color.to_hsv().saturation;
-        fill_color.v = waveform.fill_color.to_hsv().value;
-        fill_color.a = waveform.fill_color.to_hsv().alpha;
-        stroke_color.h = waveform.stroke_color.to_hsv().hue;
-        stroke_color.s = waveform.stroke_color.to_hsv().saturation;
-        stroke_color.v = waveform.stroke_color.to_hsv().value;
-        stroke_color.a = waveform.stroke_color.to_hsv().alpha;
-    }
-    function update_waveform_config() {
-        Backend.waveform_changed({
-            fill_color: Colors.hsv(fill_color.h, fill_color.s, fill_color.v, fill_color.a),
-            stroke_color: Colors.hsv(stroke_color.h, stroke_color.s, stroke_color.v, stroke_color.a),
-        });
-    }
+component CompressedSettings inherits GridBox {
+    callback set_panel_layer <=> layer_cb.set_panel_layer;
+    callback set_panel_width <=> panel_width_slider.set_panel_width;
+    callback set_panel_exclusive_ratio <=> panel_exclusive_ratio_slider.set_panel_exclusive_ratio;
+    callback set_fill_color <=> fill_color.set_color;
+    callback set_stroke_color <=> stroke_color.set_color;
 
-    fill_color := HsvColorSelection {
-        changed => { update_waveform_config(); }
-        title: "Fill";
+    Row {
+        Text {
+            text: "Panel Layer";
+            vertical-alignment: TextVerticalAlignment.center;
+        }
+        layer_cb := ComboBox {
+            model: [
+                "Overlay",
+                "Top",
+                "Bottom",
+                "Background",
+            ];
+            selected(current-value) => {
+                if (self.current-index == 0) {
+                    Backend.compressed_panel_layer_changed(PanelLayer.Overlay);
+                } else if (self.current-index == 1) {
+                    Backend.compressed_panel_layer_changed(PanelLayer.Top);
+                } else if (self.current-index == 2) {
+                    Backend.compressed_panel_layer_changed(PanelLayer.Bottom);
+                } else {
+                    Backend.compressed_panel_layer_changed(PanelLayer.Background);
+                }
+            }
+            callback set_panel_layer(PanelLayer);
+            set_panel_layer(layer) => {
+                if (layer == PanelLayer.Overlay) {
+                    self.current-index = 0;
+                } else if (layer == PanelLayer.Top) {
+                    self.current-index = 1;
+                } else if (layer == PanelLayer.Bottom) {
+                    self.current-index = 2;
+                } else {
+                    self.current-index = 3;
+                }
+            }
+        }
     }
-    stroke_color := HsvColorSelection {
-        title: "Stroke";
-        changed => { update_waveform_config(); }
+    Row {
+        Text { text: "Height/Width"; }
+        panel_width_slider := LabeledSlider {
+            callback set_panel_width(int);
+            minimum: 1;
+            maximum: 800;
+            precision: 1;
+            unit: " px";
+            changed => {
+                Backend.compressed_panel_width_changed(self.value);
+            }
+            set_panel_width(width) => {
+                self.value = width;
+            }
+        }
     }
+    Row {
+        Text { text: "Height/Width Exclusive"; }
+        panel_exclusive_ratio_slider := LabeledSlider {
+            minimum: 0;
+            maximum: 100;
+            precision: 1;
+            unit: " %";
+            changed => {
+                Backend.compressed_panel_exclusive_ratio_changed(self.value / 100);
+            }
+            callback set_panel_exclusive_ratio(float);
+            set_panel_exclusive_ratio(ratio) => {
+                self.value = ratio * 100;
+            }
+        }
+    }
+    Row {
+        Rectangle {
+            colspan: 2;
+            vertical-stretch: 0;
+            HorizontalLayout {
+                fill_color := HsvColorSelection {
+                    width: 50%;
+                    changed(color) => { Backend.compressed_fill_color_changed(color); }
+                    title: "Fill Color";
+                }
+                stroke_color := HsvColorSelection {
+                    title: "Stroke Color";
+                    changed(color) => { Backend.compressed_stroke_color_changed(color); }
+                }
+            }
+        }
+    }
+    Rectangle { }
 }
 
 component ControlPointHandle inherits TouchArea {
@@ -346,7 +343,7 @@ component TimeCurveTab inherits VerticalBox {
     in property<[ControlPoint]> time_curve_control_points;
     // Only when the whole model is changed by load_configuration
     changed time_curve_control_points => {
-        Backend.time_curve_control_points_changed(time_curve_control_points);
+        Backend.compressed_time_curve_control_points_changed(time_curve_control_points);
     }
 
     TouchArea {
@@ -359,7 +356,7 @@ component TimeCurveTab inherits VerticalBox {
                         v: 1.0 - self.mouse-y / self.height,
                     }
                 );
-                Backend.time_curve_control_points_changed(time_curve_control_points);
+                Backend.compressed_time_curve_control_points_changed(time_curve_control_points);
                 path.dummy_dep = !path.dummy_dep;
             } else if e.kind == PointerEventKind.move && self.pressed {
                 // The just added point is the last one.
@@ -371,7 +368,7 @@ component TimeCurveTab inherits VerticalBox {
                         v: 1.0 - max(0.0, min(1.0, self.mouse-y / self.height)),
                     }
                 );
-                Backend.time_curve_control_points_changed(time_curve_control_points);
+                Backend.compressed_time_curve_control_points_changed(time_curve_control_points);
                 path.dummy_dep = !path.dummy_dep;
             }
         }
@@ -406,13 +403,13 @@ component TimeCurveTab inherits VerticalBox {
                         v: max(0.0, min(1.0, 1.0 - (self.y + self.height / 2.0 + self.mouse-y - self.pressed-y) / parent.height)),
                     }
                 );
-                Backend.time_curve_control_points_changed(time_curve_control_points);
+                Backend.compressed_time_curve_control_points_changed(time_curve_control_points);
                 path.dummy_dep = !path.dummy_dep;
             }
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
                     TimeCurveEditor.remove_point(time_curve_control_points, i);
-                    Backend.time_curve_control_points_changed(time_curve_control_points);
+                    Backend.compressed_time_curve_control_points_changed(time_curve_control_points);
                     path.dummy_dep = !path.dummy_dep;
                 }
             }
@@ -422,33 +419,134 @@ component TimeCurveTab inherits VerticalBox {
 
 export component ConfigurationWindow inherits Dialog {
     // Callbacks to update the dialog from the application's state
-    callback set_waveform_config <=> color_tab.set_waveform_config;
-    callback set_style <=> general_tab.set_style;
-    callback set_panel_channels <=> general_tab.set_panel_channels;
-    callback set_panel_layout <=> general_tab.set_panel_layout;
-    callback set_panel_layer <=> general_tab.set_panel_layer;
-    callback set_panel_width <=> general_tab.set_panel_width;
-    callback set_panel_exclusive_ratio <=> general_tab.set_panel_exclusive_ratio;
-    callback set_time_curve_control_points([ControlPoint]);
-    set_time_curve_control_points(control_points) => {
+    callback set_style <=> style_cb.set_style;
+    callback set_panel_layout <=> layout_cb.set_panel_layout;
+    callback set_panel_channels <=> channels_cb.set_panel_channels;
+    callback set_ridgeline_panel_layer <=> ridgeline_tab.set_panel_layer;
+    callback set_ridgeline_panel_width <=> ridgeline_tab.set_panel_width;
+    callback set_ridgeline_panel_exclusive_ratio <=> ridgeline_tab.set_panel_exclusive_ratio;
+    callback set_ridgeline_fill_color <=> ridgeline_tab.set_fill_color;
+    callback set_ridgeline_stroke_color <=> ridgeline_tab.set_stroke_color;
+    callback set_compressed_panel_layer <=> compressed_tab.set_panel_layer;
+    callback set_compressed_panel_width <=> compressed_tab.set_panel_width;
+    callback set_compressed_panel_exclusive_ratio <=> compressed_tab.set_panel_exclusive_ratio;
+    callback set_compressed_fill_color <=> compressed_tab.set_fill_color;
+    callback set_compressed_stroke_color <=> compressed_tab.set_stroke_color;
+    callback set_compressed_time_curve_control_points([ControlPoint]);
+    set_compressed_time_curve_control_points(control_points) => {
         time_curve_tab.time_curve_control_points = control_points;
     }
 
     preferred-width: 800px;
     preferred-height: 600px;
 
-    TabWidget {
-        Tab {
-            title: "General";
-            general_tab := GeneralTab { }
+    GridBox {
+        Row {
+            Text {
+                text: "Style";
+                vertical-alignment: TextVerticalAlignment.center;
+            }
+            style_cb := ComboBox {
+                model: [
+                    "Ridgeline Plot",
+                    "Compressed Line",
+                ];
+                selected(current-value) => {
+                    Backend.style_changed(self.current-index == 0 ? Style.Ridgeline : Style.Compressed);
+                }
+                callback set_style(Style);
+                set_style(style) => {
+                    if (style == Style.Ridgeline) {
+                        self.current-index = 0;
+                    } else {
+                        self.current-index = 1;
+                    }
+                }
+            }
         }
-        Tab {
-            title: "Color";
-            color_tab := ColorTab { }
+        Row {
+            Text {
+                text: "Panel layout";
+                vertical-alignment: TextVerticalAlignment.center;
+            }
+            layout_cb := ComboBox {
+                model: [
+                    "Two panels (one on each side of the screen)",
+                    "Single panel at the top",
+                    "Single panel at the bottom",
+                ];
+                selected(current-value) => {
+                    if (self.current-index == 0) {
+                        channels_cb.enabled = false;
+                        channels_cb.current-index = 0;
+                    } else {
+                        channels_cb.enabled = true;
+                    }
+
+                    if (self.current-index == 0) {
+                        Backend.panel_layout_changed(PanelLayout.TwoPanels);
+                    } else if (self.current-index == 1) {
+                        Backend.panel_layout_changed(PanelLayout.SingleTop);
+                    } else {
+                        Backend.panel_layout_changed(PanelLayout.SingleBottom);
+                    }
+                }
+                callback set_panel_layout(PanelLayout);
+                set_panel_layout(layout) => {
+                    if (layout == PanelLayout.TwoPanels) {
+                        self.current-index = 0;
+                    } else if (layout == PanelLayout.SingleTop) {
+                        self.current-index = 1;
+                    } else {
+                        self.current-index = 2;
+                    }
+                }
+            }
         }
-        Tab {
-            title: "Time Curve";
-            time_curve_tab := TimeCurveTab { }
+        Row {
+            Text {
+                text: "Channels per window/panel";
+                vertical-alignment: TextVerticalAlignment.center;
+            }
+            channels_cb := ComboBox {
+                enabled: layout_cb.current-value != "Two panels (one on each side of the screen)";
+                model: [
+                    "Only left",
+                    "Both left and right",
+                ];
+                selected(current-value) => {
+                    if (self.current-index == 0) {
+                        Backend.panel_channels_changed(RenderChannels.Single);
+                    } else {
+                        Backend.panel_channels_changed(RenderChannels.Both);
+                    }
+                }
+                callback set_panel_channels(RenderChannels);
+                set_panel_channels(channels) => {
+                    if (channels == RenderChannels.Single) {
+                        self.current-index = 0;
+                    } else {
+                        self.current-index = 1;
+                    }
+                }
+            }
+        }
+        Row {
+            TabWidget {
+                colspan: 2;
+                Tab {
+                    title: "Ridgeline Plot Settings";
+                    ridgeline_tab := RidgelineSettings { }
+                }
+                Tab {
+                    title: "Compressed Line Settings";
+                    compressed_tab := CompressedSettings { }
+                }
+                Tab {
+                    title: "Compressed Line Time Curve";
+                    time_curve_tab := TimeCurveTab { }
+                }
+            }
         }
     }
     StandardButton {

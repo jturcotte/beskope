@@ -6,6 +6,7 @@ use ringbuf::{HeapRb, SharedRb};
 use rustfft::{Fft, FftDirection, FftPlanner};
 use signal_hook::iterator::Signals;
 use slint::ComponentHandle;
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -148,13 +149,11 @@ impl WaveformWindow {
 
         if let Some(waveform_view) = left_waveform_view {
             if waveform_view.render_window() == self.render_window {
-                waveform_view.update_config();
                 waveform_view.render(&mut encoder, &view, &depth_texture_view);
             }
         }
         if let Some(waveform_view) = right_waveform_view {
             if waveform_view.render_window() == self.render_window {
-                waveform_view.update_config();
                 waveform_view.render(&mut encoder, &view, &depth_texture_view);
             }
         }
@@ -172,13 +171,14 @@ impl WaveformWindow {
 }
 
 struct ApplicationState {
+    pub config: ui::Configuration,
+    pub lazy_config_changes: HashSet<usize>,
     primary_waveform_window: Option<(WaveformWindow, PanelAnchorPosition)>,
     secondary_waveform_window: Option<(WaveformWindow, PanelAnchorPosition)>,
     last_non_zero_sample_age: usize,
     animation_stopped: Arc<AtomicBool>,
     left_waveform_view: Option<Box<dyn WaveformView>>,
     right_waveform_view: Option<Box<dyn WaveformView>>,
-    pub config: ui::Configuration,
     screen_size: (u32, u32),
     audio_input_ringbuf_cons: Option<Caching<Arc<SharedRb<Heap<f32>>>, false, true>>,
     fft: Option<Arc<dyn Fft<f32>>>,
@@ -193,13 +193,14 @@ impl ApplicationState {
         request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
     ) -> ApplicationState {
         ApplicationState {
+            config,
+            lazy_config_changes: HashSet::new(),
             primary_waveform_window: None,
             secondary_waveform_window: None,
             last_non_zero_sample_age: 0,
             animation_stopped: Arc::new(AtomicBool::new(false)),
             left_waveform_view: None,
             right_waveform_view: None,
-            config,
             screen_size: (1, 1),
             audio_input_ringbuf_cons: None,
             fft: None,
@@ -218,19 +219,6 @@ impl ApplicationState {
             }
         };
         self.config = config;
-        // self.recreate_views();
-    }
-
-    fn for_each_view_mut<F>(&mut self, f: F)
-    where
-        F: Fn(&mut Box<dyn WaveformView>),
-    {
-        if let Some(view) = &mut self.left_waveform_view {
-            f(view);
-        }
-        if let Some(view) = &mut self.right_waveform_view {
-            f(view);
-        }
     }
 
     fn initialize_audio_and_fft(&mut self) {
@@ -273,24 +261,19 @@ impl ApplicationState {
                 &window,
                 render_window,
                 *anchor_position,
-                self.config.panel.channels,
+                self.config.general.channels,
                 is_left_channel,
             )),
             ui::Style::Compressed => Box::new(views::CompressedWaveformView::new(
                 &window,
                 render_window,
                 *anchor_position,
-                self.config.panel.channels,
+                self.config.general.channels,
                 is_left_channel,
             )),
         };
-        view.update_transform(
-            self.config.panel.width,
-            self.screen_size.0,
-            self.screen_size.1,
-        );
-        view.set_waveform_config(self.config.waveform.clone());
-        view.set_time_curve_control_points(self.config.time_curve.control_points.clone());
+        view.set_screen_size(self.screen_size.0, self.screen_size.1);
+        view.apply_lazy_config_changes(&self.config, None);
         view
     }
 
@@ -308,7 +291,7 @@ impl ApplicationState {
         self.left_waveform_view =
             Some(self.create_waveform_view(self.config.style, RenderWindow::Primary, true));
 
-        if self.config.panel.channels == ui::RenderChannels::Both {
+        if self.config.general.channels == ui::RenderChannels::Both {
             self.right_waveform_view =
                 Some(self.create_waveform_view(self.config.style, RenderWindow::Primary, false));
         }
@@ -382,6 +365,17 @@ impl ApplicationState {
         }
     }
     fn render(&mut self, surface_id: u32) {
+        if !self.lazy_config_changes.is_empty() {
+            if let Some(waveform_view) = self.left_waveform_view.as_mut() {
+                waveform_view
+                    .apply_lazy_config_changes(&self.config, Some(&self.lazy_config_changes));
+            }
+            if let Some(waveform_view) = self.right_waveform_view.as_mut() {
+                waveform_view
+                    .apply_lazy_config_changes(&self.config, Some(&self.lazy_config_changes));
+            }
+        }
+
         if let Some((window, _)) = self.primary_waveform_window.as_mut() {
             if window.wgpu.surface_id() == surface_id {
                 window.render(&mut self.left_waveform_view, &mut self.right_waveform_view);
@@ -393,16 +387,19 @@ impl ApplicationState {
                 window.render(&mut self.left_waveform_view, &mut self.right_waveform_view);
             }
         }
+
+        // Restart tracking changed from the UI to apply on the next frame.
+        self.lazy_config_changes.clear();
     }
 
     fn set_screen_size(&mut self, width: u32, height: u32) {
         self.screen_size.0 = width;
         self.screen_size.1 = height;
         if let Some(view) = &mut self.left_waveform_view {
-            view.update_transform(self.config.panel.width, width, height);
+            view.set_screen_size(width, height);
         }
         if let Some(view) = &mut self.right_waveform_view {
-            view.update_transform(self.config.panel.width, width, height);
+            view.set_screen_size(width, height);
         }
     }
 
@@ -411,7 +408,7 @@ impl ApplicationState {
             self.left_waveform_view =
                 Some(self.create_waveform_view(self.config.style, RenderWindow::Primary, true));
 
-            if self.config.panel.channels == ui::RenderChannels::Both {
+            if self.config.general.channels == ui::RenderChannels::Both {
                 self.right_waveform_view = Some(self.create_waveform_view(
                     self.config.style,
                     RenderWindow::Primary,
@@ -424,16 +421,6 @@ impl ApplicationState {
         if self.secondary_waveform_window.is_some() {
             self.right_waveform_view =
                 Some(self.create_waveform_view(self.config.style, RenderWindow::Secondary, false));
-        }
-    }
-
-    fn set_panel_width(&mut self, width: u32) {
-        self.config.panel.width = width;
-        if let Some(view) = &mut self.left_waveform_view {
-            view.update_transform(width, self.screen_size.0, self.screen_size.1);
-        }
-        if let Some(view) = &mut self.right_waveform_view {
-            view.update_transform(width, self.screen_size.0, self.screen_size.1);
         }
     }
 }

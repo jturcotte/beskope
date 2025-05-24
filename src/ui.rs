@@ -7,62 +7,95 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::{self, Write},
+    mem::offset_of,
 };
 
 slint::include_modules!();
 
-#[derive(Clone, Serialize, Deserialize)]
-pub struct PanelConfig {
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GeneralConfig {
     pub channels: RenderChannels,
     pub layout: PanelLayout,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RidgelineConfig {
     pub layer: PanelLayer,
     pub width: u32,
     pub exclusive_ratio: f32,
+    pub fill_color: slint::Color,
+    pub stroke_color: slint::Color,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TimeCurveConfig {
     pub control_points: Vec<ControlPoint>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-pub struct Configuration {
-    pub waveform: WaveformConfig,
-    pub style: Style,
-    pub panel: PanelConfig,
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CompressedConfig {
+    pub layer: PanelLayer,
+    pub width: u32,
+    pub exclusive_ratio: f32,
+    pub fill_color: slint::Color,
+    pub stroke_color: slint::Color,
     pub time_curve: TimeCurveConfig,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Configuration {
+    pub style: Style,
+    pub general: GeneralConfig,
+    pub ridgeline: RidgelineConfig,
+    pub compressed: CompressedConfig,
+}
+
+// Change tracking IDs for changes applied lazily before rendering. Use their byte offset within the configuration struct.
+pub const RIDGELINE_WIDTH: usize = offset_of!(Configuration, ridgeline.width);
+pub const RIDGELINE_FILL_COLOR: usize = offset_of!(Configuration, ridgeline.fill_color);
+pub const RIDGELINE_STROKE_COLOR: usize = offset_of!(Configuration, ridgeline.stroke_color);
+pub const COMPRESSED_FILL_COLOR: usize = offset_of!(Configuration, compressed.fill_color);
+pub const COMPRESSED_STROKE_COLOR: usize = offset_of!(Configuration, compressed.stroke_color);
+pub const COMPRESSED_TIME_CURVE_CONTROL_POINTS: usize =
+    offset_of!(Configuration, compressed.time_curve.control_points);
 
 impl Default for Configuration {
     fn default() -> Self {
         Self {
-            waveform: WaveformConfig {
+            style: Style::Ridgeline,
+            general: GeneralConfig {
+                channels: RenderChannels::Both,
+                layout: PanelLayout::TwoPanels,
+            },
+            ridgeline: RidgelineConfig {
+                layer: PanelLayer::Bottom,
+                width: 360,
+                exclusive_ratio: 0.6,
                 fill_color: slint::Color::from_argb_u8(205, 64, 112, 172),
                 stroke_color: slint::Color::from_argb_u8(205, 0, 0, 0),
             },
-            style: Style::Ridgeline,
-            panel: PanelConfig {
-                channels: RenderChannels::Both,
-                layout: PanelLayout::TwoPanels,
-                layer: PanelLayer::Bottom,
-                width: 280,
-                exclusive_ratio: 0.6,
-            },
-            time_curve: TimeCurveConfig {
-                control_points: vec![
-                    ControlPoint { t: -3.0, v: 0.0 },
-                    ControlPoint { t: -1.75, v: 0.025 },
-                    ControlPoint { t: -0.75, v: 0.10 },
-                    ControlPoint { t: -0.25, v: 0.25 },
-                    ControlPoint {
-                        t: -1.0 / 15.0,
-                        v: 0.4,
-                    },
-                    ControlPoint {
-                        t: -1.0 / 60.0,
-                        v: 0.6,
-                    },
-                ],
+            compressed: CompressedConfig {
+                layer: PanelLayer::Top,
+                width: 80,
+                exclusive_ratio: 0.55,
+                fill_color: slint::Color::from_argb_u8(153, 128, 128, 128),
+                stroke_color: slint::Color::from_argb_u8(205, 0, 0, 0),
+                time_curve: TimeCurveConfig {
+                    control_points: vec![
+                        ControlPoint { t: -3.0, v: 0.0 },
+                        ControlPoint { t: -1.75, v: 0.025 },
+                        ControlPoint { t: -0.75, v: 0.10 },
+                        ControlPoint { t: -0.25, v: 0.25 },
+                        ControlPoint {
+                            t: -1.0 / 15.0,
+                            v: 0.4,
+                        },
+                        ControlPoint {
+                            t: -1.0 / 60.0,
+                            v: 0.6,
+                        },
+                    ],
+                },
             },
         }
     }
@@ -165,26 +198,13 @@ pub fn init(send_ui_msg: impl Fn(UiMessage) + Clone + 'static) -> ConfigurationW
         svg_path.into()
     });
 
-    backend.on_waveform_changed({
-        let send = send_ui_msg.clone();
-        move |config| {
-            send(UiMessage::ApplicationStateCallback(Box::new(
-                move |state| {
-                    state.config.waveform = config.clone();
-                    state.for_each_view_mut(|view| {
-                        view.set_waveform_config(config.clone());
-                    });
-                },
-            )));
-        }
-    });
     backend.on_style_changed({
         let send = send_ui_msg.clone();
         move |config| {
-            send(UiMessage::ApplicationStateCallback(Box::new(
-                move |state| {
-                    state.config.style = config;
-                    state.recreate_views();
+            send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
+                move |handler, conn, qh| {
+                    handler.app_state.config.style = config;
+                    handler.apply_panel_layout(conn, qh);
                 },
             )));
         }
@@ -193,9 +213,9 @@ pub fn init(send_ui_msg: impl Fn(UiMessage) + Clone + 'static) -> ConfigurationW
         let send = send_ui_msg.clone();
         move |config| {
             send(UiMessage::ApplicationStateCallback(Box::new(
-                move |state| {
-                    state.config.panel.channels = config;
-                    state.recreate_views();
+                move |app_state| {
+                    app_state.config.general.channels = config;
+                    app_state.recreate_views();
                 },
             )));
         }
@@ -205,56 +225,152 @@ pub fn init(send_ui_msg: impl Fn(UiMessage) + Clone + 'static) -> ConfigurationW
         move |config| {
             send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
                 move |handler, conn, qh| {
-                    handler.app_state.config.panel.layout = config;
+                    handler.app_state.config.general.layout = config;
                     handler.apply_panel_layout(conn, qh);
                 },
             )));
         }
     });
-    backend.on_panel_layer_changed({
+    backend.on_ridgeline_panel_layer_changed({
         let send = send_ui_msg.clone();
         move |config| {
             send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
                 move |handler, _, _| {
-                    handler.app_state.config.panel.layer = config;
-                    handler.set_panel_layer(config);
+                    handler.app_state.config.ridgeline.layer = config;
+                    if handler.app_state.config.style == Style::Ridgeline {
+                        handler.set_panel_layer(config);
+                    }
                 },
             )));
         }
     });
-    backend.on_panel_width_changed({
+    backend.on_ridgeline_panel_width_changed({
         let send = send_ui_msg.clone();
         move |config| {
             send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
                 move |handler, _, _| {
-                    handler.app_state.config.panel.width = config as u32;
-                    handler.set_panel_width(config as u32);
-                    handler.app_state.set_panel_width(config as u32);
+                    handler.app_state.config.ridgeline.width = config as u32;
+                    handler
+                        .app_state
+                        .lazy_config_changes
+                        .insert(RIDGELINE_WIDTH);
+                    if handler.app_state.config.style == Style::Ridgeline {
+                        handler.apply_panel_width_change();
+                    }
                 },
             )));
         }
     });
-    backend.on_panel_exclusive_ratio_changed({
+    backend.on_ridgeline_panel_exclusive_ratio_changed({
         let send = send_ui_msg.clone();
         move |config| {
             send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
                 move |handler, _, _| {
-                    handler.app_state.config.panel.exclusive_ratio = config;
-                    handler.set_panel_exclusive_ratio(config);
+                    handler.app_state.config.ridgeline.exclusive_ratio = config;
+                    if handler.app_state.config.style == Style::Ridgeline {
+                        handler.apply_panel_exclusive_ratio_change();
+                    }
                 },
             )));
         }
     });
-    backend.on_time_curve_control_points_changed({
+    backend.on_ridgeline_fill_color_changed({
+        let send = send_ui_msg.clone();
+        move |config| {
+            send(UiMessage::ApplicationStateCallback(Box::new(
+                move |app_state| {
+                    app_state.config.ridgeline.fill_color = config;
+                    app_state.lazy_config_changes.insert(RIDGELINE_FILL_COLOR);
+                },
+            )));
+        }
+    });
+    backend.on_ridgeline_stroke_color_changed({
+        let send = send_ui_msg.clone();
+        move |config| {
+            send(UiMessage::ApplicationStateCallback(Box::new(
+                move |app_state| {
+                    app_state.config.ridgeline.stroke_color = config;
+                    app_state.lazy_config_changes.insert(RIDGELINE_STROKE_COLOR);
+                },
+            )));
+        }
+    });
+    backend.on_compressed_panel_layer_changed({
+        let send = send_ui_msg.clone();
+        move |config| {
+            send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
+                move |handler, _, _| {
+                    handler.app_state.config.compressed.layer = config;
+                    if handler.app_state.config.style == Style::Compressed {
+                        handler.set_panel_layer(config);
+                    }
+                },
+            )));
+        }
+    });
+    backend.on_compressed_panel_width_changed({
+        let send = send_ui_msg.clone();
+        move |config| {
+            send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
+                move |handler, _, _| {
+                    handler.app_state.config.compressed.width = config as u32;
+                    if handler.app_state.config.style == Style::Compressed {
+                        handler.apply_panel_width_change();
+                    }
+                },
+            )));
+        }
+    });
+    backend.on_compressed_panel_exclusive_ratio_changed({
+        let send = send_ui_msg.clone();
+        move |config| {
+            send(UiMessage::WlrWaylandEventHandlerCallback(Box::new(
+                move |handler, _, _| {
+                    handler.app_state.config.compressed.exclusive_ratio = config;
+                    if handler.app_state.config.style == Style::Compressed {
+                        handler.apply_panel_exclusive_ratio_change();
+                    }
+                },
+            )));
+        }
+    });
+    backend.on_compressed_fill_color_changed({
+        let send = send_ui_msg.clone();
+        move |config| {
+            send(UiMessage::ApplicationStateCallback(Box::new(
+                move |app_state| {
+                    app_state.config.compressed.fill_color = config;
+                    app_state.lazy_config_changes.insert(COMPRESSED_FILL_COLOR);
+                },
+            )));
+        }
+    });
+    backend.on_compressed_stroke_color_changed({
+        let send = send_ui_msg.clone();
+        move |config| {
+            send(UiMessage::ApplicationStateCallback(Box::new(
+                move |app_state| {
+                    app_state.config.compressed.stroke_color = config;
+                    app_state
+                        .lazy_config_changes
+                        .insert(COMPRESSED_STROKE_COLOR);
+                },
+            )));
+        }
+    });
+    backend.on_compressed_time_curve_control_points_changed({
         let send = send_ui_msg.clone();
         move |control_points_model| {
             let control_points: Vec<ControlPoint> = control_points_model.iter().collect();
-            send(UiMessage::ApplicationStateCallback(Box::new(move |ws| {
-                ws.config.time_curve.control_points = control_points.clone();
-                ws.for_each_view_mut(|view| {
-                    view.set_time_curve_control_points(control_points.clone());
-                });
-            })));
+            send(UiMessage::ApplicationStateCallback(Box::new(
+                move |app_state| {
+                    app_state.config.compressed.time_curve.control_points = control_points.clone();
+                    app_state
+                        .lazy_config_changes
+                        .insert(COMPRESSED_TIME_CURVE_CONTROL_POINTS);
+                },
+            )));
         }
     });
 
@@ -263,8 +379,8 @@ pub fn init(send_ui_msg: impl Fn(UiMessage) + Clone + 'static) -> ConfigurationW
         let send = send_ui_msg.clone();
         move || {
             send(UiMessage::ApplicationStateCallback(Box::new(
-                move |state| {
-                    if let Err(e) = state.config.save() {
+                move |app_state| {
+                    if let Err(e) = app_state.config.save() {
                         eprintln!("Failed to save configuration: {}", e);
                     }
                 },
@@ -298,15 +414,21 @@ pub fn init(send_ui_msg: impl Fn(UiMessage) + Clone + 'static) -> ConfigurationW
 
 impl ConfigurationWindow {
     pub fn update_from_configuration(&self, config: &Configuration) {
-        self.invoke_set_waveform_config(config.waveform.clone());
         self.invoke_set_style(config.style.clone());
-        self.invoke_set_panel_channels(config.panel.channels.clone());
-        self.invoke_set_panel_layout(config.panel.layout.clone());
-        self.invoke_set_panel_layer(config.panel.layer.clone());
-        self.invoke_set_panel_width(config.panel.width as i32);
-        self.invoke_set_panel_exclusive_ratio(config.panel.exclusive_ratio as f32);
-        self.invoke_set_time_curve_control_points(slint::ModelRc::new(VecModel::from(
-            config.time_curve.control_points.clone(),
+        self.invoke_set_panel_channels(config.general.channels.clone());
+        self.invoke_set_panel_layout(config.general.layout.clone());
+        self.invoke_set_ridgeline_panel_layer(config.ridgeline.layer.clone());
+        self.invoke_set_ridgeline_panel_width(config.ridgeline.width as i32);
+        self.invoke_set_ridgeline_panel_exclusive_ratio(config.ridgeline.exclusive_ratio as f32);
+        self.invoke_set_ridgeline_fill_color(config.ridgeline.fill_color.clone());
+        self.invoke_set_ridgeline_stroke_color(config.ridgeline.stroke_color.clone());
+        self.invoke_set_compressed_panel_layer(config.compressed.layer.clone());
+        self.invoke_set_compressed_panel_width(config.compressed.width as i32);
+        self.invoke_set_compressed_panel_exclusive_ratio(config.compressed.exclusive_ratio as f32);
+        self.invoke_set_compressed_fill_color(config.compressed.fill_color.clone());
+        self.invoke_set_compressed_stroke_color(config.compressed.stroke_color.clone());
+        self.invoke_set_compressed_time_curve_control_points(slint::ModelRc::new(VecModel::from(
+            config.compressed.time_curve.control_points.clone(),
         )));
     }
 }

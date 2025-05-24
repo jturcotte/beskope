@@ -28,7 +28,7 @@ use wayland_client::{
     protocol::{wl_output, wl_surface},
 };
 
-use crate::ui::PanelLayer;
+use crate::ui::{self, PanelLayer};
 use crate::{ApplicationState, UiMessage, WgpuSurface};
 
 impl CompositorHandler for WlrWaylandEventHandler {
@@ -339,7 +339,7 @@ impl WlrWaylandEventHandler {
         let (primary_wgpu_and_anchor, secondary_wgpu_and_anchor) = match self
             .app_state
             .config
-            .panel
+            .general
             .layout
         {
             crate::ui::PanelLayout::TwoPanels => (
@@ -409,18 +409,25 @@ impl WlrWaylandEventHandler {
         // interactivity
         layer.set_anchor(anchor);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        let panel_width = self.app_state.config.panel.width as u32;
+        let (panel_layer, panel_width, exclusive_ratio) = match self.app_state.config.style {
+            ui::Style::Compressed => (
+                self.app_state.config.compressed.layer,
+                self.app_state.config.compressed.width as u32,
+                self.app_state.config.compressed.exclusive_ratio,
+            ),
+            ui::Style::Ridgeline => (
+                self.app_state.config.ridgeline.layer,
+                self.app_state.config.ridgeline.width as u32,
+                self.app_state.config.ridgeline.exclusive_ratio,
+            ),
+        };
         if !anchor.intersects(Anchor::BOTTOM) || !anchor.intersects(Anchor::TOP) {
             layer.set_size(0, panel_width);
         } else {
             layer.set_size(panel_width, 0);
         }
-        layer.set_exclusive_zone(
-            (panel_width as f32 * self.app_state.config.panel.exclusive_ratio) as i32,
-        );
-        layer.set_layer(Self::layer_to_wayland_layer(
-            self.app_state.config.panel.layer,
-        ));
+        layer.set_exclusive_zone((panel_width as f32 * exclusive_ratio) as i32);
+        layer.set_layer(Self::layer_to_wayland_layer(panel_layer));
 
         // In order for the layer surface to be mapped, we need to perform an initial commit with no attached\
         // buffer. For more info, see WaylandSurface::commit
@@ -433,14 +440,19 @@ impl WlrWaylandEventHandler {
         Rc::new(WlrWgpuSurface::new(conn.clone(), qh, layer))
     }
 
-    pub fn set_panel_width(&mut self, width: u32) {
-        let layout = self.app_state.config.panel.layout;
+    pub fn apply_panel_width_change(&mut self) {
+        let panel_width = match self.app_state.config.style {
+            ui::Style::Compressed => self.app_state.config.compressed.width as u32,
+            ui::Style::Ridgeline => self.app_state.config.ridgeline.width as u32,
+        };
+
+        let layout = self.app_state.config.general.layout;
         let (width, height) = if layout == crate::ui::PanelLayout::SingleTop
             || layout == crate::ui::PanelLayout::SingleBottom
         {
-            (0, width as u32)
+            (0, panel_width as u32)
         } else {
-            (width as u32, 0)
+            (panel_width as u32, 0)
         };
 
         if let Some(layer) = self.primary_layer.as_ref() {
@@ -452,16 +464,27 @@ impl WlrWaylandEventHandler {
             layer.commit();
         }
         // Apply the ratio relatively to the new width
-        self.set_panel_exclusive_ratio(self.app_state.config.panel.exclusive_ratio);
+        self.apply_panel_exclusive_ratio_change();
     }
 
-    pub fn set_panel_exclusive_ratio(&mut self, ratio: f32) {
+    pub fn apply_panel_exclusive_ratio_change(&mut self) {
+        let (panel_width, exclusive_ratio) = match self.app_state.config.style {
+            ui::Style::Compressed => (
+                self.app_state.config.compressed.width as f32,
+                self.app_state.config.compressed.exclusive_ratio,
+            ),
+            ui::Style::Ridgeline => (
+                self.app_state.config.ridgeline.width as f32,
+                self.app_state.config.ridgeline.exclusive_ratio,
+            ),
+        };
+
         if let Some(layer) = self.primary_layer.as_ref() {
-            layer.set_exclusive_zone((self.app_state.config.panel.width as f32 * ratio) as i32);
+            layer.set_exclusive_zone((panel_width * exclusive_ratio) as i32);
             layer.commit();
         }
         if let Some(layer) = self.secondary_layer.as_ref() {
-            layer.set_exclusive_zone((self.app_state.config.panel.width as f32 * ratio) as i32);
+            layer.set_exclusive_zone((panel_width * exclusive_ratio) as i32);
             layer.commit();
         }
     }

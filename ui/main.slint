@@ -41,6 +41,7 @@ export global Backend {
     callback ridgeline_panel_width_changed(int);
     callback ridgeline_panel_exclusive_ratio_changed(float);
     callback ridgeline_fill_color_changed(color);
+    callback ridgeline_highlight_color_changed(color);
     callback ridgeline_stroke_color_changed(color);
     callback compressed_panel_layer_changed(PanelLayer);
     callback compressed_panel_width_changed(int);
@@ -123,6 +124,7 @@ component RidgelineSettings inherits GridBox {
     callback set_panel_width <=> panel_width_slider.set_panel_width;
     callback set_panel_exclusive_ratio <=> panel_exclusive_ratio_slider.set_panel_exclusive_ratio;
     callback set_fill_color <=> fill_color.set_color;
+    callback set_highlight_color <=> highlight_color.set_color;
     callback set_stroke_color <=> stroke_color.set_color;
 
     Row {
@@ -200,11 +202,17 @@ component RidgelineSettings inherits GridBox {
             vertical-stretch: 0;
             HorizontalLayout {
                 fill_color := HsvColorSelection {
-                    width: 50%;
+                    width: 33%;
                     changed(color) => { Backend.ridgeline_fill_color_changed(color); }
-                    title: "Fill Color";
+                    title: "Base Fill Color";
+                }
+                highlight_color := HsvColorSelection {
+                    width: 33%;
+                    title: "Highlight Fill Color";
+                    changed(color) => { Backend.ridgeline_highlight_color_changed(color); }
                 }
                 stroke_color := HsvColorSelection {
+                    width: 33%;
                     title: "Stroke Color";
                     changed(color) => { Backend.ridgeline_stroke_color_changed(color); }
                 }
@@ -426,6 +434,7 @@ export component ConfigurationWindow inherits Dialog {
     callback set_ridgeline_panel_width <=> ridgeline_tab.set_panel_width;
     callback set_ridgeline_panel_exclusive_ratio <=> ridgeline_tab.set_panel_exclusive_ratio;
     callback set_ridgeline_fill_color <=> ridgeline_tab.set_fill_color;
+    callback set_ridgeline_highlight_color <=> ridgeline_tab.set_highlight_color;
     callback set_ridgeline_stroke_color <=> ridgeline_tab.set_stroke_color;
     callback set_compressed_panel_layer <=> compressed_tab.set_panel_layer;
     callback set_compressed_panel_width <=> compressed_tab.set_panel_width;

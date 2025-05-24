@@ -14,6 +14,7 @@ var<uniform> transform: mat4x4<f32>;
 
 struct WaveformConfig {
     fill_color: vec4<f32>,
+    highlight_color: vec4<f32>,
     stroke_color: vec4<f32>,
 };
 
@@ -36,15 +37,12 @@ struct VertexOutput {
 fn compute_fill_color(y: f32, should_offset: f32, instance_index: u32) -> vec4<f32> {
     if instance_index == 0u {
         // Mix 50% with the highlight color for the front instance to reduce the contrast.
-        return vec4(mix(waveform_config.fill_color.rgb, vec3<f32>(1.0, 1.0, 1.0), 0.5),
-                    waveform_config.fill_color.a);
+        return mix(waveform_config.fill_color, waveform_config.highlight_color, 0.5);
     }
 
-    // Mix fill_color.rgb with white based on abs(y)
-    // FIXME: Make this configurable
+    // Mix fill_color.rgb with the highlight_color based on abs(y)
     let t = clamp(abs(y), 0.0, 1.0);
-    return vec4(mix(waveform_config.fill_color.rgb, vec3<f32>(1.0, 1.0, 1.0), t),
-                waveform_config.fill_color.a);
+    return mix(waveform_config.fill_color, waveform_config.highlight_color, t);
 }
 
 // Helper for stroke color logic

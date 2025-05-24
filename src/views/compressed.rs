@@ -13,7 +13,14 @@ use std::{borrow::Cow, sync::Arc};
 use wgpu::util::DeviceExt;
 use wgpu::{BufferUsages, CommandEncoder, TextureView};
 
-use super::{Vertex, WaveformConfigUniform, WaveformView, YValue};
+use super::{Vertex, WaveformView, YValue};
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct WaveformConfigUniform {
+    fill_color: [f32; 4],
+    stroke_color: [f32; 4],
+}
 
 pub struct CompressedWaveformView {
     render_window: RenderWindow,

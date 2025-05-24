@@ -12,9 +12,17 @@ use std::{borrow::Cow, sync::Arc};
 use wgpu::util::DeviceExt;
 use wgpu::{BufferUsages, CommandEncoder, TextureView};
 
-use super::{Vertex, WaveformConfigUniform, WaveformView, YValue};
+use super::{Vertex, WaveformView, YValue};
 
 const STRIDE_SIZE: usize = 1500;
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct WaveformConfigUniform {
+    fill_color: [f32; 4],
+    highlight_color: [f32; 4],
+    stroke_color: [f32; 4],
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -156,6 +164,7 @@ impl RidgelineWaveformView {
                     label: Some("Waveform Config Buffer"),
                     contents: bytemuck::cast_slice(&[WaveformConfigUniform {
                         fill_color: [1.0, 1.0, 1.0, 1.0],
+                        highlight_color: [1.0, 1.0, 1.0, 1.0],
                         stroke_color: [1.0, 1.0, 1.0, 1.0],
                     }]),
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -538,7 +547,9 @@ impl WaveformView for RidgelineWaveformView {
         config_changes: Option<&HashSet<usize>>,
     ) {
         if config_changes.is_none_or(|c| {
-            c.contains(&ui::RIDGELINE_FILL_COLOR) || c.contains(&ui::RIDGELINE_STROKE_COLOR)
+            c.contains(&ui::RIDGELINE_FILL_COLOR)
+                || c.contains(&ui::RIDGELINE_HIGHLIGHT_COLOR)
+                || c.contains(&ui::RIDGELINE_STROKE_COLOR)
         }) {
             let waveform_config = WaveformConfigUniform {
                 fill_color: [
@@ -546,6 +557,12 @@ impl WaveformView for RidgelineWaveformView {
                     config.ridgeline.fill_color.green() as f32 / 255.0,
                     config.ridgeline.fill_color.blue() as f32 / 255.0,
                     config.ridgeline.fill_color.alpha() as f32 / 255.0,
+                ],
+                highlight_color: [
+                    config.ridgeline.highlight_color.red() as f32 / 255.0,
+                    config.ridgeline.highlight_color.green() as f32 / 255.0,
+                    config.ridgeline.highlight_color.blue() as f32 / 255.0,
+                    config.ridgeline.highlight_color.alpha() as f32 / 255.0,
                 ],
                 stroke_color: [
                     config.ridgeline.stroke_color.red() as f32 / 255.0,

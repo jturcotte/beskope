@@ -57,13 +57,6 @@ struct YValue {
     y: f32,
 }
 
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct WaveformConfigUniform {
-    fill_color: [f32; 4],
-    stroke_color: [f32; 4],
-}
-
 impl Vertex {
     fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
         wgpu::VertexBufferLayout {

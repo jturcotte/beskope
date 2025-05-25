@@ -1,6 +1,7 @@
 [package]
 name = "beskope"
 version = "0.1.0"
+authors = ["Jocelyn Turcotte <turcotte.j@gmail.com>"]
 edition = "2024"
 
 [dependencies]

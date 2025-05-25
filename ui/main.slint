@@ -64,18 +64,17 @@ export global TimeCurveEditor {
 component LabeledSlider {
     in-out property<float> value <=> slider.value;
     in property<string> label <=> text.text;
+    in property<float> step <=> slider.step;
     in property<float> minimum <=> slider.minimum;
     in property<float> maximum <=> slider.maximum;
     in property<float> precision: 100;
     in property<string> unit: "";
-    callback changed(float);
+    callback changed <=> slider.changed;
     HorizontalBox {
         text := Text {
             vertical-alignment: TextVerticalAlignment.center;
         }
-        slider := Slider {
-            changed(value) => { changed(value) }
-        }
+        slider := Slider { }
         Text {
             width: 10%;
             text: round(value*precision)/precision + root.unit;
@@ -104,16 +103,19 @@ component HsvColorSelection inherits GroupBox {
         }
         s := LabeledSlider {
             label: "S";
+            step: 0.01;
             maximum: 1.0;
             changed(value) => { changed(Colors.hsv(h.value, s.value, v.value, a.value)) }
         }
         v := LabeledSlider {
             label: "V";
+            step: 0.01;
             maximum: 1.0;
             changed(value) => { changed(Colors.hsv(h.value, s.value, v.value, a.value)) }
         }
         a := LabeledSlider {
             label: "A";
+            step: 0.01;
             maximum: 1.0;
             changed(value) => { changed(Colors.hsv(h.value, s.value, v.value, a.value)) }
         }
@@ -169,14 +171,14 @@ component RidgelineSettings inherits GridBox {
     Row {
         Text { text: "Height/Width"; }
         panel_width_slider := LabeledSlider {
-            callback set_panel_width(int);
             minimum: 1;
-            maximum: 800;
+            maximum: 1280;
             precision: 1;
             unit: " px";
-            changed => {
-                Backend.ridgeline_panel_width_changed(self.value);
+            changed(value) => {
+                Backend.ridgeline_panel_width_changed(value);
             }
+            callback set_panel_width(int);
             set_panel_width(width) => {
                 self.value = width;
             }
@@ -189,8 +191,8 @@ component RidgelineSettings inherits GridBox {
             maximum: 100;
             precision: 1;
             unit: " %";
-            changed => {
-                Backend.ridgeline_panel_exclusive_ratio_changed(self.value / 100);
+            changed(value) => {
+                Backend.ridgeline_panel_exclusive_ratio_changed(value / 100);
             }
             callback set_panel_exclusive_ratio(float);
             set_panel_exclusive_ratio(ratio) => {
@@ -205,8 +207,8 @@ component RidgelineSettings inherits GridBox {
             maximum: 100;
             precision: 1;
             unit: " %";
-            changed => {
-                Backend.ridgeline_horizon_offset_changed(self.value / 100);
+            changed(value) => {
+                Backend.ridgeline_horizon_offset_changed(value / 100);
             }
             callback set_horizon_offset(float);
             set_horizon_offset(offset) => {
@@ -287,14 +289,14 @@ component CompressedSettings inherits GridBox {
     Row {
         Text { text: "Height/Width"; }
         panel_width_slider := LabeledSlider {
-            callback set_panel_width(int);
             minimum: 1;
-            maximum: 800;
+            maximum: 1280;
             precision: 1;
             unit: " px";
-            changed => {
-                Backend.compressed_panel_width_changed(self.value);
+            changed(value) => {
+                Backend.compressed_panel_width_changed(value);
             }
+            callback set_panel_width(int);
             set_panel_width(width) => {
                 self.value = width;
             }
@@ -307,8 +309,8 @@ component CompressedSettings inherits GridBox {
             maximum: 100;
             precision: 1;
             unit: " %";
-            changed => {
-                Backend.compressed_panel_exclusive_ratio_changed(self.value / 100);
+            changed(value) => {
+                Backend.compressed_panel_exclusive_ratio_changed(value / 100);
             }
             callback set_panel_exclusive_ratio(float);
             set_panel_exclusive_ratio(ratio) => {

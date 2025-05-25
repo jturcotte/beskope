@@ -97,6 +97,8 @@ impl CompositorHandler for WlrWaylandEventHandler {
                 .and_then(|info| info.logical_size)
             {
                 self.app_state.set_screen_size(size.0 as u32, size.1 as u32);
+                // Adjust the exclusive ratio in case the configuration loaded at startup was too large to fit the screen.
+                self.apply_panel_exclusive_ratio_change();
             }
         }
     }
@@ -446,13 +448,11 @@ impl WlrWaylandEventHandler {
             ui::Style::Ridgeline => self.app_state.config.ridgeline.width as u32,
         };
 
-        let layout = self.app_state.config.general.layout;
-        let (width, height) = if layout == crate::ui::PanelLayout::SingleTop
-            || layout == crate::ui::PanelLayout::SingleBottom
-        {
-            (0, panel_width as u32)
-        } else {
-            (panel_width as u32, 0)
+        let (width, height) = match self.app_state.config.general.layout {
+            crate::ui::PanelLayout::SingleTop | crate::ui::PanelLayout::SingleBottom => {
+                (0, panel_width as u32)
+            }
+            crate::ui::PanelLayout::TwoPanels => (panel_width as u32, 0),
         };
 
         if let Some(layer) = self.primary_layer.as_ref() {
@@ -479,12 +479,26 @@ impl WlrWaylandEventHandler {
             ),
         };
 
+        // The window manager won't protect against taking all the screen as exclusive, so leave 1/3
+        // available for windows.
+        let max_exclusive_zone = match self.app_state.config.general.layout {
+            crate::ui::PanelLayout::SingleTop | crate::ui::PanelLayout::SingleBottom => {
+                self.app_state.screen_size.1 as f32 * 0.66
+            }
+            crate::ui::PanelLayout::TwoPanels => self.app_state.screen_size.0 as f32 * 0.33,
+        };
+        println!(
+            "Applying exclusive zone change: panel width: {}, ratio: {}, max exclusive zone: {}",
+            panel_width, exclusive_ratio, max_exclusive_zone
+        );
+        let value = max_exclusive_zone.min(panel_width * exclusive_ratio);
+
         if let Some(layer) = self.primary_layer.as_ref() {
-            layer.set_exclusive_zone((panel_width * exclusive_ratio) as i32);
+            layer.set_exclusive_zone(value as i32);
             layer.commit();
         }
         if let Some(layer) = self.secondary_layer.as_ref() {
-            layer.set_exclusive_zone((panel_width * exclusive_ratio) as i32);
+            layer.set_exclusive_zone(value as i32);
             layer.commit();
         }
     }

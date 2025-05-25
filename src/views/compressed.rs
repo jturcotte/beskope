@@ -1,3 +1,6 @@
+// Copyright © 2025 Jocelyn Turcotte <turcotte.j@gmail.com>
+// SPDX-License-Identifier: MIT
+
 use crate::wlr_layers::PanelAnchorPosition;
 use crate::{FFT_SIZE, RenderWindow, VERTEX_BUFFER_SIZE, WaveformWindow, ui};
 

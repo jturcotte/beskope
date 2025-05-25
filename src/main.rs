@@ -1,3 +1,6 @@
+// Copyright © 2025 Jocelyn Turcotte <turcotte.j@gmail.com>
+// SPDX-License-Identifier: MIT
+
 use num_complex::Complex;
 use ringbuf::storage::Heap;
 use ringbuf::traits::{Consumer, Split};

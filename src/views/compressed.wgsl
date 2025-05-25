@@ -1,3 +1,6 @@
+// Copyright © 2025 Jocelyn Turcotte <turcotte.j@gmail.com>
+// SPDX-License-Identifier: MIT
+
 struct YValueOffset {
     offset: u32,
 };

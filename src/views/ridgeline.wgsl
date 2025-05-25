@@ -1,3 +1,6 @@
+// Copyright © 2025 Jocelyn Turcotte <turcotte.j@gmail.com>
+// SPDX-License-Identifier: MIT
+
 struct AudioSync {
     y_value_offsets: array<u32, 32>,
     progress: f32,

@@ -1,3 +1,6 @@
+// Copyright © 2025 Jocelyn Turcotte <turcotte.j@gmail.com>
+// SPDX-License-Identifier: MIT
+
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
 };

@@ -1,3 +1,6 @@
+// Copyright © 2025 Jocelyn Turcotte <turcotte.j@gmail.com>
+// SPDX-License-Identifier: MIT
+
 use crate::AppMessage;
 use slint::{ComponentHandle, Global, Model, VecModel};
 use splines::Interpolation;

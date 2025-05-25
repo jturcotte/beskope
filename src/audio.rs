@@ -1,3 +1,6 @@
+// Copyright © 2025 Jocelyn Turcotte <turcotte.j@gmail.com>
+// SPDX-License-Identifier: MIT
+
 use pipewire as pw;
 use pw::{properties::properties, spa};
 use ringbuf::SharedRb;

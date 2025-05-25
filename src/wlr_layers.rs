@@ -586,7 +586,10 @@ impl WlrWaylandEventLoop {
         request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
     ) -> WlrWaylandEventLoop {
         // All Wayland apps start by connecting the compositor (server).
-        let conn = Connection::connect_to_env().unwrap();
+        let conn = Connection::connect_to_env().expect(
+            "Failed to connect to a Wayland compositor with wlr_layer_shell support \
+            (X.Org and/or Gnome's Mutter are not supported).",
+        );
 
         // Enumerate the list of globals to get the protocols the server implements.
         let (globals, event_queue) = registry_queue_init::<WlrWaylandEventHandler>(&conn).unwrap();
@@ -597,7 +600,10 @@ impl WlrWaylandEventLoop {
         let compositor =
             CompositorState::bind(&globals, &qh).expect("wl_compositor is not available");
         // This app uses the wlr layer shell, which may not be available with every compositor.
-        let layer_shell = LayerShell::bind(&globals, &qh).expect("layer shell is not available");
+        let layer_shell = LayerShell::bind(&globals, &qh).expect(
+            "Only Wayland compositors with wlr_layer_shell are supported. \
+            https://wayland.app/protocols/wlr-layer-shell-unstable-v1#compositor-support",
+        );
 
         let registry_state = RegistryState::new(&globals);
         let output_state = OutputState::new(&globals, &qh);

@@ -22,7 +22,9 @@ pub fn initialize_audio_capture(
 
     let main_loop = pw::main_loop::MainLoop::new(None).unwrap();
     let context = pw::context::Context::new(&main_loop).unwrap();
-    let core = context.connect(None).unwrap();
+    let core = context
+        .connect(None)
+        .expect("This application requires the PipeWire daemon to be running");
     let format = spa::param::audio::AudioInfoRaw::default();
 
     let props = properties! {

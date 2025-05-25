@@ -28,3 +28,8 @@ features = ["compat-1-0", "backend-winit", "renderer-winit-femtovg", "serde"]
 
 [build-dependencies]
 slint-build = "1"
+
+[profile.release]
+panic = 'abort'
+[profile.dev]
+panic = 'abort'

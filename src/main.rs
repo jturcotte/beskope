@@ -2,20 +2,22 @@
 // SPDX-License-Identifier: MIT
 
 use clap::Parser;
+use interprocess::local_socket::{GenericNamespaced, ListenerOptions, prelude::*};
 use num_complex::Complex;
 use ringbuf::storage::Heap;
 use ringbuf::traits::{Consumer, Split};
 use ringbuf::wrap::caching::Caching;
 use ringbuf::{HeapRb, SharedRb};
 use rustfft::{Fft, FftDirection, FftPlanner};
-use signal_hook::iterator::Signals;
 use slint::ComponentHandle;
 use std::collections::HashSet;
+use std::io::prelude::*;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 use views::WaveformView;
 use wayland_client::{Connection, QueueHandle};
@@ -479,13 +481,35 @@ impl AppMessage {
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 struct Args {
-    /// Show the configuration window
+    /// Show the configuration window after starting the application
     #[arg(short = 'c', long = "config")]
     show_config: bool,
+
+    /// Toggle the configuration window in an existing process and exit
+    #[arg(short = 't', long = "toggle")]
+    toggle: bool,
 }
 
 pub fn main() {
     let args = Args::parse();
+    let socket_path = "beskope.sock".to_ns_name::<GenericNamespaced>().unwrap();
+    const TOGGLE_COMMAND: &[u8] = b"toggle";
+
+    if args.toggle {
+        // Try to connect to the socket and send a toggle message
+        use interprocess::local_socket::traits::Stream;
+        match interprocess::local_socket::Stream::connect(socket_path.clone()) {
+            Ok(mut stream) => {
+                let _ = stream.write_all(TOGGLE_COMMAND);
+                // Exit after sending the toggle command
+                return;
+            }
+            Err(_) => {
+                // No running instance, start normally
+            }
+        }
+    }
+
     let (app_msg_tx, app_msg_rx) = mpsc::channel::<AppMessage>();
     let request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>> =
         Arc::new(Mutex::new(Arc::new(|| {})));
@@ -521,15 +545,29 @@ pub fn main() {
         layers_even_queue.run_event_loop();
     });
 
-    // The panels don't accept using input, so allow showing the config window again through SIGUSR1.
-    std::thread::spawn({
-        let mut signals = Signals::new(&[signal_hook::consts::SIGUSR1]).unwrap();
-        let config_window_weak = config_window.as_weak();
-        move || {
-            for sig in signals.forever() {
-                if sig == signal_hook::consts::SIGUSR1 {
+    // Listen for toggle commands on the local socket in a background thread
+    let listener = match ListenerOptions::new().name(socket_path).create_sync() {
+        Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            eprintln!(
+                "Warning: beskope.sock file is occupied, possibly due to another instance running,
+                --toggle will not work for this one."
+            );
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("Failed to bind to socket: {e}");
+            std::process::exit(1);
+        }
+    };
+    let config_window_weak = config_window.as_weak();
+    thread::spawn(move || {
+        for mut conn in listener.incoming().flatten() {
+            let mut buf = [0u8; 16];
+            if let Ok(n) = conn.read(&mut buf) {
+                if &buf[..n] == TOGGLE_COMMAND {
                     let config_window_weak = config_window_weak.clone();
-                    send_app_msg(AppMessage::ApplicationStateCallback(Box::new(move |app| {
+                    send_app_msg(AppMessage::to_app(move |app| {
                         let config = app.config.clone();
 
                         config_window_weak
@@ -538,7 +576,7 @@ pub fn main() {
                                 window.show().unwrap();
                             })
                             .unwrap();
-                    })));
+                    }));
                 }
             }
         }

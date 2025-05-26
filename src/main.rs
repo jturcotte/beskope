@@ -1,6 +1,7 @@
 // Copyright © 2025 Jocelyn Turcotte <turcotte.j@gmail.com>
 // SPDX-License-Identifier: MIT
 
+use clap::Parser;
 use num_complex::Complex;
 use ringbuf::storage::Heap;
 use ringbuf::traits::{Consumer, Split};
@@ -475,7 +476,16 @@ impl AppMessage {
     }
 }
 
+#[derive(Parser, Debug)]
+#[command(author, version, about)]
+struct Args {
+    /// Show the configuration window
+    #[arg(short = 'c', long = "config")]
+    show_config: bool,
+}
+
 pub fn main() {
+    let args = Args::parse();
     let (app_msg_tx, app_msg_rx) = mpsc::channel::<AppMessage>();
     let request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>> =
         Arc::new(Mutex::new(Arc::new(|| {})));
@@ -498,7 +508,9 @@ pub fn main() {
     };
     let config_window = ui::init(send_app_msg.clone());
     config_window.update_from_configuration(&config);
-    config_window.show().unwrap();
+    if args.show_config {
+        config_window.show().unwrap();
+    }
 
     // Spawn the wlr panel rendering in a separate thread, this is supported with wayland
     std::thread::spawn(move || {

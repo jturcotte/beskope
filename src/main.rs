@@ -519,31 +519,46 @@ impl AppMessage {
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 struct Args {
-    /// Show the configuration window after starting the application
+    /// Show the configuration window for any running instances and exit.
+    /// If no instance is running, start the application with the configuration window open.
     #[arg(short = 'c', long = "config")]
-    show_config: bool,
+    config: bool,
 
-    /// Toggle the configuration window in an existing process and exit
-    #[arg(short = 't', long = "toggle")]
-    toggle: bool,
+    /// Quit the running instance of beskope and exit.
+    #[arg(short = 'q', long = "quit")]
+    quit: bool,
 }
+
+const CONFIG_COMMAND: &[u8] = b"config";
+const QUIT_COMMAND: &[u8] = b"quit";
 
 pub fn main() {
     let args = Args::parse();
     let socket_path = "beskope.sock".to_ns_name::<GenericNamespaced>().unwrap();
-    const TOGGLE_COMMAND: &[u8] = b"toggle";
 
-    if args.toggle {
-        // Try to connect to the socket and send a toggle message
+    let mut show_config = false;
+    if args.config || args.quit {
+        // Try to connect to the socket and send a config message
         use interprocess::local_socket::traits::Stream;
         match interprocess::local_socket::Stream::connect(socket_path.clone()) {
             Ok(mut stream) => {
-                let _ = stream.write_all(TOGGLE_COMMAND);
-                // Exit after sending the toggle command
+                let command = match args {
+                    Args { config: true, .. } => CONFIG_COMMAND,
+                    Args { quit: true, .. } => QUIT_COMMAND,
+                    _ => unreachable!(),
+                };
+                let _ = stream.write_all(command);
+                // Exit after sending the command
                 return;
             }
             Err(_) => {
-                // No running instance, start normally
+                // No running instance, show the config window in the new instance if requested
+                if args.config {
+                    show_config = true;
+                } else if args.quit {
+                    eprintln!("No running instance to quit.");
+                    std::process::exit(1);
+                }
             }
         }
     }
@@ -570,7 +585,7 @@ pub fn main() {
     };
     let config_window = ui::init(send_app_msg.clone());
     config_window.update_from_configuration(&config);
-    if args.show_config {
+    if show_config {
         config_window.show().unwrap();
     }
 
@@ -586,41 +601,45 @@ pub fn main() {
     });
 
     // Listen for toggle commands on the local socket in a background thread
-    let listener = match ListenerOptions::new().name(socket_path).create_sync() {
-        Ok(l) => l,
+    match ListenerOptions::new().name(socket_path).create_sync() {
+        Ok(listener) => {
+            let config_window_weak = config_window.as_weak();
+            thread::spawn(move || {
+                for mut conn in listener.incoming().flatten() {
+                    let mut buf = [0u8; 16];
+                    if let Ok(n) = conn.read(&mut buf) {
+                        match &buf[..n] {
+                            CONFIG_COMMAND => {
+                                let config_window_weak = config_window_weak.clone();
+                                send_app_msg(AppMessage::to_app(move |app| {
+                                    let config = app.config.clone();
+
+                                    config_window_weak
+                                        .upgrade_in_event_loop(move |window| {
+                                            window.update_from_configuration(&config);
+                                            window.show().unwrap();
+                                        })
+                                        .unwrap();
+                                }));
+                            }
+                            QUIT_COMMAND => std::process::exit(0),
+                            _ => eprintln!("Received unknown command: {:?}", &buf[..n]),
+                        }
+                    }
+                }
+            });
+        }
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
             eprintln!(
-                "Warning: beskope.sock file is occupied, possibly due to another instance running,
+                "Warning: beskope.sock file is occupied, possibly due to another instance running, \
                 --toggle will not work for this one."
             );
-            std::process::exit(1);
         }
         Err(e) => {
             eprintln!("Failed to bind to socket: {e}");
             std::process::exit(1);
         }
     };
-    let config_window_weak = config_window.as_weak();
-    thread::spawn(move || {
-        for mut conn in listener.incoming().flatten() {
-            let mut buf = [0u8; 16];
-            if let Ok(n) = conn.read(&mut buf) {
-                if &buf[..n] == TOGGLE_COMMAND {
-                    let config_window_weak = config_window_weak.clone();
-                    send_app_msg(AppMessage::to_app(move |app| {
-                        let config = app.config.clone();
-
-                        config_window_weak
-                            .upgrade_in_event_loop(move |window| {
-                                window.update_from_configuration(&config);
-                                window.show().unwrap();
-                            })
-                            .unwrap();
-                    }));
-                }
-            }
-        }
-    });
 
     // Tie the main thread to the config window, since winit needs to be there on some platforms.
     slint::run_event_loop_until_quit().unwrap();

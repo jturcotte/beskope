@@ -1,0 +1,18 @@
+[Desktop Entry]
+Version=0.1
+Type=Application
+Name=Beskope
+Comment=A desktop waveform visualizer for Wayland and PipeWire
+Exec=beskope
+Terminal=false
+Icon=io.github.jturcotte.Beskope
+Categories=AudioVideo;Audio;
+Actions=Configuration;Quit;
+
+[Desktop Action Configuration]
+Exec=beskope -c
+Name=Open Configuration
+
+[Desktop Action Quit]
+Exec=beskope -q
+Name=Quit Beskope

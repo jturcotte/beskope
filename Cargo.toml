@@ -1,8 +1,11 @@
 [package]
 name = "beskope"
 version = "0.1.0"
-authors = ["Jocelyn Turcotte <turcotte.j@gmail.com>"]
 edition = "2024"
+description = "A desktop waveform visualizer for Wayland and PipeWire"
+repository = "https://github.com/jturcotte/beskope"
+authors = ["Jocelyn Turcotte <turcotte.j@gmail.com>"]
+license = "MIT"
 
 [dependencies]
 bytemuck = { version = "1", features = ["derive"] }
@@ -35,3 +38,23 @@ slint-build = "1"
 panic = 'abort'
 [profile.dev]
 panic = 'abort'
+
+[package.metadata.deb]
+depends = ["libpipewire-0.3-0"]
+assets = [
+    [
+        "target/release/beskope",
+        "usr/bin/",
+        "755",
+    ],
+    [
+        "res/io.github.jturcotte.Beskope.desktop",
+        "usr/share/applications/",
+        "644",
+    ],
+    [
+        "res/io.github.jturcotte.Beskope.svg",
+        "usr/share/icons/hicolor/scalable/apps/",
+        "644",
+    ],
+]

@@ -50,6 +50,7 @@ struct WaveformWindow {
     must_reconfigure: bool,
     last_fps_dump_time: Instant,
     frame_count: u32,
+    fps_callback: Box<dyn Fn(u32)>,
 }
 
 #[derive(PartialEq, Clone, Copy, Debug)]
@@ -64,6 +65,7 @@ impl WaveformWindow {
         width: u32,
         height: u32,
         render_window: RenderWindow,
+        fps_callback: Box<dyn Fn(u32)>,
     ) -> WaveformWindow {
         let swapchain_capabilities = wgpu.surface().get_capabilities(wgpu.adapter());
         let swapchain_format = swapchain_capabilities.formats[0];
@@ -88,6 +90,7 @@ impl WaveformWindow {
             must_reconfigure: true,
             last_fps_dump_time: Instant::now(),
             frame_count: 0,
+            fps_callback,
         }
     }
 
@@ -185,7 +188,7 @@ impl WaveformWindow {
         let now = Instant::now();
         self.frame_count += 1;
         if now.duration_since(self.last_fps_dump_time) >= Duration::from_secs(1) {
-            println!("{:?}:\t{} fps", self.render_window, self.frame_count);
+            (self.fps_callback)(self.frame_count);
             self.frame_count = 0;
             self.last_fps_dump_time = now;
         }
@@ -207,12 +210,14 @@ struct ApplicationState {
     fft_inout_buffer: Option<Vec<Complex<f32>>>,
     fft_scratch: Option<Vec<Complex<f32>>>,
     request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
+    config_window: slint::Weak<ui::ConfigurationWindow>, // <-- add this field
 }
 
 impl ApplicationState {
     fn new(
         config: ui::Configuration,
         request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
+        config_window: slint::Weak<ui::ConfigurationWindow>, // <-- add this parameter
     ) -> ApplicationState {
         ApplicationState {
             config,
@@ -229,6 +234,7 @@ impl ApplicationState {
             fft_inout_buffer: None,
             fft_scratch: None,
             request_redraw_callback,
+            config_window,
         }
     }
 
@@ -306,8 +312,22 @@ impl ApplicationState {
         width: u32,
         height: u32,
     ) {
-        let window =
-            WaveformWindow::new(wgpu_surface.clone(), width, height, RenderWindow::Primary);
+        let config_window = self.config_window.clone();
+        let fps_callback = Box::new(move |fps: u32| {
+            config_window
+                .upgrade_in_event_loop(move |window| {
+                    window.set_primary_fps(fps as i32);
+                })
+                .unwrap();
+        });
+
+        let window = WaveformWindow::new(
+            wgpu_surface.clone(),
+            width,
+            height,
+            RenderWindow::Primary,
+            fps_callback,
+        );
         self.primary_waveform_window = Some((window, anchor_position));
 
         self.left_waveform_view =
@@ -326,8 +346,22 @@ impl ApplicationState {
         width: u32,
         height: u32,
     ) {
-        let window =
-            WaveformWindow::new(wgpu_surface.clone(), width, height, RenderWindow::Secondary);
+        let config_window = self.config_window.clone();
+        let fps_callback = Box::new(move |fps: u32| {
+            config_window
+                .upgrade_in_event_loop(move |window| {
+                    window.set_secondary_fps(fps as i32);
+                })
+                .unwrap();
+        });
+
+        let window = WaveformWindow::new(
+            wgpu_surface.clone(),
+            width,
+            height,
+            RenderWindow::Secondary,
+            fps_callback,
+        );
         self.secondary_waveform_window = Some((window, anchor_position));
 
         self.right_waveform_view =
@@ -358,6 +392,14 @@ impl ApplicationState {
                 // Stop requesting new frames and let the audio thread know if they
                 // should wake us up once non-zero samples are available.
                 self.animation_stopped.store(true, Ordering::Relaxed);
+
+                // Hide the FPS counter
+                self.config_window
+                    .upgrade_in_event_loop(move |window| {
+                        window.set_primary_fps(0);
+                        window.set_secondary_fps(0);
+                    })
+                    .unwrap();
             }
         } else {
             self.last_non_zero_sample_age = 0;
@@ -537,8 +579,10 @@ pub fn main() {
     }
 
     // Spawn the wlr panel rendering in a separate thread, this is supported with wayland
+    let config_window_weak = config_window.as_weak();
     std::thread::spawn(move || {
-        let app_state = ApplicationState::new(config, request_redraw_callback.clone());
+        let app_state =
+            ApplicationState::new(config, request_redraw_callback.clone(), config_window_weak);
 
         let mut layers_even_queue =
             wlr_layers::WlrWaylandEventLoop::new(app_state, app_msg_rx, request_redraw_callback);

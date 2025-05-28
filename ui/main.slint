@@ -470,117 +470,133 @@ export component ConfigurationWindow inherits Dialog {
         time_curve_tab.time_curve_control_points = control_points;
     }
 
+    in property<int> primary_fps: 0;
+    in property<int> secondary_fps: 0;
+
     title: "Beskope Configuration";
     preferred-width: 800px;
     preferred-height: 600px;
 
-    GridBox {
-        Row {
-            Text {
-                text: "Style";
-                vertical-alignment: TextVerticalAlignment.center;
-            }
-            style_cb := ComboBox {
-                model: [
-                    "Ridgeline Plot",
-                    "Compressed Line",
-                ];
-                selected(current-value) => {
-                    Backend.style_changed(self.current-index == 0 ? Style.Ridgeline : Style.Compressed);
+    VerticalBox {
+        GridBox{
+            padding: 0px;
+            // Push the FPS text under, beside the dialog buttons
+            height: 100%;
+            Row {
+                Text {
+                    text: "Style";
+                    vertical-alignment: TextVerticalAlignment.center;
                 }
-                callback set_style(Style);
-                set_style(style) => {
-                    if (style == Style.Ridgeline) {
-                        self.current-index = 0;
-                    } else {
-                        self.current-index = 1;
+                style_cb := ComboBox {
+                    model: [
+                        "Ridgeline Plot",
+                        "Compressed Line",
+                    ];
+                    selected(current-value) => {
+                        Backend.style_changed(self.current-index == 0 ? Style.Ridgeline : Style.Compressed);
+                    }
+                    callback set_style(Style);
+                    set_style(style) => {
+                        if (style == Style.Ridgeline) {
+                            self.current-index = 0;
+                        } else {
+                            self.current-index = 1;
+                        }
                     }
                 }
             }
-        }
-        Row {
-            Text {
-                text: "Panel layout";
-                vertical-alignment: TextVerticalAlignment.center;
-            }
-            layout_cb := ComboBox {
-                model: [
-                    "Two panels (one on each side of the screen)",
-                    "Single panel at the top",
-                    "Single panel at the bottom",
-                ];
-                selected(current-value) => {
-                    if (self.current-index == 0) {
-                        channels_cb.enabled = false;
-                        channels_cb.current-index = 0;
-                    } else {
-                        channels_cb.enabled = true;
-                    }
+            Row {
+                Text {
+                    text: "Panel layout";
+                    vertical-alignment: TextVerticalAlignment.center;
+                }
+                layout_cb := ComboBox {
+                    model: [
+                        "Two panels (one on each side of the screen)",
+                        "Single panel at the top",
+                        "Single panel at the bottom",
+                    ];
+                    selected(current-value) => {
+                        if (self.current-index == 0) {
+                            channels_cb.enabled = false;
+                            channels_cb.current-index = 0;
+                        } else {
+                            channels_cb.enabled = true;
+                        }
 
-                    if (self.current-index == 0) {
-                        Backend.panel_layout_changed(PanelLayout.TwoPanels);
-                    } else if (self.current-index == 1) {
-                        Backend.panel_layout_changed(PanelLayout.SingleTop);
-                    } else {
-                        Backend.panel_layout_changed(PanelLayout.SingleBottom);
+                        if (self.current-index == 0) {
+                            Backend.panel_layout_changed(PanelLayout.TwoPanels);
+                        } else if (self.current-index == 1) {
+                            Backend.panel_layout_changed(PanelLayout.SingleTop);
+                        } else {
+                            Backend.panel_layout_changed(PanelLayout.SingleBottom);
+                        }
+                    }
+                    callback set_panel_layout(PanelLayout);
+                    set_panel_layout(layout) => {
+                        if (layout == PanelLayout.TwoPanels) {
+                            self.current-index = 0;
+                        } else if (layout == PanelLayout.SingleTop) {
+                            self.current-index = 1;
+                        } else {
+                            self.current-index = 2;
+                        }
                     }
                 }
-                callback set_panel_layout(PanelLayout);
-                set_panel_layout(layout) => {
-                    if (layout == PanelLayout.TwoPanels) {
-                        self.current-index = 0;
-                    } else if (layout == PanelLayout.SingleTop) {
-                        self.current-index = 1;
-                    } else {
-                        self.current-index = 2;
+            }
+            Row {
+                Text {
+                    text: "Channels per window/panel";
+                    vertical-alignment: TextVerticalAlignment.center;
+                }
+                channels_cb := ComboBox {
+                    enabled: layout_cb.current-value != "Two panels (one on each side of the screen)";
+                    model: [
+                        "Only left",
+                        "Both left and right",
+                    ];
+                    selected(current-value) => {
+                        if (self.current-index == 0) {
+                            Backend.panel_channels_changed(RenderChannels.Single);
+                        } else {
+                            Backend.panel_channels_changed(RenderChannels.Both);
+                        }
+                    }
+                    callback set_panel_channels(RenderChannels);
+                    set_panel_channels(channels) => {
+                        if (channels == RenderChannels.Single) {
+                            self.current-index = 0;
+                        } else {
+                            self.current-index = 1;
+                        }
+                    }
+                }
+            }
+            Row {
+                TabWidget {
+                    clip: true;
+                    colspan: 2;
+                    Tab {
+                        title: "Ridgeline Plot Settings";
+                        ridgeline_tab := RidgelineSettings { }
+                    }
+                    Tab {
+                        title: "Compressed Line Settings";
+                        compressed_tab := CompressedSettings { }
+                    }
+                    Tab {
+                        title: "Compressed Line Time Curve";
+                        time_curve_tab := TimeCurveTab { }
                     }
                 }
             }
         }
-        Row {
-            Text {
-                text: "Channels per window/panel";
-                vertical-alignment: TextVerticalAlignment.center;
-            }
-            channels_cb := ComboBox {
-                enabled: layout_cb.current-value != "Two panels (one on each side of the screen)";
-                model: [
-                    "Only left",
-                    "Both left and right",
-                ];
-                selected(current-value) => {
-                    if (self.current-index == 0) {
-                        Backend.panel_channels_changed(RenderChannels.Single);
-                    } else {
-                        Backend.panel_channels_changed(RenderChannels.Both);
-                    }
-                }
-                callback set_panel_channels(RenderChannels);
-                set_panel_channels(channels) => {
-                    if (channels == RenderChannels.Single) {
-                        self.current-index = 0;
-                    } else {
-                        self.current-index = 1;
-                    }
-                }
-            }
-        }
-        Row {
-            TabWidget {
-                colspan: 2;
-                Tab {
-                    title: "Ridgeline Plot Settings";
-                    ridgeline_tab := RidgelineSettings { }
-                }
-                Tab {
-                    title: "Compressed Line Settings";
-                    compressed_tab := CompressedSettings { }
-                }
-                Tab {
-                    title: "Compressed Line Time Curve";
-                    time_curve_tab := TimeCurveTab { }
-                }
-            }
+        Text {
+            text: primary_fps > 0 && secondary_fps > 0
+                ? "FPS: " + primary_fps + ", " + secondary_fps
+                : primary_fps > 0
+                    ? "FPS: " + primary_fps
+                    : "";
         }
     }
     StandardButton {

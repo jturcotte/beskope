@@ -107,10 +107,6 @@ impl WaveformWindow {
         right_waveform_view: &mut Option<Box<dyn WaveformView>>,
     ) {
         if self.must_reconfigure {
-            println!(
-                "Reconfiguring {:?} window with config: {:?}",
-                self.render_window, self.config,
-            );
             self.wgpu
                 .surface()
                 .configure(self.wgpu.device(), &self.config);

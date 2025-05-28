@@ -90,7 +90,6 @@ impl CompositorHandler for WlrWaylandEventHandler {
         surface: &wl_surface::WlSurface,
         output: &wl_output::WlOutput,
     ) {
-        println!("Surface entered");
         // Assume that both layers are on the same output, so only process changes on the primary layer.
         if Some(surface.id()) == self.primary_layer.as_ref().map(|l| l.wl_surface().id()) {
             self.primary_surface_output = Some(output.id());
@@ -113,7 +112,6 @@ impl CompositorHandler for WlrWaylandEventHandler {
         surface: &wl_surface::WlSurface,
         output: &wl_output::WlOutput,
     ) {
-        println!("Surface left");
         if Some(surface.id()) == self.primary_layer.as_ref().map(|l| l.wl_surface().id()) {
             if self.primary_surface_output == Some(output.id()) {
                 self.primary_surface_output = None;
@@ -139,7 +137,6 @@ impl OutputHandler for WlrWaylandEventHandler {
         _qh: &QueueHandle<Self>,
         _output: wl_output::WlOutput,
     ) {
-        println!("New output");
     }
 
     fn update_output(
@@ -148,7 +145,6 @@ impl OutputHandler for WlrWaylandEventHandler {
         _qh: &QueueHandle<Self>,
         output: wl_output::WlOutput,
     ) {
-        println!("Update output");
         if self.primary_surface_output == Some(output.id()) {
             if let Some(size) = self
                 .output_state
@@ -166,13 +162,11 @@ impl OutputHandler for WlrWaylandEventHandler {
         _qh: &QueueHandle<Self>,
         _output: wl_output::WlOutput,
     ) {
-        println!("Output destroyed");
     }
 }
 
 impl LayerShellHandler for WlrWaylandEventHandler {
     fn closed(&mut self, conn: &Connection, qh: &QueueHandle<Self>, _layer: &LayerSurface) {
-        println!("Layer closed");
         // The client should destroy the resource after receiving this event,
         // and create a new surface if they so choose.
         self.apply_panel_layout(conn, qh);
@@ -187,7 +181,6 @@ impl LayerShellHandler for WlrWaylandEventHandler {
         _serial: u32,
     ) {
         let (new_width, new_height) = configure.new_size;
-        println!("Configure: {new_width}x{new_height}");
 
         if !self.app_state_initialized {
             self.app_state_initialized = true;
@@ -490,10 +483,6 @@ impl WlrWaylandEventHandler {
             }
             crate::ui::PanelLayout::TwoPanels => self.app_state.screen_size.0 as f32 * 0.33,
         };
-        println!(
-            "Applying exclusive zone change: panel width: {}, ratio: {}, max exclusive zone: {}",
-            panel_width, exclusive_ratio, max_exclusive_zone
-        );
         let value = max_exclusive_zone.min(panel_width * exclusive_ratio);
 
         if let Some(layer) = self.primary_layer.as_ref() {
@@ -517,7 +506,6 @@ impl WlrWaylandEventHandler {
 
     pub fn set_panel_layer(&mut self, layer: PanelLayer) {
         let wayland_layer = Self::layer_to_wayland_layer(layer);
-        println!("Setting layer to {:?}", wayland_layer);
         if let Some(layer) = self.primary_layer.as_ref() {
             layer.set_layer(wayland_layer);
             layer.commit();

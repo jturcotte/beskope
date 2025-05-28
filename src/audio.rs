@@ -64,15 +64,9 @@ pub fn initialize_audio_capture(
             format
                 .parse(param)
                 .expect("Failed to parse param changed to AudioInfoRaw");
-
-            println!(
-                "Capturing rate:{} channels:{}",
-                format.rate(),
-                format.channels()
-            );
         })
         .process(move |stream, format| match stream.dequeue_buffer() {
-            None => println!("out of buffers"),
+            None => eprintln!("out of buffers"),
             Some(mut buffer) => {
                 let datas = buffer.datas_mut();
                 if datas.is_empty() {

@@ -17,7 +17,9 @@ use wgpu::{BufferUsages, CommandEncoder, TextureView};
 
 use super::{Vertex, WaveformView, YValue};
 
-const STRIDE_SIZE: usize = 1500;
+const NUM_INSTANCES: usize = 30;
+// FIXME: Don't hardcode the sampling rate here
+const STRIDE_SIZE: usize = 48_000 / NUM_INSTANCES;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -32,6 +34,7 @@ struct WaveformConfigUniform {
 struct AudioSync {
     y_value_offsets: [u32; 32],
     progress: f32,
+    num_instances: f32,
 }
 
 pub struct RidgelineWaveformView {
@@ -141,7 +144,7 @@ impl RidgelineWaveformView {
         // Create the y_value_offset buffer
         let audio_sync_buffer = window.wgpu.device().create_buffer(&wgpu::BufferDescriptor {
             label: Some("Audio Sync Buffer"),
-            size: (std::mem::size_of::<u32>() * 32 + 4) as wgpu::BufferAddress,
+            size: (std::mem::size_of::<u32>() * 32 + 8) as wgpu::BufferAddress,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -350,6 +353,7 @@ impl RidgelineWaveformView {
             audio_sync: AudioSync {
                 y_value_offsets: [0; 32],
                 progress: 0.0,
+                num_instances: NUM_INSTANCES as f32,
             },
             last_rotate_progress: 0.0,
             audio_sync_buffer,
@@ -655,10 +659,7 @@ impl WaveformView for RidgelineWaveformView {
             render_pass.set_pipeline(&self.fill_render_pipeline);
             render_pass.set_vertex_buffer(0, self.fill_vertex_buffer.slice(..));
             render_pass.set_bind_group(0, &self.bind_group, &[]);
-            render_pass.draw(
-                0..(STRIDE_SIZE * 2) as u32,
-                0..32, // Render 32 instances
-            );
+            render_pass.draw(0..(STRIDE_SIZE * 2) as u32, 0..NUM_INSTANCES as u32);
         }
 
         {
@@ -686,10 +687,7 @@ impl WaveformView for RidgelineWaveformView {
             render_pass.set_pipeline(&self.stroke_render_pipeline);
             render_pass.set_vertex_buffer(0, self.stroke_vertex_buffer.slice(..));
             render_pass.set_bind_group(0, &self.bind_group, &[]);
-            render_pass.draw(
-                0..STRIDE_SIZE as u32,
-                0..32, // Render 32 instances
-            );
+            render_pass.draw(0..STRIDE_SIZE as u32, 0..NUM_INSTANCES as u32);
         }
     }
 
@@ -778,7 +776,7 @@ impl WaveformView for RidgelineWaveformView {
             // t is in milliseconds, convert to seconds
             let t = t as f64 / 1000.0;
             // t is in seconds, convert to the number of sample strides
-            t * 48000.0 / STRIDE_SIZE as f64
+            t * NUM_INSTANCES as f64
         }
 
         // Convert the monotonic timestamp from the compositor to a
@@ -792,14 +790,14 @@ impl WaveformView for RidgelineWaveformView {
         // to the next waveform stride instance in the shader.
         let wrapped = full_progress.floor() > self.last_rotate_progress.floor();
         if wrapped {
-            self.audio_sync.y_value_offsets.rotate_left(1);
+            self.audio_sync.y_value_offsets.rotate_right(1);
             self.last_rotate_progress = full_progress;
         }
 
         // Keep updating the latest stride even between rotations.
         // The front-most stride is animated while the rest are static
         // and move backwards.
-        self.audio_sync.y_value_offsets[31] = aligned_write_offset as u32;
+        self.audio_sync.y_value_offsets[0] = aligned_write_offset as u32;
 
         // Update the GPU buffers with the audio sync state
         self.wgpu_queue.write_buffer(

@@ -4,6 +4,7 @@
 struct AudioSync {
     y_value_offsets: array<u32, 32>,
     progress: f32,
+    num_instances: f32,
 }
 
 @group(0) @binding(0)
@@ -59,11 +60,10 @@ fn compute_vertex_common(
 ) -> VertexOutput {
     const DEFAULT_AMPLITUDE = 0.15;
     const FAR_Z = -1.0;
-    const NUM_INSTANCES = 32.0;
 
     var output: VertexOutput;
     // Use the instance-specific offset from the offsets array
-    let instance_offset = audio_sync.y_value_offsets[31 - input.instance_index];
+    let instance_offset = audio_sync.y_value_offsets[input.instance_index];
     // waveform_index points to the last audio sample buffer position at the last vertex.
     // Adding instance_offset from the buffer start points the last vertex to the last sample
     // for this frame.
@@ -76,15 +76,15 @@ fn compute_vertex_common(
     // offset it first by the default amplitude so that the minimum amplitude ends up at the edge.
     position.y += DEFAULT_AMPLITUDE + offset;
 
-    const INSTANCE_DEPTH_GAP = FAR_Z / NUM_INSTANCES;
     const EPSILON = 1e-5;
     if input.instance_index == 0 {
         // Instance 0 is special in that it's updated every frame and must not vary in z.
         position.z = -EPSILON;
     } else {
-        position.z = EPSILON + (f32(input.instance_index - 1) + audio_sync.progress) * INSTANCE_DEPTH_GAP;
+        let instance_depth_gap = FAR_Z / audio_sync.num_instances;
+        position.z = (-EPSILON * 2.0) + (f32(input.instance_index - 1) + audio_sync.progress) * instance_depth_gap;
     }
-    let alpha_factor = 1.0 - f32(input.instance_index) / 32.0;
+    let alpha_factor = 1.0 - f32(input.instance_index) / audio_sync.num_instances;
     output.position = transform * position;
     output.color = vec4(color.rgb * color.a * alpha_factor, color.a * alpha_factor);
     return output;
@@ -92,7 +92,7 @@ fn compute_vertex_common(
 
 @vertex
 fn vs_fill_main(input: VertexInput) -> VertexOutput {
-    let instance_offset = audio_sync.y_value_offsets[31 - input.instance_index];
+    let instance_offset = audio_sync.y_value_offsets[input.instance_index];
     let y_index = (input.waveform_index + instance_offset) % arrayLength(&y_values);
     let y = y_values[y_index];
     let color = compute_fill_color(y, input.should_offset, input.instance_index);

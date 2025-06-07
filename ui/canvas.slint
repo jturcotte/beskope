@@ -1,0 +1,13 @@
+import { AboutSlint, VerticalBox } from "std-widgets.slint";
+
+export component CanvasWindow inherits Window {
+    in property<length> view_width <=> layout.padding;
+    out property<duration> tick: animation-tick();
+    background: transparent;
+
+    layout := VerticalLayout {
+        padding: 10px;
+        cache-rendering-hint: true;
+        AboutSlint {  }
+    }
+}

@@ -1,10 +1,10 @@
 // Copyright © 2025 Jocelyn Turcotte <turcotte.j@gmail.com>
 // SPDX-License-Identifier: MIT
 
-use crate::wlr_layers::PanelAnchorPosition;
+use crate::views::ViewTransform;
 use crate::{FFT_SIZE, RenderWindow, VERTEX_BUFFER_SIZE, ui};
 
-use cgmath::{Matrix4, Rad, SquareMatrix, Vector3, Vector4};
+use cgmath::{Matrix4, SquareMatrix, Vector3, Vector4};
 use core::f64;
 use num_complex::Complex;
 use ringbuf::HeapRb;
@@ -39,9 +39,8 @@ struct AudioSync {
 
 pub struct RidgelineWaveformView {
     render_window: RenderWindow,
-    anchor_position: PanelAnchorPosition,
-    channels: ui::RenderChannels,
     is_left_channel: bool,
+    view_transform: Option<ViewTransform>,
     wgpu_queue: Arc<wgpu::Queue>,
     y_value_buffer: wgpu::Buffer,
     audio_sync: AudioSync,
@@ -56,9 +55,6 @@ pub struct RidgelineWaveformView {
     bind_group: wgpu::BindGroup,
     fft_input_ringbuf: HeapRb<f32>,
     y_value_write_offset: usize,
-    screen_width: f32,
-    screen_height: f32,
-    screen_size_dirty: bool,
 }
 
 impl RidgelineWaveformView {
@@ -67,8 +63,6 @@ impl RidgelineWaveformView {
         queue: &Arc<wgpu::Queue>,
         swapchain_format: wgpu::TextureFormat,
         render_window: RenderWindow,
-        anchor_position: PanelAnchorPosition,
-        channels: ui::RenderChannels,
         is_left_channel: bool,
     ) -> RidgelineWaveformView {
         // Load the shaders from disk
@@ -243,7 +237,11 @@ impl RidgelineWaveformView {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
-                targets: &[Some(swapchain_format.into())],
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: swapchain_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleStrip,
@@ -280,7 +278,11 @@ impl RidgelineWaveformView {
                     module: &shader,
                     entry_point: Some("fs_main"),
                     compilation_options: Default::default(),
-                    targets: &[Some(swapchain_format.into())],
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: swapchain_format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
                 }),
                 primitive: wgpu::PrimitiveState {
                     topology: wgpu::PrimitiveTopology::LineStrip,
@@ -306,9 +308,8 @@ impl RidgelineWaveformView {
 
         RidgelineWaveformView {
             render_window,
-            anchor_position,
-            channels,
             is_left_channel,
+            view_transform: None,
             wgpu_queue: queue.clone(),
             y_value_buffer,
             audio_sync: AudioSync {
@@ -327,112 +328,35 @@ impl RidgelineWaveformView {
             bind_group,
             fft_input_ringbuf: HeapRb::<f32>::new(FFT_SIZE),
             y_value_write_offset: 0,
-            screen_width: 0.0,
-            screen_height: 0.0,
-            screen_size_dirty: true,
         }
     }
 
     fn get_transform_matrix(&self, panel_width: u32, horizon_offset: f32) -> [[f32; 4]; 4] {
+        // FIXME: Make the config relative to the screen height
         let panel_width = panel_width as f32;
-        let screen_width = self.screen_width;
-        let screen_height = self.screen_height;
 
-        // This and the window_x/y assume that the surface is on screen edges.
-        // Other panels positioned in-between could make the perspective transform incorrect
-        // if they are large and this would require using the actual layer surface position
-        // on the screen instead of using the anchor.
-        let (window_width, window_height, half_screen, horizontal_offset, vertical_offset) =
-            match self.anchor_position {
-                PanelAnchorPosition::Top => (
-                    screen_width,
-                    panel_width,
-                    screen_height / 2.0,
-                    -horizon_offset,
-                    0.0,
-                ),
-                PanelAnchorPosition::Bottom => (
-                    screen_width,
-                    panel_width,
-                    screen_height / 2.0,
-                    -horizon_offset,
-                    0.0,
-                ),
-                PanelAnchorPosition::Left => (
-                    panel_width,
-                    screen_height,
-                    screen_width / 2.0,
-                    0.0,
-                    -horizon_offset,
-                ),
-                PanelAnchorPosition::Right => (
-                    panel_width,
-                    screen_height,
-                    screen_width / 2.0,
-                    0.0,
-                    -horizon_offset,
-                ),
-            };
+        if let Some(view_transform) = self.view_transform {
+            let screen_width = view_transform.scene_width;
+            let screen_height = view_transform.scene_height;
 
-        // Identity transform is a horizontal waveform scrolling from right to left.
-        let rotation = Matrix4::from_angle_z(Rad(-std::f32::consts::FRAC_PI_2));
-        let mirror_h = Matrix4::from_nonuniform_scale(-1.0, 1.0, 1.0);
-        let mirror_v = Matrix4::from_nonuniform_scale(1.0, -1.0, 1.0);
-        let half = Matrix4::from_nonuniform_scale(0.5, 1.0, 1.0);
-        let translate_half_left = Matrix4::from_translation(Vector3::new(-1.0, 0.0, 0.0));
-        let translate_half_right = Matrix4::from_translation(Vector3::new(1.0, 0.0, 0.0));
-        let transform_left_top = match (
-            self.render_window,
-            self.anchor_position,
-            self.channels,
-            self.is_left_channel,
-        ) {
-            (RenderWindow::Primary, PanelAnchorPosition::Top, ui::RenderChannels::Single, _) => {
-                Some((mirror_v, 0.0, 0.0))
-            }
-            (RenderWindow::Primary, PanelAnchorPosition::Top, ui::RenderChannels::Both, true) => {
-                Some((mirror_v * half * translate_half_left, 0.0, 0.0))
-            }
-            (RenderWindow::Primary, PanelAnchorPosition::Top, ui::RenderChannels::Both, false) => {
-                Some((mirror_v * half * translate_half_right * mirror_h, 0.0, 0.0))
-            }
-            (RenderWindow::Primary, PanelAnchorPosition::Bottom, ui::RenderChannels::Single, _) => {
-                Some((Matrix4::identity(), 0.0, screen_height - window_height))
-            }
-            (
-                RenderWindow::Primary,
-                PanelAnchorPosition::Bottom,
-                ui::RenderChannels::Both,
-                true,
-            ) => Some((
-                half * translate_half_left,
-                0.0,
-                screen_height - window_height,
-            )),
-            (
-                RenderWindow::Primary,
-                PanelAnchorPosition::Bottom,
-                ui::RenderChannels::Both,
-                false,
-            ) => Some((
-                half * translate_half_right * mirror_h,
-                0.0,
-                screen_height - window_height,
-            )),
-            (RenderWindow::Primary, PanelAnchorPosition::Left, _, _) => {
-                Some((rotation * mirror_h, 0.0, 0.0))
-            }
-            (RenderWindow::Secondary, PanelAnchorPosition::Right, _, _) => Some((
-                rotation * mirror_v * mirror_h,
-                screen_width - window_width,
-                0.0,
-            )),
-            _ => None,
-        };
+            let (window_x, window_y, window_width, window_height) =
+                view_transform.get_window_coords(panel_width);
+            let window_to_scene_transform =
+                view_transform.get_window_to_scene_transform(panel_width);
 
-        if let Some((transform_matrix, window_x, window_y)) = transform_left_top {
             let near_z = 0.0;
             let far_z = 1.0;
+
+            let (horizontal_offset, vertical_offset) = if view_transform.is_vertical {
+                (0.0, -horizon_offset)
+            } else {
+                (-horizon_offset, 0.0)
+            };
+            let half_screen = if view_transform.is_vertical {
+                view_transform.scene_width / 2.0
+            } else {
+                view_transform.scene_height / 2.0
+            };
 
             let full_top = 1.0 + vertical_offset;
             let full_bottom = -1.0 + vertical_offset;
@@ -460,10 +384,13 @@ impl RidgelineWaveformView {
                 Vector4::new(0.0, 0.0, 0.5, 1.0),
             );
 
+            // Where the half screen is bound to by the geometry.
             const HALF_SCENE_EXTENT: f32 = 1.0;
             // Amplitude as reference point if the window takes half the screen
             // Must match the shader
             const DEFAULT_AMPLITUDE: f32 = 0.15;
+            // The perspective would fill the screen, but the first instance must be compressed
+            // relatively to the screen to fit where the window frustum will point to.
             let compress_y = panel_width / half_screen;
             let wave_amplitude: f32 = DEFAULT_AMPLITUDE * compress_y;
 
@@ -502,6 +429,11 @@ impl RidgelineWaveformView {
                 // Waveform is centered at 0.0, scale it depending on the window size
                 * Matrix4::from_nonuniform_scale(1.0, compress_y, 1.0);
 
+            // The horizon offset is applied to both the frustum and the geometry, but not to the perspective matrix which keeps the horizon
+            // centered where it was.
+            let horizon_translate =
+                Matrix4::from_translation(Vector3::new(horizontal_offset, vertical_offset, 0.0));
+
             let perspective_matrix = OPENGL_TO_WGPU_MATRIX
                 * cgmath::frustum(
                     left,
@@ -513,12 +445,14 @@ impl RidgelineWaveformView {
                 )
                 * move_scene_matrix;
 
-            let horizon_translate =
-                Matrix4::from_translation(Vector3::new(horizontal_offset, vertical_offset, 0.0));
-            // let transform_matrix = horizon_translate * transform_matrix;
-            (perspective_matrix * horizon_translate * transform_matrix * compress_y_matrix).into()
+            (window_to_scene_transform
+                * perspective_matrix
+                * horizon_translate
+                * view_transform.transform_matrix
+                * compress_y_matrix)
+                .into()
         } else {
-            // If the transform matrix is not set, return an identity matrix
+            // If the view transform is not set yet, return an identity matrix
             Matrix4::<f32>::identity().into()
         }
     }
@@ -529,16 +463,11 @@ impl WaveformView for RidgelineWaveformView {
         self.render_window
     }
 
-    fn set_screen_size(&mut self, screen_width: u32, screen_height: u32) {
-        self.screen_width = screen_width as f32;
-        self.screen_height = screen_height as f32;
-        self.screen_size_dirty = true;
-    }
-
     fn apply_lazy_config_changes(
         &mut self,
         config: &ui::Configuration,
         config_changes: Option<&HashSet<usize>>,
+        view_transform_change: Option<&ViewTransform>,
     ) {
         if config_changes.is_none_or(|c| {
             c.contains(&ui::RIDGELINE_FILL_COLOR)
@@ -573,11 +502,15 @@ impl WaveformView for RidgelineWaveformView {
             );
         }
 
-        if self.screen_size_dirty
+        if view_transform_change.is_some()
             || config_changes.is_none_or(|c| {
                 c.contains(&ui::RIDGELINE_WIDTH) || c.contains(&ui::RIDGELINE_HORIZON_OFFSET)
             })
         {
+            if view_transform_change.is_some() {
+                self.view_transform = view_transform_change.cloned();
+            }
+
             let transform_matrix =
                 self.get_transform_matrix(config.ridgeline.width, config.ridgeline.horizon_offset);
             self.wgpu_queue.write_buffer(
@@ -585,7 +518,6 @@ impl WaveformView for RidgelineWaveformView {
                 0,
                 bytemuck::cast_slice(&transform_matrix),
             );
-            self.screen_size_dirty = false;
         }
     }
 
@@ -600,6 +532,7 @@ impl WaveformView for RidgelineWaveformView {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
@@ -607,7 +540,7 @@ impl WaveformView for RidgelineWaveformView {
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &depth_texture_view,
+                    view: depth_texture_view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -628,6 +561,7 @@ impl WaveformView for RidgelineWaveformView {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
@@ -635,7 +569,7 @@ impl WaveformView for RidgelineWaveformView {
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &depth_texture_view,
+                    view: depth_texture_view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,

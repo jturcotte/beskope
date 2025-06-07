@@ -1,10 +1,10 @@
 // Copyright © 2025 Jocelyn Turcotte <turcotte.j@gmail.com>
 // SPDX-License-Identifier: MIT
 
-use crate::wlr_layers::PanelAnchorPosition;
+use crate::views::ViewTransform;
 use crate::{FFT_SIZE, RenderWindow, VERTEX_BUFFER_SIZE, ui};
 
-use cgmath::{Matrix4, Rad, SquareMatrix, Vector3};
+use cgmath::{Matrix4, SquareMatrix};
 use core::f64;
 use num_complex::Complex;
 use ringbuf::HeapRb;
@@ -28,9 +28,11 @@ struct WaveformConfigUniform {
 pub struct CompressedWaveformView {
     render_window: RenderWindow,
     is_left_channel: bool,
+    view_transform: Option<ViewTransform>,
     wgpu_queue: Arc<wgpu::Queue>,
     y_value_buffer: wgpu::Buffer,
     y_value_offset_buffer: wgpu::Buffer,
+    transform_buffer: wgpu::Buffer,
     waveform_config_buffer: wgpu::Buffer,
     fill_render_pipeline: wgpu::RenderPipeline,
     fill_vertex_buffer: wgpu::Buffer,
@@ -47,8 +49,6 @@ impl CompressedWaveformView {
         queue: &Arc<wgpu::Queue>,
         swapchain_format: wgpu::TextureFormat,
         render_window: RenderWindow,
-        anchor_position: PanelAnchorPosition,
-        channels: ui::RenderChannels,
         is_left_channel: bool,
     ) -> CompressedWaveformView {
         // Load the shaders from disk
@@ -110,49 +110,13 @@ impl CompressedWaveformView {
             mapped_at_creation: false,
         });
 
-        // Identity transform is a horizontal waveform scrolling from right to left.
-        let rotation = Matrix4::from_angle_z(Rad(-std::f32::consts::FRAC_PI_2));
-        let mirror_h = Matrix4::from_nonuniform_scale(-1.0, 1.0, 1.0);
-        let mirror_v = Matrix4::from_nonuniform_scale(1.0, -1.0, 1.0);
-        let half = Matrix4::from_nonuniform_scale(0.5, 1.0, 1.0);
-        let translate_half_left = Matrix4::from_translation(Vector3::new(-1.0, 0.0, 0.0));
-        let translate_half_right = Matrix4::from_translation(Vector3::new(1.0, 0.0, 0.0));
-        let transform_matrix = match (render_window, anchor_position, channels, is_left_channel) {
-            (RenderWindow::Primary, PanelAnchorPosition::Top, ui::RenderChannels::Single, _) => {
-                mirror_v
-            }
-            (RenderWindow::Primary, PanelAnchorPosition::Top, ui::RenderChannels::Both, true) => {
-                mirror_v * half * translate_half_left
-            }
-            (RenderWindow::Primary, PanelAnchorPosition::Top, ui::RenderChannels::Both, false) => {
-                mirror_v * half * translate_half_right * mirror_h
-            }
-            (RenderWindow::Primary, PanelAnchorPosition::Bottom, ui::RenderChannels::Single, _) => {
-                Matrix4::identity()
-            }
-            (
-                RenderWindow::Primary,
-                PanelAnchorPosition::Bottom,
-                ui::RenderChannels::Both,
-                true,
-            ) => half * translate_half_left,
-            (
-                RenderWindow::Primary,
-                PanelAnchorPosition::Bottom,
-                ui::RenderChannels::Both,
-                false,
-            ) => half * translate_half_right * mirror_h,
-            (RenderWindow::Primary, PanelAnchorPosition::Left, _, _) => rotation * mirror_h,
-            (RenderWindow::Secondary, PanelAnchorPosition::Right, _, _) => {
-                rotation * mirror_v * mirror_h
-            }
-            _ => unreachable!(),
-        };
-
-        let transform_matrix_array: [[f32; 4]; 4] = transform_matrix.into();
+        // let transform_matrix_array: [[f32; 4]; 4] = transform_matrix.into();
+        // Must be updated by apply_lazy_config_changes
+        let identity: [[f32; 4]; 4] = Matrix4::<f32>::identity().into();
         let transform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Transform Buffer"),
-            contents: bytemuck::cast_slice(&transform_matrix_array),
+            // contents: bytemuck::cast_slice(&transform_matrix_array),
+            contents: bytemuck::cast_slice(&identity),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -305,9 +269,11 @@ impl CompressedWaveformView {
         CompressedWaveformView {
             render_window,
             is_left_channel,
+            view_transform: None,
             wgpu_queue: queue.clone(),
             y_value_buffer,
             y_value_offset_buffer,
+            transform_buffer,
             waveform_config_buffer,
             fill_render_pipeline,
             fill_vertex_buffer,
@@ -325,12 +291,11 @@ impl WaveformView for CompressedWaveformView {
         self.render_window
     }
 
-    fn set_screen_size(&mut self, _screen_width: u32, _screen_height: u32) {}
-
     fn apply_lazy_config_changes(
         &mut self,
         config: &ui::Configuration,
         config_changes: Option<&HashSet<usize>>,
+        view_transform_change: Option<&ViewTransform>,
     ) {
         if config_changes.is_none_or(|c| {
             c.contains(&ui::COMPRESSED_FILL_COLOR) || c.contains(&ui::COMPRESSED_STROKE_COLOR)
@@ -434,6 +399,27 @@ impl WaveformView for CompressedWaveformView {
                 bytemuck::cast_slice(&stroke_vertices),
             );
         }
+
+        if view_transform_change.is_some()
+            || config_changes.is_none_or(|c| c.contains(&ui::COMPRESSED_WIDTH))
+        {
+            if view_transform_change.is_some() {
+                self.view_transform = view_transform_change.cloned();
+            }
+
+            if let Some(view_transform) = self.view_transform {
+                let window_to_scene_transform =
+                    view_transform.get_window_to_scene_transform(config.compressed.width as f32);
+                let transform_matrix: [[f32; 4]; 4] =
+                    (window_to_scene_transform * view_transform.transform_matrix).into();
+
+                self.wgpu_queue.write_buffer(
+                    &self.transform_buffer,
+                    0,
+                    bytemuck::cast_slice(&transform_matrix),
+                );
+            }
+        }
     }
 
     fn render(
@@ -447,6 +433,7 @@ impl WaveformView for CompressedWaveformView {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
@@ -468,6 +455,7 @@ impl WaveformView for CompressedWaveformView {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,

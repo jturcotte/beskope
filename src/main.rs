@@ -10,19 +10,20 @@ use ringbuf::wrap::caching::Caching;
 use ringbuf::{HeapRb, SharedRb};
 use rustfft::{Fft, FftDirection, FftPlanner};
 use slint::ComponentHandle;
+use slint::wgpu_26::{WGPUConfiguration, WGPUSettings};
 use std::collections::HashSet;
 use std::io::prelude::*;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 use views::WaveformView;
-use wayland_client::{Connection, QueueHandle};
-use wgpu::TextureFormat;
-use wlr_layers::{PanelAnchorPosition, WlrWaylandEventHandler};
+
+use crate::views::ViewTransform;
+use crate::wlr_layers::WlrCanvasContext;
 
 mod audio;
 mod ui;
@@ -34,23 +35,27 @@ const FFT_SIZE: usize = 2048;
 const NUM_CHANNELS: usize = 2;
 
 pub trait WgpuSurface {
-    fn adapter(&self) -> &wgpu::Adapter;
     fn device(&self) -> &wgpu::Device;
-    fn surface(&self) -> &wgpu::Surface<'static>;
     fn queue(&self) -> &Arc<wgpu::Queue>;
     fn surface_id(&self) -> u32;
+    fn swapchain_format(&self) -> Option<wgpu::TextureFormat>;
 }
 
 struct WaveformWindow {
+    surface_id: u32,
     wgpu: Rc<dyn WgpuSurface>,
     depth_texture: Option<wgpu::Texture>,
-    config: wgpu::SurfaceConfiguration,
-    swapchain_format: TextureFormat,
     render_window: RenderWindow,
-    must_reconfigure: bool,
+    last_configure_size: (u32, u32),
     last_fps_dump_time: Instant,
     frame_count: u32,
     fps_callback: Box<dyn Fn(u32)>,
+}
+
+#[derive(PartialEq, Clone, Copy, Debug)]
+enum WindowMode {
+    WindowPerPanel,
+    WindowPerScene,
 }
 
 #[derive(PartialEq, Clone, Copy, Debug)]
@@ -61,85 +66,54 @@ enum RenderWindow {
 
 impl WaveformWindow {
     fn new(
-        wgpu: Rc<dyn WgpuSurface>,
-        width: u32,
-        height: u32,
+        wgpu: &Rc<dyn WgpuSurface>,
         render_window: RenderWindow,
         fps_callback: Box<dyn Fn(u32)>,
     ) -> WaveformWindow {
-        let swapchain_capabilities = wgpu.surface().get_capabilities(wgpu.adapter());
-        let swapchain_format = swapchain_capabilities.formats[0];
-
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: swapchain_format,
-            width: width.max(1),
-            height: height.max(1),
-            present_mode: wgpu::PresentMode::AutoVsync,
-            desired_maximum_frame_latency: 1,
-            alpha_mode: wgpu::CompositeAlphaMode::PreMultiplied,
-            view_formats: vec![],
-        };
-
         WaveformWindow {
-            wgpu,
-            config,
+            surface_id: wgpu.surface_id(),
+            wgpu: wgpu.clone(),
             depth_texture: None,
-            swapchain_format,
             render_window,
-            must_reconfigure: true,
+            // Force reconfiguration of the depth texture on the first render
+            last_configure_size: (u32::MAX, u32::MAX),
             last_fps_dump_time: Instant::now(),
             frame_count: 0,
             fps_callback,
         }
     }
 
-    fn reconfigure(&mut self, width: u32, height: u32) {
-        // Reconfigure the surface with the new size
-        self.config.width = width.max(1);
-        self.config.height = height.max(1);
-        self.must_reconfigure = true;
+    fn surface_id(&self) -> u32 {
+        self.surface_id
     }
 
     fn render(
         &mut self,
+        wgpu: &Rc<dyn WgpuSurface>,
+        surface_texture: &wgpu::Texture,
         left_waveform_view: &mut Option<Box<dyn WaveformView>>,
         right_waveform_view: &mut Option<Box<dyn WaveformView>>,
     ) {
-        if self.must_reconfigure {
-            self.wgpu
-                .surface()
-                .configure(self.wgpu.device(), &self.config);
-
+        if self.last_configure_size != (surface_texture.width(), surface_texture.height()) {
             // Create the depth texture
-            self.depth_texture =
-                Some(self.wgpu.device().create_texture(&wgpu::TextureDescriptor {
-                    label: Some("Depth Texture"),
-                    size: wgpu::Extent3d {
-                        width: self.config.width,
-                        height: self.config.height,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Depth32Float,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                        | wgpu::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                }));
-
-            self.must_reconfigure = false;
+            self.depth_texture = Some(wgpu.device().create_texture(&wgpu::TextureDescriptor {
+                label: Some("Depth Texture"),
+                size: wgpu::Extent3d {
+                    width: surface_texture.width(),
+                    height: surface_texture.height(),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Depth32Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            }));
         }
 
-        let frame = self
-            .wgpu
-            .surface()
-            .get_current_texture()
-            .expect("Failed to acquire next swap chain texture");
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let view = surface_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let depth_texture_view = self
             .depth_texture
@@ -147,8 +121,7 @@ impl WaveformWindow {
             .unwrap()
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let mut encoder = self
-            .wgpu
+        let mut encoder = wgpu
             .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
@@ -178,8 +151,7 @@ impl WaveformWindow {
                 waveform_view.render(&mut encoder, &view, &depth_texture_view);
             }
         }
-        self.wgpu.queue().submit(Some(encoder.finish()));
-        frame.present();
+        wgpu.queue().submit(Some(encoder.finish()));
 
         let now = Instant::now();
         self.frame_count += 1;
@@ -194,29 +166,33 @@ impl WaveformWindow {
 struct ApplicationState {
     pub config: ui::Configuration,
     pub lazy_config_changes: HashSet<usize>,
-    primary_waveform_window: Option<(WaveformWindow, PanelAnchorPosition)>,
-    secondary_waveform_window: Option<(WaveformWindow, PanelAnchorPosition)>,
+    window_mode: WindowMode,
+    primary_waveform_window: Option<WaveformWindow>,
+    secondary_waveform_window: Option<WaveformWindow>,
     last_non_zero_sample_age: usize,
     animation_stopped: Arc<AtomicBool>,
-    left_waveform_view: Option<Box<dyn WaveformView>>,
+    pub left_waveform_view: Option<Box<dyn WaveformView>>,
     right_waveform_view: Option<Box<dyn WaveformView>>,
     screen_size: (u32, u32),
+    view_transform_dirty: bool,
     audio_input_ringbuf_cons: Option<Caching<Arc<SharedRb<Heap<f32>>>, false, true>>,
     fft: Option<Arc<dyn Fft<f32>>>,
     fft_inout_buffer: Option<Vec<Complex<f32>>>,
     fft_scratch: Option<Vec<Complex<f32>>>,
     request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
-    config_window: slint::Weak<ui::ConfigurationWindow>, // <-- add this field
+    config_window: slint::Weak<ui::ConfigurationWindow>,
 }
 
 impl ApplicationState {
     fn new(
         config: ui::Configuration,
+        window_mode: WindowMode,
         request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
-        config_window: slint::Weak<ui::ConfigurationWindow>, // <-- add this parameter
+        config_window: slint::Weak<ui::ConfigurationWindow>,
     ) -> ApplicationState {
         ApplicationState {
             config,
+            window_mode,
             lazy_config_changes: HashSet::new(),
             primary_waveform_window: None,
             secondary_waveform_window: None,
@@ -225,6 +201,7 @@ impl ApplicationState {
             left_waveform_view: None,
             right_waveform_view: None,
             screen_size: (1, 1),
+            view_transform_dirty: true,
             audio_input_ringbuf_cons: None,
             fft: None,
             fft_inout_buffer: None,
@@ -234,6 +211,7 @@ impl ApplicationState {
         }
     }
 
+    /// Only updates the app state, the configuration window is updated before being shown.
     pub fn reload_configuration(&mut self) {
         let config = match ui::Configuration::load() {
             Ok(config) => config,
@@ -272,25 +250,20 @@ impl ApplicationState {
 
     fn create_waveform_view(
         &self,
+        wgpu: &Rc<dyn WgpuSurface>,
         style: ui::Style,
         render_window: RenderWindow,
         is_left_channel: bool,
     ) -> Box<dyn WaveformView> {
-        let (window, anchor_position) = match render_window {
-            RenderWindow::Primary => self.primary_waveform_window.as_ref().unwrap(),
-            RenderWindow::Secondary => self.secondary_waveform_window.as_ref().unwrap(),
-        };
-        let device = window.wgpu.device();
-        let queue = window.wgpu.queue();
-        let swapchain_format = window.swapchain_format;
+        let device = wgpu.device();
+        let queue = wgpu.queue();
+        let swapchain_format = wgpu.swapchain_format().unwrap();
         let mut view: Box<dyn WaveformView> = match style {
             ui::Style::Ridgeline => Box::new(views::RidgelineWaveformView::new(
                 device,
                 queue,
                 swapchain_format,
                 render_window,
-                *anchor_position,
-                self.config.general.channels,
                 is_left_channel,
             )),
             ui::Style::Compressed => Box::new(views::CompressedWaveformView::new(
@@ -298,23 +271,25 @@ impl ApplicationState {
                 queue,
                 swapchain_format,
                 render_window,
-                *anchor_position,
-                self.config.general.channels,
                 is_left_channel,
             )),
         };
-        view.set_screen_size(self.screen_size.0, self.screen_size.1);
-        view.apply_lazy_config_changes(&self.config, None);
+
+        let view_transform = ViewTransform::new(
+            self.screen_size.0 as f32,
+            self.screen_size.1 as f32,
+            self.window_mode,
+            self.config.general.layout,
+            self.config.general.channels,
+            is_left_channel,
+        );
+        view.apply_lazy_config_changes(&self.config, None, Some(&view_transform));
+
         view
     }
 
-    fn configure_primary_wgpu_surface(
-        &mut self,
-        wgpu_surface: Rc<dyn WgpuSurface>,
-        anchor_position: PanelAnchorPosition,
-        width: u32,
-        height: u32,
-    ) {
+    /// Initializes the primary waveform window and the views it contains.
+    fn initialize_primary_waveform_window(&mut self, wgpu: &Rc<dyn WgpuSurface>) {
         let config_window = self.config_window.clone();
         let fps_callback = Box::new(move |fps: u32| {
             config_window
@@ -324,31 +299,25 @@ impl ApplicationState {
                 .unwrap();
         });
 
-        let window = WaveformWindow::new(
-            wgpu_surface.clone(),
-            width,
-            height,
-            RenderWindow::Primary,
-            fps_callback,
-        );
-        self.primary_waveform_window = Some((window, anchor_position));
+        let window = WaveformWindow::new(wgpu, RenderWindow::Primary, fps_callback);
+        self.primary_waveform_window = Some(window);
 
         self.left_waveform_view =
-            Some(self.create_waveform_view(self.config.style, RenderWindow::Primary, true));
+            Some(self.create_waveform_view(wgpu, self.config.style, RenderWindow::Primary, true));
 
+        // FIXME: This creates it even if the layout is split, but it will be replaced later.
         if self.config.general.channels == ui::RenderChannels::Both {
-            self.right_waveform_view =
-                Some(self.create_waveform_view(self.config.style, RenderWindow::Primary, false));
+            self.right_waveform_view = Some(self.create_waveform_view(
+                wgpu,
+                self.config.style,
+                RenderWindow::Primary,
+                false,
+            ));
         }
     }
 
-    fn configure_secondary_wgpu_surface(
-        &mut self,
-        wgpu_surface: Rc<dyn WgpuSurface>,
-        anchor_position: PanelAnchorPosition,
-        width: u32,
-        height: u32,
-    ) {
+    /// Initializes the secondary waveform window and the views it contains.
+    fn initialize_secondary_waveform_window(&mut self, wgpu_surface: &Rc<dyn WgpuSurface>) {
         let config_window = self.config_window.clone();
         let fps_callback = Box::new(move |fps: u32| {
             config_window
@@ -358,28 +327,15 @@ impl ApplicationState {
                 .unwrap();
         });
 
-        let window = WaveformWindow::new(
-            wgpu_surface.clone(),
-            width,
-            height,
+        let window = WaveformWindow::new(wgpu_surface, RenderWindow::Secondary, fps_callback);
+        self.secondary_waveform_window = Some(window);
+
+        self.right_waveform_view = Some(self.create_waveform_view(
+            wgpu_surface,
+            self.config.style,
             RenderWindow::Secondary,
-            fps_callback,
-        );
-        self.secondary_waveform_window = Some((window, anchor_position));
-
-        self.right_waveform_view =
-            Some(self.create_waveform_view(self.config.style, RenderWindow::Secondary, false));
-    }
-
-    fn primary_resized(&mut self, width: u32, height: u32) {
-        if let Some((waveform_window, _)) = self.primary_waveform_window.as_mut() {
-            waveform_window.reconfigure(width, height);
-        }
-    }
-    fn secondary_resized(&mut self, width: u32, height: u32) {
-        if let Some((waveform_window, _)) = self.secondary_waveform_window.as_mut() {
-            waveform_window.reconfigure(width, height);
-        }
+            false,
+        ));
     }
 
     fn process_audio(&mut self, timestamp: u32) {
@@ -431,52 +387,99 @@ impl ApplicationState {
             );
         }
     }
-    fn render(&mut self, surface_id: u32) {
-        if !self.lazy_config_changes.is_empty() {
+    fn render(&mut self, wgpu: &Rc<dyn WgpuSurface>, surface_texture: &wgpu::Texture) {
+        if !self.lazy_config_changes.is_empty() || self.view_transform_dirty {
+            let channels = self.config.general.channels;
+            let layout = self.config.general.layout;
             if let Some(waveform_view) = self.left_waveform_view.as_mut() {
-                waveform_view
-                    .apply_lazy_config_changes(&self.config, Some(&self.lazy_config_changes));
+                let maybe_view_transform = if self.view_transform_dirty {
+                    Some(ViewTransform::new(
+                        self.screen_size.0 as f32,
+                        self.screen_size.1 as f32,
+                        self.window_mode,
+                        layout,
+                        channels,
+                        true,
+                    ))
+                } else {
+                    None
+                };
+
+                waveform_view.apply_lazy_config_changes(
+                    &self.config,
+                    Some(&self.lazy_config_changes),
+                    maybe_view_transform.as_ref(),
+                );
             }
             if let Some(waveform_view) = self.right_waveform_view.as_mut() {
-                waveform_view
-                    .apply_lazy_config_changes(&self.config, Some(&self.lazy_config_changes));
+                let maybe_view_transform = if self.view_transform_dirty {
+                    Some(ViewTransform::new(
+                        self.screen_size.0 as f32,
+                        self.screen_size.1 as f32,
+                        self.window_mode,
+                        layout,
+                        channels,
+                        false,
+                    ))
+                } else {
+                    None
+                };
+
+                waveform_view.apply_lazy_config_changes(
+                    &self.config,
+                    Some(&self.lazy_config_changes),
+                    maybe_view_transform.as_ref(),
+                );
+            }
+
+            // Restart tracking changed from the UI to apply on the next frame.
+            self.lazy_config_changes.clear();
+            self.view_transform_dirty = false;
+        }
+
+        if let Some(window) = self.primary_waveform_window.as_mut() {
+            if window.surface_id() == wgpu.surface_id() {
+                window.render(
+                    wgpu,
+                    surface_texture,
+                    &mut self.left_waveform_view,
+                    &mut self.right_waveform_view,
+                );
             }
         }
 
-        if let Some((window, _)) = self.primary_waveform_window.as_mut() {
-            if window.wgpu.surface_id() == surface_id {
-                window.render(&mut self.left_waveform_view, &mut self.right_waveform_view);
+        if let Some(window) = self.secondary_waveform_window.as_mut() {
+            if window.surface_id() == wgpu.surface_id() {
+                window.render(
+                    wgpu,
+                    surface_texture,
+                    &mut self.left_waveform_view,
+                    &mut self.right_waveform_view,
+                );
             }
         }
-
-        if let Some((window, _)) = self.secondary_waveform_window.as_mut() {
-            if window.wgpu.surface_id() == surface_id {
-                window.render(&mut self.left_waveform_view, &mut self.right_waveform_view);
-            }
-        }
-
-        // Restart tracking changed from the UI to apply on the next frame.
-        self.lazy_config_changes.clear();
     }
 
-    fn set_screen_size(&mut self, width: u32, height: u32) {
-        self.screen_size.0 = width;
-        self.screen_size.1 = height;
-        if let Some(view) = &mut self.left_waveform_view {
-            view.set_screen_size(width, height);
-        }
-        if let Some(view) = &mut self.right_waveform_view {
-            view.set_screen_size(width, height);
+    fn update_screen_size(&mut self, width: u32, height: u32) {
+        if width != self.screen_size.0 || height != self.screen_size.1 {
+            self.screen_size.0 = width;
+            self.screen_size.1 = height;
+            self.view_transform_dirty = true;
         }
     }
 
     pub fn recreate_views(&mut self) {
-        if self.primary_waveform_window.is_some() {
-            self.left_waveform_view =
-                Some(self.create_waveform_view(self.config.style, RenderWindow::Primary, true));
+        if let Some(window) = self.primary_waveform_window.as_ref() {
+            self.left_waveform_view = Some(self.create_waveform_view(
+                &window.wgpu,
+                self.config.style,
+                RenderWindow::Primary,
+                true,
+            ));
 
             if self.config.general.channels == ui::RenderChannels::Both {
                 self.right_waveform_view = Some(self.create_waveform_view(
+                    &window.wgpu,
                     self.config.style,
                     RenderWindow::Primary,
                     false,
@@ -485,47 +488,43 @@ impl ApplicationState {
                 self.right_waveform_view = None;
             }
         }
-        if self.secondary_waveform_window.is_some() {
-            self.right_waveform_view =
-                Some(self.create_waveform_view(self.config.style, RenderWindow::Secondary, false));
+        if let Some(window) = self.secondary_waveform_window.as_ref() {
+            self.right_waveform_view = Some(self.create_waveform_view(
+                &window.wgpu,
+                self.config.style,
+                RenderWindow::Secondary,
+                false,
+            ));
         }
     }
 }
 
 enum AppMessage {
     ApplicationStateCallback(Box<dyn FnOnce(&mut ApplicationState) + Send>),
-    WlrWaylandEventHandlerCallback(
-        Box<
-            dyn FnOnce(
-                    &mut WlrWaylandEventHandler,
-                    &Connection,
-                    &QueueHandle<WlrWaylandEventHandler>,
-                ) + Send,
-        >,
-    ),
+    WlrGlobalCanvasCallback(Box<dyn FnOnce(&mut dyn GlobalCanvas, GlobalCanvasContext) + Send>),
+    SlintGlobalCanvasCallback(Box<dyn FnOnce(&mut dyn GlobalCanvas, GlobalCanvasContext) + Send>),
 }
 
-impl AppMessage {
-    pub fn to_app<F>(f: F) -> Self
-    where
-        F: FnOnce(&mut ApplicationState) + Send + 'static,
-    {
-        AppMessage::ApplicationStateCallback(Box::new(f))
-    }
+enum GlobalCanvasContext {
+    Wlr(WlrCanvasContext),
+    Slint(()),
+}
 
-    pub fn to_event_handler<F>(f: F) -> Self
-    where
-        F: FnOnce(&mut WlrWaylandEventHandler, &Connection, &QueueHandle<WlrWaylandEventHandler>)
-            + Send
-            + 'static,
-    {
-        AppMessage::WlrWaylandEventHandlerCallback(Box::new(f))
-    }
+trait GlobalCanvas {
+    fn app_state(&mut self) -> &mut ApplicationState;
+    fn apply_panel_width_change(&mut self);
+    fn apply_panel_exclusive_ratio_change(&mut self);
+    fn apply_panel_layout(&mut self, context: &GlobalCanvasContext);
+    fn set_panel_layer(&mut self, layer: ui::PanelLayer);
 }
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 struct Args {
+    /// Render in a normal top-level window.
+    #[arg(short = 'w', long = "window")]
+    window: bool,
+
     /// Show the configuration window for any running instances and exit.
     /// If no instance is running, start the application with the configuration window open.
     #[arg(short = 'c', long = "config")]
@@ -538,6 +537,98 @@ struct Args {
 
 const CONFIG_COMMAND: &[u8] = b"config";
 const QUIT_COMMAND: &[u8] = b"quit";
+
+pub struct SlintWgpuSurface {
+    device: wgpu::Device,
+    queue: Arc<wgpu::Queue>,
+    surface_configuration: Option<wgpu::SurfaceConfiguration>,
+}
+
+impl WgpuSurface for SlintWgpuSurface {
+    fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    fn queue(&self) -> &Arc<wgpu::Queue> {
+        &self.queue
+    }
+
+    fn surface_id(&self) -> u32 {
+        // Only one window will be used
+        0
+    }
+
+    fn swapchain_format(&self) -> Option<wgpu::TextureFormat> {
+        self.surface_configuration
+            .as_ref()
+            .map(|config| config.format)
+    }
+}
+
+struct SlintGlobalCanvas {
+    ui_msg_rx: Receiver<AppMessage>,
+    app_state: Option<ApplicationState>,
+    wgpu_surface: Option<Rc<SlintWgpuSurface>>,
+    window: slint::Weak<ui::CanvasWindow>,
+}
+
+impl SlintGlobalCanvas {
+    fn process_messages(&mut self) {
+        // Process UI callbacks here since some require the wayland connection to recreate windows.
+        while let Ok(message) = self.ui_msg_rx.try_recv() {
+            match message {
+                AppMessage::ApplicationStateCallback(closure) => {
+                    closure(self.app_state.as_mut().unwrap())
+                }
+                AppMessage::SlintGlobalCanvasCallback(closure) => {
+                    closure(self, GlobalCanvasContext::Slint(()))
+                }
+                AppMessage::WlrGlobalCanvasCallback(_) => {
+                    panic!("Incorrect GlobalCanvas callback type")
+                }
+            }
+        }
+    }
+}
+
+impl GlobalCanvas for SlintGlobalCanvas {
+    fn app_state(&mut self) -> &mut ApplicationState {
+        self.app_state.as_mut().unwrap()
+    }
+
+    fn apply_panel_width_change(&mut self) {
+        // Applied through the view transform
+
+        // Also update the exclusive ratio since it's based on the width
+        self.apply_panel_exclusive_ratio_change();
+    }
+
+    fn apply_panel_exclusive_ratio_change(&mut self) {
+        let app_state = self.app_state.as_ref().unwrap();
+        let panel_width = match app_state.config.style {
+            ui::Style::Compressed => {
+                app_state.config.compressed.width as f32
+                    * app_state.config.compressed.exclusive_ratio
+            }
+            ui::Style::Ridgeline => {
+                app_state.config.ridgeline.width as f32 * app_state.config.ridgeline.exclusive_ratio
+            }
+        };
+
+        self.window.upgrade().unwrap().set_view_width(panel_width);
+    }
+
+    fn apply_panel_layout(&mut self, _context: &GlobalCanvasContext) {
+        let wgpu = self.wgpu_surface.as_ref().unwrap().clone() as Rc<dyn WgpuSurface>;
+        self.app_state
+            .as_mut()
+            .unwrap()
+            .initialize_primary_waveform_window(&wgpu);
+        self.apply_panel_exclusive_ratio_change();
+    }
+
+    fn set_panel_layer(&mut self, _layer: ui::PanelLayer) {}
+}
 
 pub fn main() {
     let args = Args::parse();
@@ -574,11 +665,35 @@ pub fn main() {
     let request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>> =
         Arc::new(Mutex::new(Arc::new(|| {})));
 
-    let send_app_msg = {
+    let send_msg = {
         let app_msg_tx = app_msg_tx.clone();
         let request_redraw_callback = request_redraw_callback.clone();
         move |msg| {
             app_msg_tx.send(msg).unwrap();
+            request_redraw_callback.lock().unwrap()();
+        }
+    };
+    let send_app_msg = {
+        let app_msg_tx = app_msg_tx.clone();
+        let request_redraw_callback = request_redraw_callback.clone();
+        move |f| {
+            let msg = AppMessage::ApplicationStateCallback(f);
+            app_msg_tx.send(msg).unwrap();
+            request_redraw_callback.lock().unwrap()();
+        }
+    };
+    let send_canvas_msg = {
+        let wlr = !args.window;
+        let app_msg_tx = app_msg_tx.clone();
+        let request_redraw_callback = request_redraw_callback.clone();
+        move |f| {
+            let msg = if wlr {
+                AppMessage::WlrGlobalCanvasCallback(f)
+            } else {
+                AppMessage::SlintGlobalCanvasCallback(f)
+            };
+            app_msg_tx.send(msg).unwrap();
+            // FIXME: This queues additional frame requests, this should check if it's stopped or not.
             request_redraw_callback.lock().unwrap()();
         }
     };
@@ -590,22 +705,23 @@ pub fn main() {
             ui::Configuration::default()
         }
     };
-    let config_window = ui::init(send_app_msg.clone());
+
+    // Initialize the Slint backend with WGPU
+    // for both the canvas and the configuration windows.
+    let mut wgpu_settings = WGPUSettings::default();
+    // Slint defaults to WebGL2 limits, but use the real wgpu default.
+    wgpu_settings.device_required_limits = wgpu::Limits::default();
+
+    slint::BackendSelector::new()
+        .require_wgpu_26(WGPUConfiguration::Automatic(wgpu_settings))
+        .select()
+        .expect("Unable to create Slint backend with WGPU based renderer");
+
+    let config_window = ui::init(send_app_msg, send_canvas_msg);
     config_window.update_from_configuration(&config);
     if show_config {
         config_window.show().unwrap();
     }
-
-    // Spawn the wlr panel rendering in a separate thread, this is supported with wayland
-    let config_window_weak = config_window.as_weak();
-    std::thread::spawn(move || {
-        let app_state =
-            ApplicationState::new(config, request_redraw_callback.clone(), config_window_weak);
-
-        let mut layers_even_queue =
-            wlr_layers::WlrWaylandEventLoop::new(app_state, app_msg_rx, request_redraw_callback);
-        layers_even_queue.run_event_loop();
-    });
 
     // Listen for toggle commands on the local socket in a background thread
     match ListenerOptions::new().name(socket_path).create_sync() {
@@ -618,16 +734,18 @@ pub fn main() {
                         match &buf[..n] {
                             CONFIG_COMMAND => {
                                 let config_window_weak = config_window_weak.clone();
-                                send_app_msg(AppMessage::to_app(move |app| {
-                                    let config = app.config.clone();
+                                send_msg(AppMessage::ApplicationStateCallback(Box::new(
+                                    move |app| {
+                                        let config = app.config.clone();
 
-                                    config_window_weak
-                                        .upgrade_in_event_loop(move |window| {
-                                            window.update_from_configuration(&config);
-                                            window.show().unwrap();
-                                        })
-                                        .unwrap();
-                                }));
+                                        config_window_weak
+                                            .upgrade_in_event_loop(move |window| {
+                                                window.update_from_configuration(&config);
+                                                window.show().unwrap();
+                                            })
+                                            .unwrap();
+                                    },
+                                )));
                             }
                             QUIT_COMMAND => std::process::exit(0),
                             _ => eprintln!("Received unknown command: {:?}", &buf[..n]),
@@ -647,6 +765,107 @@ pub fn main() {
             std::process::exit(1);
         }
     };
+
+    // Keep the window ownership on the stack, it owns everything else when rendering inside a Slint window.
+    let canvas_window = ui::CanvasWindow::new().unwrap();
+
+    if !args.window {
+        let config_window_weak = config_window.as_weak();
+        let request_redraw_callback = request_redraw_callback.clone();
+        let config = config.clone();
+        // Spawn the wlr panel rendering in a separate thread, this is supported with wayland
+        std::thread::spawn(move || {
+            let app_state = ApplicationState::new(
+                config,
+                WindowMode::WindowPerPanel,
+                request_redraw_callback.clone(),
+                config_window_weak,
+            );
+
+            let mut layers_even_queue = wlr_layers::WlrWaylandEventLoop::new(
+                app_state,
+                app_msg_rx,
+                request_redraw_callback,
+            );
+            layers_even_queue.run_event_loop();
+        });
+    } else {
+        let canvas_window_weak = canvas_window.as_weak();
+        let config_window_weak = config_window.as_weak();
+        let mut config_holder = Some(config);
+
+        let mut slint_global_canvas = SlintGlobalCanvas {
+            ui_msg_rx: app_msg_rx,
+            app_state: None,
+            wgpu_surface: None,
+            window: canvas_window_weak,
+        };
+
+        canvas_window
+            .window()
+            .set_rendering_notifier(move |state, graphics_api| {
+                match state {
+                    slint::RenderingState::RenderingSetup => {
+                        if slint_global_canvas.app_state.is_none() {
+                            // Initialize the application state
+                            let request_redraw_callback = request_redraw_callback.clone();
+                            let config = config_holder
+                                .take()
+                                .expect("Can't initialize the app state twice");
+                            let mut app_state = ApplicationState::new(
+                                config,
+                                WindowMode::WindowPerScene,
+                                request_redraw_callback,
+                                config_window_weak.clone(),
+                            );
+                            app_state.initialize_audio_and_fft();
+                            slint_global_canvas.app_state = Some(app_state);
+                        }
+                    }
+                    slint::RenderingState::BeforeRendering => {
+                        if let slint::GraphicsAPI::WGPU26 {
+                            device,
+                            queue,
+                            surface_texture: Some(surface_texture),
+                            surface_configuration: Some(surface_config),
+                            ..
+                        } = graphics_api
+                        {
+                            slint_global_canvas.process_messages();
+
+                            if slint_global_canvas.wgpu_surface.is_none() {
+                                slint_global_canvas.wgpu_surface =
+                                    Some(Rc::new(SlintWgpuSurface {
+                                        device: device.clone(),
+                                        queue: Arc::new(queue.clone()),
+                                        surface_configuration: Some(surface_config.clone()),
+                                    }));
+                                slint_global_canvas
+                                    .apply_panel_layout(&GlobalCanvasContext::Slint(()));
+                            }
+
+                            let app_state = slint_global_canvas.app_state.as_mut().unwrap();
+
+                            let tick = slint_global_canvas.window.upgrade().unwrap().get_tick();
+
+                            app_state.process_audio(tick as u32);
+
+                            app_state.update_screen_size(
+                                surface_texture.width(),
+                                surface_texture.height(),
+                            );
+
+                            let wgpu = slint_global_canvas.wgpu_surface.as_ref().unwrap().clone()
+                                as Rc<dyn WgpuSurface>;
+                            app_state.render(&wgpu, surface_texture);
+                        }
+                    }
+                    _ => {}
+                }
+            })
+            .unwrap();
+        canvas_window.show().unwrap();
+    }
 
     // Tie the main thread to the config window, since winit needs to be there on some platforms.
     slint::run_event_loop_until_quit().unwrap();

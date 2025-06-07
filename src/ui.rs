@@ -1,7 +1,7 @@
 // Copyright © 2025 Jocelyn Turcotte <turcotte.j@gmail.com>
 // SPDX-License-Identifier: MIT
 
-use crate::AppMessage;
+use crate::{GlobalCanvas, GlobalCanvasContext};
 use slint::{ComponentHandle, Global, Model, VecModel};
 use splines::Interpolation;
 
@@ -61,6 +61,7 @@ pub const RIDGELINE_FILL_COLOR: usize = offset_of!(Configuration, ridgeline.fill
 pub const RIDGELINE_STROKE_COLOR: usize = offset_of!(Configuration, ridgeline.stroke_color);
 pub const RIDGELINE_HIGHLIGHT_COLOR: usize = offset_of!(Configuration, ridgeline.highlight_color);
 pub const RIDGELINE_HORIZON_OFFSET: usize = offset_of!(Configuration, ridgeline.horizon_offset);
+pub const COMPRESSED_WIDTH: usize = offset_of!(Configuration, compressed.width);
 pub const COMPRESSED_FILL_COLOR: usize = offset_of!(Configuration, compressed.fill_color);
 pub const COMPRESSED_STROKE_COLOR: usize = offset_of!(Configuration, compressed.stroke_color);
 pub const COMPRESSED_TIME_CURVE_CONTROL_POINTS: usize =
@@ -151,7 +152,14 @@ impl Configuration {
     }
 }
 
-pub fn init(send_app_msg: impl Fn(AppMessage) + Clone + 'static) -> ConfigurationWindow {
+pub fn init(
+    send_to_app: impl Fn(Box<dyn FnOnce(&mut crate::ApplicationState) + Send + 'static>)
+    + Clone
+    + 'static,
+    send_to_canvas: impl Fn(Box<dyn FnOnce(&mut dyn GlobalCanvas, GlobalCanvasContext) + Send>)
+    + Clone
+    + 'static,
+) -> ConfigurationWindow {
     let window = ConfigurationWindow::new().unwrap();
     let time_curve_editor = TimeCurveEditor::get(&window);
     let backend = Backend::get(&window);
@@ -208,91 +216,91 @@ pub fn init(send_app_msg: impl Fn(AppMessage) + Clone + 'static) -> Configuratio
     });
 
     backend.on_style_changed({
-        let send = send_app_msg.clone();
+        let send_to_canvas = send_to_canvas.clone();
         move |config| {
-            send(AppMessage::to_event_handler(move |handler, conn, qh| {
-                handler.app_state.config.style = config;
-                handler.apply_panel_layout(conn, qh);
+            send_to_canvas(Box::new(move |handler, context| {
+                handler.app_state().config.style = config;
+                handler.apply_panel_layout(&context);
             }));
         }
     });
     backend.on_panel_channels_changed({
-        let send = send_app_msg.clone();
+        let send_to_app = send_to_app.clone();
         move |config| {
-            send(AppMessage::to_app(move |app_state| {
+            send_to_app(Box::new(move |app_state| {
                 app_state.config.general.channels = config;
                 app_state.recreate_views();
             }));
         }
     });
     backend.on_panel_layout_changed({
-        let send = send_app_msg.clone();
+        let send_to_canvas = send_to_canvas.clone();
         move |config| {
-            send(AppMessage::to_event_handler(move |handler, conn, qh| {
-                handler.app_state.config.general.layout = config;
-                handler.apply_panel_layout(conn, qh);
+            send_to_canvas(Box::new(move |handler, context| {
+                handler.app_state().config.general.layout = config;
+                handler.apply_panel_layout(&context);
             }));
         }
     });
     backend.on_ridgeline_panel_layer_changed({
-        let send = send_app_msg.clone();
+        let send_to_canvas = send_to_canvas.clone();
         move |config| {
-            send(AppMessage::to_event_handler(move |handler, _, _| {
-                handler.app_state.config.ridgeline.layer = config;
-                if handler.app_state.config.style == Style::Ridgeline {
+            send_to_canvas(Box::new(move |handler, _| {
+                handler.app_state().config.ridgeline.layer = config;
+                if handler.app_state().config.style == Style::Ridgeline {
                     handler.set_panel_layer(config);
                 }
             }));
         }
     });
     backend.on_ridgeline_panel_width_changed({
-        let send = send_app_msg.clone();
+        let send_to_canvas = send_to_canvas.clone();
         move |config| {
-            send(AppMessage::to_event_handler(move |handler, _, _| {
-                handler.app_state.config.ridgeline.width = config as u32;
+            send_to_canvas(Box::new(move |handler, _| {
+                handler.app_state().config.ridgeline.width = config as u32;
                 handler
-                    .app_state
+                    .app_state()
                     .lazy_config_changes
                     .insert(RIDGELINE_WIDTH);
-                if handler.app_state.config.style == Style::Ridgeline {
+                if handler.app_state().config.style == Style::Ridgeline {
                     handler.apply_panel_width_change();
                 }
             }));
         }
     });
     backend.on_ridgeline_panel_exclusive_ratio_changed({
-        let send = send_app_msg.clone();
+        let send_to_canvas = send_to_canvas.clone();
         move |config| {
-            send(AppMessage::to_event_handler(move |handler, _, _| {
-                handler.app_state.config.ridgeline.exclusive_ratio = config;
-                if handler.app_state.config.style == Style::Ridgeline {
+            send_to_canvas(Box::new(move |handler, _| {
+                handler.app_state().config.ridgeline.exclusive_ratio = config;
+                if handler.app_state().config.style == Style::Ridgeline {
                     handler.apply_panel_exclusive_ratio_change();
                 }
             }));
         }
     });
     backend.on_ridgeline_fill_color_changed({
-        let send = send_app_msg.clone();
+        let send_to_app = send_to_app.clone();
         move |config| {
-            send(AppMessage::to_app(move |app_state| {
+            send_to_app(Box::new(move |app_state| {
                 app_state.config.ridgeline.fill_color = config;
                 app_state.lazy_config_changes.insert(RIDGELINE_FILL_COLOR);
             }));
         }
     });
     backend.on_ridgeline_stroke_color_changed({
-        let send = send_app_msg.clone();
+        let send_to_app = send_to_app.clone();
         move |config| {
-            send(AppMessage::to_app(move |app_state| {
+            send_to_app(Box::new(move |app_state| {
                 app_state.config.ridgeline.stroke_color = config;
                 app_state.lazy_config_changes.insert(RIDGELINE_STROKE_COLOR);
             }));
         }
     });
     backend.on_ridgeline_highlight_color_changed({
-        let send = send_app_msg.clone();
+        let send_to_app = send_to_app.clone();
         move |config| {
-            send(AppMessage::to_app(move |app_state| {
+            send_to_app(Box::new(move |app_state| {
                 app_state.config.ridgeline.highlight_color = config;
                 app_state
                     .lazy_config_changes
@@ -301,9 +309,9 @@ pub fn init(send_app_msg: impl Fn(AppMessage) + Clone + 'static) -> Configuratio
         }
     });
     backend.on_ridgeline_horizon_offset_changed({
-        let send = send_app_msg.clone();
+        let send_to_app = send_to_app.clone();
         move |offset| {
-            send(AppMessage::to_app(move |app_state| {
+            send_to_app(Box::new(move |app_state| {
                 app_state.config.ridgeline.horizon_offset = offset;
                 app_state
                     .lazy_config_changes
@@ -312,51 +320,55 @@ pub fn init(send_app_msg: impl Fn(AppMessage) + Clone + 'static) -> Configuratio
         }
     });
     backend.on_compressed_panel_layer_changed({
-        let send = send_app_msg.clone();
+        let send_to_canvas = send_to_canvas.clone();
         move |config| {
-            send(AppMessage::to_event_handler(move |handler, _, _| {
-                handler.app_state.config.compressed.layer = config;
-                if handler.app_state.config.style == Style::Compressed {
+            send_to_canvas(Box::new(move |handler, _| {
+                handler.app_state().config.compressed.layer = config;
+                if handler.app_state().config.style == Style::Compressed {
                     handler.set_panel_layer(config);
                 }
             }));
         }
     });
     backend.on_compressed_panel_width_changed({
-        let send = send_app_msg.clone();
+        let send_to_canvas = send_to_canvas.clone();
         move |config| {
-            send(AppMessage::to_event_handler(move |handler, _, _| {
-                handler.app_state.config.compressed.width = config as u32;
-                if handler.app_state.config.style == Style::Compressed {
+            send_to_canvas(Box::new(move |handler, _| {
+                handler.app_state().config.compressed.width = config as u32;
+                handler
+                    .app_state()
+                    .lazy_config_changes
+                    .insert(COMPRESSED_WIDTH);
+                if handler.app_state().config.style == Style::Compressed {
                     handler.apply_panel_width_change();
                 }
             }));
         }
     });
     backend.on_compressed_panel_exclusive_ratio_changed({
-        let send = send_app_msg.clone();
+        let send_to_canvas = send_to_canvas.clone();
         move |config| {
-            send(AppMessage::to_event_handler(move |handler, _, _| {
-                handler.app_state.config.compressed.exclusive_ratio = config;
-                if handler.app_state.config.style == Style::Compressed {
+            send_to_canvas(Box::new(move |handler, _| {
+                handler.app_state().config.compressed.exclusive_ratio = config;
+                if handler.app_state().config.style == Style::Compressed {
                     handler.apply_panel_exclusive_ratio_change();
                 }
             }));
         }
     });
     backend.on_compressed_fill_color_changed({
-        let send = send_app_msg.clone();
+        let send_to_app = send_to_app.clone();
         move |config| {
-            send(AppMessage::to_app(move |app_state| {
+            send_to_app(Box::new(move |app_state| {
                 app_state.config.compressed.fill_color = config;
                 app_state.lazy_config_changes.insert(COMPRESSED_FILL_COLOR);
             }));
         }
     });
     backend.on_compressed_stroke_color_changed({
-        let send = send_app_msg.clone();
+        let send_to_app = send_to_app.clone();
         move |config| {
-            send(AppMessage::to_app(move |app_state| {
+            send_to_app(Box::new(move |app_state| {
                 app_state.config.compressed.stroke_color = config;
                 app_state
                     .lazy_config_changes
@@ -365,10 +377,10 @@ pub fn init(send_app_msg: impl Fn(AppMessage) + Clone + 'static) -> Configuratio
         }
     });
     backend.on_compressed_time_curve_control_points_changed({
-        let send = send_app_msg.clone();
+        let send_to_app = send_to_app.clone();
         move |control_points_model| {
             let control_points: Vec<ControlPoint> = control_points_model.iter().collect();
-            send(AppMessage::to_app(move |app_state| {
+            send_to_app(Box::new(move |app_state| {
                 app_state.config.compressed.time_curve.control_points = control_points.clone();
                 app_state
                     .lazy_config_changes
@@ -379,9 +391,9 @@ pub fn init(send_app_msg: impl Fn(AppMessage) + Clone + 'static) -> Configuratio
 
     window.on_ok_clicked({
         let window_weak = window.as_weak();
-        let send = send_app_msg.clone();
+        let send_to_app = send_to_app.clone();
         move || {
-            send(AppMessage::to_app(move |app_state| {
+            send_to_app(Box::new(move |app_state| {
                 if let Err(e) = app_state.config.save() {
                     eprintln!("Failed to save configuration: {}", e);
                 }
@@ -394,13 +406,13 @@ pub fn init(send_app_msg: impl Fn(AppMessage) + Clone + 'static) -> Configuratio
 
     window.on_cancel_clicked({
         let window_weak = window.as_weak();
-        let send = send_app_msg.clone();
+        let send_to_canvas = send_to_canvas.clone();
         move || {
-            send(AppMessage::to_event_handler(move |handler, conn, qh| {
-                handler.app_state.reload_configuration();
+            send_to_canvas(Box::new(move |handler, context| {
+                handler.app_state().reload_configuration();
                 // TODO: Track whether the layout configuration was reverted instead of
                 //       unconditionally recreating surfaces.
-                handler.apply_panel_layout(conn, qh);
+                handler.apply_panel_layout(&context);
             }));
 
             let window = window_weak.upgrade().unwrap();

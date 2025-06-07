@@ -24,18 +24,25 @@ smithay-client-toolkit = "0.19"
 splines = "4"
 toml = "0.8"
 wayland-client = "0.31"
-wgpu = "23"
+wgpu = "26"
 
 [dependencies.slint]
-version = "1"
+version = "~1.13"
 default-features = false
-features = ["compat-1-0", "backend-winit", "renderer-winit-femtovg", "serde"]
+features = [
+    "compat-1-2",
+    "backend-winit",
+    "renderer-femtovg-wgpu",
+    "serde",
+    "unstable-wgpu-26",
+]
 
 [build-dependencies]
-slint-build = "1"
+slint-build = "~1.13"
 
 [profile.release]
 panic = 'abort'
+
 [profile.dev]
 panic = 'abort'
 

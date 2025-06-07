@@ -241,7 +241,7 @@ impl WlrWgpuSurface {
         _qh: QueueHandle<WlrWaylandEventHandler>,
         layer: LayerSurface,
     ) -> WlrWgpuSurface {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });

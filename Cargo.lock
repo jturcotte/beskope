@@ -609,7 +609,7 @@ version = "1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ad8646f98db542e39fc66e68a20b2144f6a732636df7c2354e74645faaa433ce"
 dependencies = [
- "cfg_aliases 0.2.1",
+ "cfg_aliases",
 ]
 
 [[package]]
@@ -767,12 +767,6 @@ name = "cfg-if"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
-
-[[package]]
-name = "cfg_aliases"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd16c4719339c4530435d38e511904438d07cce7950afa3718a84ac36c10e89e"
 
 [[package]]
 name = "cfg_aliases"
@@ -1486,7 +1480,7 @@ dependencies = [
  "bitflags 2.9.1",
  "bytemuck",
  "fnv",
- "glow 0.16.0",
+ "glow",
  "image",
  "imgref",
  "log",
@@ -1953,18 +1947,6 @@ checksum = "a8d1add55171497b4705a648c6b583acafb01d58050a51727785f0b2c8e0a2b2"
 
 [[package]]
 name = "glow"
-version = "0.14.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d51fa363f025f5c111e03f13eda21162faeacb6911fe8caa0c0349f9cf0c4483"
-dependencies = [
- "js-sys",
- "slotmap",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
-name = "glow"
 version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c5e5ea60d70410161c8bf5da3fdfeaa1c72ed2c15f8bbb9d19fe3a4fad085f08"
@@ -1982,7 +1964,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "12124de845cacfebedff80e877bb37b5b75c34c5a4c89e47e1cdd67fb6041325"
 dependencies = [
  "bitflags 2.9.1",
- "cfg_aliases 0.2.1",
+ "cfg_aliases",
  "cgl",
  "dispatch2",
  "glutin_egl_sys",
@@ -2006,7 +1988,7 @@ version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85edca7075f8fc728f28cb8fbb111a96c3b89e930574369e3e9c27eb75d3788f"
 dependencies = [
- "cfg_aliases 0.2.1",
+ "cfg_aliases",
  "glutin",
  "raw-window-handle",
  "winit",
@@ -2262,7 +2244,7 @@ checksum = "249a3416f38884de18d0bb0e1589cd95ea10b1b2b8f7ea38e06e7aac320f9edf"
 dependencies = [
  "bytemuck",
  "cfg-if",
- "cfg_aliases 0.2.1",
+ "cfg_aliases",
  "copypasta",
  "derive_more",
  "futures",
@@ -2328,7 +2310,7 @@ dependencies = [
  "resvg",
  "rowan",
  "smol_str 0.3.2",
- "strum",
+ "strum 0.27.1",
  "typed-index-collections",
  "url",
 ]
@@ -2371,7 +2353,7 @@ dependencies = [
  "scopeguard",
  "serde",
  "slab",
- "strum",
+ "strum 0.27.1",
  "sys-locale",
  "unicode-linebreak",
  "unicode-script",
@@ -2406,7 +2388,7 @@ dependencies = [
  "derive_more",
  "dwrote",
  "femtovg",
- "glow 0.16.0",
+ "glow",
  "i-slint-common",
  "i-slint-core",
  "i-slint-core-macros",
@@ -2431,10 +2413,10 @@ checksum = "f0115066b82729a225d28d015318f33ad2ae09f32942cb5046544a7f0cefdee3"
 dependencies = [
  "bytemuck",
  "cfg-if",
- "cfg_aliases 0.2.1",
+ "cfg_aliases",
  "const-field-offset",
  "derive_more",
- "glow 0.16.0",
+ "glow",
  "glutin",
  "i-slint-common",
  "i-slint-core",
@@ -3129,9 +3111,9 @@ dependencies = [
 
 [[package]]
 name = "metal"
-version = "0.29.0"
+version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ecfd3296f8c56b7c1f6fbac3c71cefa9d78ce009850c45000015f206dc7fa21"
+checksum = "f569fb946490b5743ad69813cb19629130ce9374034abe31614a36402d18f99e"
 dependencies = [
  "bitflags 2.9.1",
  "block",
@@ -3181,22 +3163,23 @@ dependencies = [
 
 [[package]]
 name = "naga"
-version = "23.1.0"
+version = "24.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "364f94bc34f61332abebe8cad6f6cd82a5b65cff22c828d05d0968911462ca4f"
+checksum = "e380993072e52eef724eddfcde0ed013b0c023c3f0417336ed041aa9f076994e"
 dependencies = [
  "arrayvec",
  "bit-set",
  "bitflags 2.9.1",
- "cfg_aliases 0.1.1",
+ "cfg_aliases",
  "codespan-reporting",
  "hexf-parse",
  "indexmap",
  "log",
  "rustc-hash 1.1.0",
  "spirv",
+ "strum 0.26.3",
  "termcolor",
- "thiserror 1.0.69",
+ "thiserror 2.0.12",
  "unicode-xid",
 ]
 
@@ -3264,7 +3247,7 @@ checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
 dependencies = [
  "bitflags 2.9.1",
  "cfg-if",
- "cfg_aliases 0.2.1",
+ "cfg_aliases",
  "libc",
  "memoffset",
 ]
@@ -3737,6 +3720,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba0b26cec2e24f08ed8bb31519a9333140a6599b867dac464bb150bdb796fd43"
 dependencies = [
  "libredox",
+]
+
+[[package]]
+name = "ordered-float"
+version = "4.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7bb71e1b3fa6ca1c61f383464aaf2bb0e2f8e772a1f01d486832464de363b951"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]
@@ -4793,7 +4785,7 @@ checksum = "18051cdd562e792cad055119e0cdb2cfc137e44e3987532e0f9659a77931bb08"
 dependencies = [
  "as-raw-xcb-connection",
  "bytemuck",
- "cfg_aliases 0.2.1",
+ "cfg_aliases",
  "core-graphics 0.24.0",
  "fastrand",
  "foreign-types",
@@ -4875,11 +4867,33 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "strum"
+version = "0.26.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8fec0f0aef304996cf250b31b5a10dee7980c85da9d759361292b8bca5a18f06"
+dependencies = [
+ "strum_macros 0.26.4",
+]
+
+[[package]]
+name = "strum"
 version = "0.27.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f64def088c51c9510a8579e3c5d67c65349dcf755e5479ad3d010aa6454e2c32"
 dependencies = [
- "strum_macros",
+ "strum_macros 0.27.1",
+]
+
+[[package]]
+name = "strum_macros"
+version = "0.26.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c6bee85a5a24955dc440386795aa378cd9cf82acd5f764469152d2270e581be"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "rustversion",
+ "syn 2.0.101",
 ]
 
 [[package]]
@@ -5679,12 +5693,13 @@ checksum = "a751b3277700db47d3e574514de2eced5e54dc8a5436a3bf7a0b248b2cee16f3"
 
 [[package]]
 name = "wgpu"
-version = "23.0.1"
+version = "24.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80f70000db37c469ea9d67defdc13024ddf9a5f1b89cb2941b812ad7cde1735a"
+checksum = "6b0b3436f0729f6cdf2e6e9201f3d39dc95813fad61d826c1ed07918b4539353"
 dependencies = [
  "arrayvec",
- "cfg_aliases 0.1.1",
+ "bitflags 2.9.1",
+ "cfg_aliases",
  "document-features",
  "js-sys",
  "log",
@@ -5704,14 +5719,14 @@ dependencies = [
 
 [[package]]
 name = "wgpu-core"
-version = "23.0.1"
+version = "24.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d63c3c478de8e7e01786479919c8769f62a22eec16788d8c2ac77ce2c132778a"
+checksum = "7f0aa306497a238d169b9dc70659105b4a096859a34894544ca81719242e1499"
 dependencies = [
  "arrayvec",
  "bit-vec",
  "bitflags 2.9.1",
- "cfg_aliases 0.1.1",
+ "cfg_aliases",
  "document-features",
  "indexmap",
  "log",
@@ -5722,16 +5737,16 @@ dependencies = [
  "raw-window-handle",
  "rustc-hash 1.1.0",
  "smallvec",
- "thiserror 1.0.69",
+ "thiserror 2.0.12",
  "wgpu-hal",
  "wgpu-types",
 ]
 
 [[package]]
 name = "wgpu-hal"
-version = "23.0.1"
+version = "24.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89364b8a0b211adc7b16aeaf1bd5ad4a919c1154b44c9ce27838213ba05fd821"
+checksum = "f112f464674ca69f3533248508ee30cb84c67cf06c25ff6800685f5e0294e259"
 dependencies = [
  "android_system_properties",
  "arrayvec",
@@ -5740,9 +5755,9 @@ dependencies = [
  "bitflags 2.9.1",
  "block",
  "bytemuck",
- "cfg_aliases 0.1.1",
+ "cfg_aliases",
  "core-graphics-types 0.1.3",
- "glow 0.14.2",
+ "glow",
  "glutin_wgl_sys",
  "gpu-alloc",
  "gpu-allocator",
@@ -5757,6 +5772,7 @@ dependencies = [
  "ndk-sys 0.5.0+25.2.9519653",
  "objc",
  "once_cell",
+ "ordered-float",
  "parking_lot",
  "profiling",
  "range-alloc",
@@ -5764,7 +5780,7 @@ dependencies = [
  "renderdoc-sys",
  "rustc-hash 1.1.0",
  "smallvec",
- "thiserror 1.0.69",
+ "thiserror 2.0.12",
  "wasm-bindgen",
  "web-sys",
  "wgpu-types",
@@ -5774,12 +5790,13 @@ dependencies = [
 
 [[package]]
 name = "wgpu-types"
-version = "23.0.0"
+version = "24.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "610f6ff27778148c31093f3b03abc4840f9636d58d597ca2f5977433acfe0068"
+checksum = "50ac044c0e76c03a0378e7786ac505d010a873665e2d51383dcff8dd227dc69c"
 dependencies = [
  "bitflags 2.9.1",
  "js-sys",
+ "log",
  "web-sys",
 ]
 
@@ -6286,7 +6303,7 @@ dependencies = [
  "block2 0.5.1",
  "bytemuck",
  "calloop 0.13.0",
- "cfg_aliases 0.2.1",
+ "cfg_aliases",
  "concurrent-queue",
  "core-foundation 0.9.4",
  "core-graphics 0.23.2",

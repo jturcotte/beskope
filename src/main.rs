@@ -280,16 +280,23 @@ impl ApplicationState {
             RenderWindow::Primary => self.primary_waveform_window.as_ref().unwrap(),
             RenderWindow::Secondary => self.secondary_waveform_window.as_ref().unwrap(),
         };
+        let device = window.wgpu.device();
+        let queue = window.wgpu.queue();
+        let swapchain_format = window.swapchain_format;
         let mut view: Box<dyn WaveformView> = match style {
             ui::Style::Ridgeline => Box::new(views::RidgelineWaveformView::new(
-                &window,
+                device,
+                queue,
+                swapchain_format,
                 render_window,
                 *anchor_position,
                 self.config.general.channels,
                 is_left_channel,
             )),
             ui::Style::Compressed => Box::new(views::CompressedWaveformView::new(
-                &window,
+                device,
+                queue,
+                swapchain_format,
                 render_window,
                 *anchor_position,
                 self.config.general.channels,

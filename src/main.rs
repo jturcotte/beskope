@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 use views::WaveformView;
 use wayland_client::{Connection, QueueHandle};
 use wgpu::TextureFormat;
+use wgpu::util::DeviceExt;
 use wlr_layers::{PanelAnchorPosition, WlrWaylandEventHandler};
 
 mod audio;
@@ -206,14 +207,14 @@ struct ApplicationState {
     fft_inout_buffer: Option<Vec<Complex<f32>>>,
     fft_scratch: Option<Vec<Complex<f32>>>,
     request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
-    config_window: slint::Weak<ui::ConfigurationWindow>, // <-- add this field
+    config_window: slint::Weak<ui::ConfigurationWindow>,
 }
 
 impl ApplicationState {
     fn new(
         config: ui::Configuration,
         request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
-        config_window: slint::Weak<ui::ConfigurationWindow>, // <-- add this parameter
+        config_window: slint::Weak<ui::ConfigurationWindow>,
     ) -> ApplicationState {
         ApplicationState {
             config,
@@ -526,6 +527,10 @@ impl AppMessage {
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 struct Args {
+    /// Render in a normal top-level window.
+    #[arg(short = 'w', long = "window")]
+    window: bool,
+
     /// Show the configuration window for any running instances and exit.
     /// If no instance is running, start the application with the configuration window open.
     #[arg(short = 'c', long = "config")]
@@ -538,6 +543,36 @@ struct Args {
 
 const CONFIG_COMMAND: &[u8] = b"config";
 const QUIT_COMMAND: &[u8] = b"quit";
+
+pub struct SlintWgpuSurface {
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    surface: wgpu::Surface<'static>,
+    queue: Arc<wgpu::Queue>,
+    // pub layer: LayerSurface,
+}
+
+impl WgpuSurface for SlintWgpuSurface {
+    fn adapter(&self) -> &wgpu::Adapter {
+        &self.adapter
+    }
+
+    fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    fn surface(&self) -> &wgpu::Surface<'static> {
+        &self.surface
+    }
+
+    fn queue(&self) -> &Arc<wgpu::Queue> {
+        &self.queue
+    }
+
+    fn surface_id(&self) -> u32 {
+        0 // Only one window will be used
+    }
+}
 
 pub fn main() {
     let args = Args::parse();
@@ -598,14 +633,19 @@ pub fn main() {
 
     // Spawn the wlr panel rendering in a separate thread, this is supported with wayland
     let config_window_weak = config_window.as_weak();
-    std::thread::spawn(move || {
-        let app_state =
-            ApplicationState::new(config, request_redraw_callback.clone(), config_window_weak);
+    if !args.window {
+        std::thread::spawn(move || {
+            let app_state =
+                ApplicationState::new(config, request_redraw_callback.clone(), config_window_weak);
 
-        let mut layers_even_queue =
-            wlr_layers::WlrWaylandEventLoop::new(app_state, app_msg_rx, request_redraw_callback);
-        layers_even_queue.run_event_loop();
-    });
+            let mut layers_even_queue = wlr_layers::WlrWaylandEventLoop::new(
+                app_state,
+                app_msg_rx,
+                request_redraw_callback,
+            );
+            layers_even_queue.run_event_loop();
+        });
+    }
 
     // Listen for toggle commands on the local socket in a background thread
     match ListenerOptions::new().name(socket_path).create_sync() {
@@ -647,6 +687,102 @@ pub fn main() {
             std::process::exit(1);
         }
     };
+
+    let test_window = ui::TestWindow::new().unwrap();
+    test_window.show().unwrap();
+
+    if args.window {
+        let test_window_weak = test_window.as_weak();
+        let app_state_rc = Rc::new(None);
+        test_window
+            .window()
+            .set_rendering_notifier(move |state, graphics_api| {
+                let test_window = test_window_weak.upgrade().unwrap();
+                match state {
+                    slint::RenderingState::RenderingSetup => {
+                        let app_state = match app_state_rc.as_mut() {
+                            None => {
+                                // Initialize the application state
+                                let request_redraw_callback = request_redraw_callback.clone();
+                                let app_state = ApplicationState::new(
+                                    config.clone(),
+                                    request_redraw_callback,
+                                    config_window_weak,
+                                );
+                                app_state.initialize_audio_and_fft();
+                                if let slint::GraphicsAPI::WGPU24 {
+                                    instance,
+                                    device,
+                                    queue,
+                                } = graphics_api
+                                {
+                                    let wgpu_surface = Rc::new(SlintWgpuSurface {
+                                        adapter: graphics_api.adapter().clone(),
+                                        device: device.clone(),
+                                        surface: graphics_api.surface().clone(),
+                                        queue: Arc::new(queue.clone()),
+                                    });
+                                    let size = test_window.window().size();
+                                    app_state.configure_primary_wgpu_surface(
+                                        wgpu_surface,
+                                        PanelAnchorPosition::Bottom,
+                                        size.width,
+                                        size.height,
+                                    );
+                                }
+                                *app_state_rc = Some(app_state);
+                                app_state_rc.as_ref().unwrap()
+                            }
+                            Some(app_state) => app_state,
+                        };
+                    }
+                    slint::RenderingState::BeforeRendering => {}
+                    _ => {}
+                }
+                // let (
+                //     Some(app),
+                //     slint::RenderingState::RenderingSetup,
+                //     slint::GraphicsAPI::WGPU24 { device, queue, .. },
+                // ) = (test_window_weak.upgrade(), state, graphics_api)
+                // else {
+                //     return;
+                // };
+
+                // let mut pixels = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(320, 200);
+                // pixels.make_mut_slice().fill(slint::Rgba8Pixel {
+                //     r: 0,
+                //     g: 255,
+                //     b: 0,
+                //     a: 255,
+                // });
+
+                // let texture = device.create_texture_with_data(
+                //     queue,
+                //     &wgpu::TextureDescriptor {
+                //         label: None,
+                //         size: wgpu::Extent3d {
+                //             width: 320,
+                //             height: 200,
+                //             depth_or_array_layers: 1,
+                //         },
+                //         mip_level_count: 1,
+                //         sample_count: 1,
+                //         dimension: wgpu::TextureDimension::D2,
+                //         format: wgpu::TextureFormat::Rgba8Unorm,
+                //         usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                //             | wgpu::TextureUsages::TEXTURE_BINDING,
+                //         view_formats: &[],
+                //     },
+                //     wgpu::util::TextureDataOrder::default(),
+                //     pixels.as_bytes(),
+                // );
+
+                // let imported_image = slint::Image::try_from(texture).unwrap();
+
+                // app.set_app_texture(imported_image);
+            })
+            .unwrap();
+    }
 
     // Tie the main thread to the config window, since winit needs to be there on some platforms.
     slint::run_event_loop_until_quit().unwrap();

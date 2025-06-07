@@ -27,12 +27,18 @@ wayland-client = "0.31"
 wgpu = "24"
 
 [dependencies.slint]
-version = "1"
+version = "~1.12"
 default-features = false
-features = ["compat-1-0", "backend-winit", "renderer-winit-femtovg", "serde"]
+features = [
+    "compat-1-0",
+    "backend-winit",
+    "renderer-winit-femtovg",
+    "serde",
+    "unstable-wgpu-24",
+]
 
 [build-dependencies]
-slint-build = "1"
+slint-build = "~1.12"
 
 [profile.release]
 panic = 'abort'

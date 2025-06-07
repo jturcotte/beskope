@@ -1441,6 +1441,7 @@ dependencies = [
  "unicode-segmentation",
  "wasm-bindgen",
  "web-sys",
+ "wgpu",
 ]
 
 [[package]]
@@ -2171,6 +2172,7 @@ dependencies = [
  "i-slint-common",
  "i-slint-core",
  "i-slint-core-macros",
+ "i-slint-renderer-skia",
 ]
 
 [[package]]
@@ -2295,6 +2297,7 @@ dependencies = [
  "wasm-bindgen",
  "web-sys",
  "web-time",
+ "wgpu",
 ]
 
 [[package]]
@@ -2333,6 +2336,7 @@ dependencies = [
  "unicode-segmentation",
  "wasm-bindgen",
  "web-sys",
+ "wgpu",
  "winapi",
 ]
 
@@ -4608,6 +4612,7 @@ dependencies = [
  "slint-macros",
  "unicode-segmentation",
  "vtable",
+ "wgpu",
 ]
 
 [[package]]

@@ -152,6 +152,11 @@ impl Configuration {
 }
 
 pub fn init(send_app_msg: impl Fn(AppMessage) + Clone + 'static) -> ConfigurationWindow {
+    slint::BackendSelector::new()
+        .require_wgpu_24(slint::wgpu_24::WGPUConfiguration::default())
+        .select()
+        .unwrap();
+
     let window = ConfigurationWindow::new().unwrap();
     let time_curve_editor = TimeCurveEditor::get(&window);
     let backend = Backend::get(&window);

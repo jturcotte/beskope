@@ -440,7 +440,7 @@ impl WaveformView for CompressedWaveformView {
         &self,
         encoder: &mut CommandEncoder,
         view: &TextureView,
-        _depth_texture_view: &TextureView,
+        _depth_texture_view: Option<&TextureView>,
     ) {
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

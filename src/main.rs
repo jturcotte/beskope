@@ -172,12 +172,12 @@ impl WaveformWindow {
 
         if let Some(waveform_view) = left_waveform_view {
             if waveform_view.render_window() == self.render_window {
-                waveform_view.render(&mut encoder, &view, &depth_texture_view);
+                waveform_view.render(&mut encoder, &view, Some(&depth_texture_view));
             }
         }
         if let Some(waveform_view) = right_waveform_view {
             if waveform_view.render_window() == self.render_window {
-                waveform_view.render(&mut encoder, &view, &depth_texture_view);
+                waveform_view.render(&mut encoder, &view, Some(&depth_texture_view));
             }
         }
         self.wgpu.queue().submit(Some(encoder.finish()));
@@ -200,7 +200,7 @@ struct ApplicationState {
     secondary_waveform_window: Option<(WaveformWindow, PanelAnchorPosition)>,
     last_non_zero_sample_age: usize,
     animation_stopped: Arc<AtomicBool>,
-    left_waveform_view: Option<Box<dyn WaveformView>>,
+    pub left_waveform_view: Option<Box<dyn WaveformView>>,
     right_waveform_view: Option<Box<dyn WaveformView>>,
     screen_size: (u32, u32),
     audio_input_ringbuf_cons: Option<Caching<Arc<SharedRb<Heap<f32>>>, false, true>>,
@@ -734,14 +734,14 @@ pub fn main() {
         let test_window_weak = test_window.as_weak();
         let config_window_weak = config_window.as_weak();
         let config = config.clone();
-        let mut app_state_rc = None;
+        let mut app_state_capture = None;
         test_window
             .window()
             .set_rendering_notifier(move |state, graphics_api| {
                 let test_window = test_window_weak.upgrade().unwrap();
                 match state {
                     slint::RenderingState::RenderingSetup => {
-                        match app_state_rc {
+                        match app_state_capture {
                             None => {
                                 // Initialize the application state
                                 let request_redraw_callback = request_redraw_callback.clone();
@@ -755,16 +755,18 @@ pub fn main() {
                                     instance,
                                     device,
                                     queue,
+                                    frame,
                                     config: surface_config,
                                 } = graphics_api
                                 {
-                                    app_state.create_waveform_view_no_window(
-                                        ui::Style::Ridgeline,
-                                        true,
-                                        device,
-                                        &Arc::new(queue.clone()),
-                                        surface_config.format,
-                                    );
+                                    app_state.left_waveform_view =
+                                        Some(app_state.create_waveform_view_no_window(
+                                            ui::Style::Compressed,
+                                            true,
+                                            device,
+                                            &Arc::new(queue.clone()),
+                                            surface_config.format,
+                                        ));
                                     // let wgpu_surface = Rc::new(SlintWgpuSurface {
                                     //     adapter: graphics_api.adapter().clone(),
                                     //     device: device.clone(),
@@ -779,12 +781,44 @@ pub fn main() {
                                     //     size.height,
                                     // );
                                 }
-                                app_state_rc = Some(app_state);
+                                app_state_capture = Some(app_state);
                             }
                             _ => {}
                         };
                     }
-                    slint::RenderingState::BeforeRendering => {}
+                    slint::RenderingState::BeforeRendering => {
+                        if let slint::GraphicsAPI::WGPU24 {
+                            instance,
+                            device,
+                            queue,
+                            frame: Some(frame),
+                            config: surface_config,
+                        } = graphics_api
+                        {
+                            let app_state = app_state_capture.as_mut().unwrap();
+                            app_state.process_audio(0);
+
+                            let waveform_view = app_state.left_waveform_view.as_mut().unwrap();
+
+                            //                         let frame = self
+                            // .wgpu
+                            // .surface()
+                            // .get_current_texture()
+                            // .expect("Failed to acquire next swap chain texture");
+                            let view = frame
+                                .texture
+                                .create_view(&wgpu::TextureViewDescriptor::default());
+
+                            let mut encoder =
+                                device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                    label: None,
+                                });
+
+                            waveform_view.render(&mut encoder, &view, None);
+
+                            queue.submit(Some(encoder.finish()));
+                        }
+                    }
                     _ => {}
                 }
                 // let (

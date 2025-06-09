@@ -593,7 +593,7 @@ impl WaveformView for RidgelineWaveformView {
         &self,
         encoder: &mut CommandEncoder,
         view: &TextureView,
-        depth_texture_view: &TextureView,
+        depth_texture_view: Option<&TextureView>,
     ) {
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -607,7 +607,7 @@ impl WaveformView for RidgelineWaveformView {
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &depth_texture_view,
+                    view: &depth_texture_view.expect("FIXME"),
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -634,14 +634,15 @@ impl WaveformView for RidgelineWaveformView {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &depth_texture_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
+                depth_stencil_attachment: None,
+                // depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                //     view: &depth_texture_view,
+                //     depth_ops: Some(wgpu::Operations {
+                //         load: wgpu::LoadOp::Load,
+                //         store: wgpu::StoreOp::Store,
+                //     }),
+                //     stencil_ops: None,
+                // }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });

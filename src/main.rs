@@ -10,6 +10,7 @@ use ringbuf::wrap::caching::Caching;
 use ringbuf::{HeapRb, SharedRb};
 use rustfft::{Fft, FftDirection, FftPlanner};
 use slint::ComponentHandle;
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::io::prelude::*;
 use std::rc::Rc;
@@ -300,6 +301,42 @@ impl ApplicationState {
                 swapchain_format,
                 render_window,
                 *anchor_position,
+                self.config.general.channels,
+                is_left_channel,
+            )),
+        };
+        view.set_screen_size(self.screen_size.0, self.screen_size.1);
+        view.apply_lazy_config_changes(&self.config, None);
+        view
+    }
+
+    fn create_waveform_view_no_window(
+        &self,
+        style: ui::Style,
+        is_left_channel: bool,
+        device: &wgpu::Device,
+        queue: &Arc<wgpu::Queue>,
+        swapchain_format: TextureFormat,
+    ) -> Box<dyn WaveformView> {
+        // let device = window.wgpu.device();
+        // let queue = window.wgpu.queue();
+        // let swapchain_format = window.swapchain_format;
+        let mut view: Box<dyn WaveformView> = match style {
+            ui::Style::Ridgeline => Box::new(views::RidgelineWaveformView::new(
+                device,
+                queue,
+                swapchain_format,
+                RenderWindow::Primary,
+                PanelAnchorPosition::Bottom,
+                self.config.general.channels,
+                is_left_channel,
+            )),
+            ui::Style::Compressed => Box::new(views::CompressedWaveformView::new(
+                device,
+                queue,
+                swapchain_format,
+                RenderWindow::Primary,
+                PanelAnchorPosition::Bottom,
                 self.config.general.channels,
                 is_left_channel,
             )),
@@ -632,8 +669,10 @@ pub fn main() {
     }
 
     // Spawn the wlr panel rendering in a separate thread, this is supported with wayland
-    let config_window_weak = config_window.as_weak();
-    if !args.window {
+    if args.window {
+        let config_window_weak = config_window.as_weak();
+        let request_redraw_callback = request_redraw_callback.clone();
+        let config = config.clone();
         std::thread::spawn(move || {
             let app_state =
                 ApplicationState::new(config, request_redraw_callback.clone(), config_window_weak);
@@ -691,49 +730,58 @@ pub fn main() {
     let test_window = ui::TestWindow::new().unwrap();
     test_window.show().unwrap();
 
-    if args.window {
+    if !args.window {
         let test_window_weak = test_window.as_weak();
-        let app_state_rc = Rc::new(None);
+        let config_window_weak = config_window.as_weak();
+        let config = config.clone();
+        let mut app_state_rc = None;
         test_window
             .window()
             .set_rendering_notifier(move |state, graphics_api| {
                 let test_window = test_window_weak.upgrade().unwrap();
                 match state {
                     slint::RenderingState::RenderingSetup => {
-                        let app_state = match app_state_rc.as_mut() {
+                        match app_state_rc {
                             None => {
                                 // Initialize the application state
                                 let request_redraw_callback = request_redraw_callback.clone();
-                                let app_state = ApplicationState::new(
+                                let mut app_state = ApplicationState::new(
                                     config.clone(),
                                     request_redraw_callback,
-                                    config_window_weak,
+                                    config_window_weak.clone(),
                                 );
                                 app_state.initialize_audio_and_fft();
                                 if let slint::GraphicsAPI::WGPU24 {
                                     instance,
                                     device,
                                     queue,
+                                    config: surface_config,
                                 } = graphics_api
                                 {
-                                    let wgpu_surface = Rc::new(SlintWgpuSurface {
-                                        adapter: graphics_api.adapter().clone(),
-                                        device: device.clone(),
-                                        surface: graphics_api.surface().clone(),
-                                        queue: Arc::new(queue.clone()),
-                                    });
-                                    let size = test_window.window().size();
-                                    app_state.configure_primary_wgpu_surface(
-                                        wgpu_surface,
-                                        PanelAnchorPosition::Bottom,
-                                        size.width,
-                                        size.height,
+                                    app_state.create_waveform_view_no_window(
+                                        ui::Style::Ridgeline,
+                                        true,
+                                        device,
+                                        &Arc::new(queue.clone()),
+                                        surface_config.format,
                                     );
+                                    // let wgpu_surface = Rc::new(SlintWgpuSurface {
+                                    //     adapter: graphics_api.adapter().clone(),
+                                    //     device: device.clone(),
+                                    //     surface: graphics_api.surface().clone(),
+                                    //     queue: Arc::new(queue.clone()),
+                                    // });
+                                    // let size = test_window.window().size();
+                                    // app_state.configure_primary_wgpu_surface(
+                                    //     wgpu_surface,
+                                    //     PanelAnchorPosition::Bottom,
+                                    //     size.width,
+                                    //     size.height,
+                                    // );
                                 }
-                                *app_state_rc = Some(app_state);
-                                app_state_rc.as_ref().unwrap()
+                                app_state_rc = Some(app_state);
                             }
-                            Some(app_state) => app_state,
+                            _ => {}
                         };
                     }
                     slint::RenderingState::BeforeRendering => {}

@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 use crate::AppMessage;
-use slint::{ComponentHandle, Global, Model, VecModel};
+use slint::{
+    ComponentHandle, Global, Model, VecModel,
+    wgpu_24::{WGPUConfiguration, WGPUSettings},
+};
 use splines::Interpolation;
 
 use directories::ProjectDirs;
@@ -152,10 +155,15 @@ impl Configuration {
 }
 
 pub fn init(send_app_msg: impl Fn(AppMessage) + Clone + 'static) -> ConfigurationWindow {
+    // FIXME: Weird to have this here if all the stuff is in main
+    let mut wgpu_settings = WGPUSettings::default();
+    // Slint defaults to WebGL2 limits, but use the real wgpu default.
+    wgpu_settings.device_required_limits = wgpu::Limits::default();
+
     slint::BackendSelector::new()
-        .require_wgpu_24(slint::wgpu_24::WGPUConfiguration::default())
+        .require_wgpu_24(WGPUConfiguration::Automatic(wgpu_settings))
         .select()
-        .unwrap();
+        .expect("Unable to create Slint backend with WGPU based renderer");
 
     let window = ConfigurationWindow::new().unwrap();
     let time_curve_editor = TimeCurveEditor::get(&window);

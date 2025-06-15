@@ -30,9 +30,9 @@ wgpu = "24"
 version = "~1.12"
 default-features = false
 features = [
-    "compat-1-0",
+    "compat-1-2",
     "backend-winit",
-    "renderer-winit-femtovg",
+    "renderer-femtovg-wgpu",
     "serde",
     "unstable-wgpu-24",
 ]

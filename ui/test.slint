@@ -1,7 +1,6 @@
 import { AboutSlint, VerticalBox } from "std-widgets.slint";
 
 export component TestWindow inherits Window {
-        AboutSlint {
-            preferred-height: 150px;
-        }
+    out property<duration> tick: animation-tick();
+    AboutSlint { cache-rendering-hint: true; }
 }

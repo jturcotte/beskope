@@ -10,7 +10,6 @@ use ringbuf::wrap::caching::Caching;
 use ringbuf::{HeapRb, SharedRb};
 use rustfft::{Fft, FftDirection, FftPlanner};
 use slint::ComponentHandle;
-use std::cell::Cell;
 use std::collections::HashSet;
 use std::io::prelude::*;
 use std::rc::Rc;
@@ -23,7 +22,6 @@ use std::time::{Duration, Instant};
 use views::WaveformView;
 use wayland_client::{Connection, QueueHandle};
 use wgpu::TextureFormat;
-use wgpu::util::DeviceExt;
 use wlr_layers::{PanelAnchorPosition, WlrWaylandEventHandler};
 
 mod audio;
@@ -728,7 +726,6 @@ pub fn main() {
     };
 
     let test_window = ui::TestWindow::new().unwrap();
-    test_window.show().unwrap();
 
     if !args.window {
         let test_window_weak = test_window.as_weak();
@@ -752,11 +749,10 @@ pub fn main() {
                                 );
                                 app_state.initialize_audio_and_fft();
                                 if let slint::GraphicsAPI::WGPU24 {
-                                    instance,
                                     device,
                                     queue,
-                                    frame,
                                     config: surface_config,
+                                    ..
                                 } = graphics_api
                                 {
                                     app_state.left_waveform_view =
@@ -767,19 +763,6 @@ pub fn main() {
                                             &Arc::new(queue.clone()),
                                             surface_config.format,
                                         ));
-                                    // let wgpu_surface = Rc::new(SlintWgpuSurface {
-                                    //     adapter: graphics_api.adapter().clone(),
-                                    //     device: device.clone(),
-                                    //     surface: graphics_api.surface().clone(),
-                                    //     queue: Arc::new(queue.clone()),
-                                    // });
-                                    // let size = test_window.window().size();
-                                    // app_state.configure_primary_wgpu_surface(
-                                    //     wgpu_surface,
-                                    //     PanelAnchorPosition::Bottom,
-                                    //     size.width,
-                                    //     size.height,
-                                    // );
                                 }
                                 app_state_capture = Some(app_state);
                             }
@@ -788,23 +771,19 @@ pub fn main() {
                     }
                     slint::RenderingState::BeforeRendering => {
                         if let slint::GraphicsAPI::WGPU24 {
-                            instance,
                             device,
                             queue,
                             frame: Some(frame),
-                            config: surface_config,
+                            ..
                         } = graphics_api
                         {
                             let app_state = app_state_capture.as_mut().unwrap();
-                            app_state.process_audio(0);
+                            let tick = test_window.get_tick();
+                            // println!("{}", tick);
+                            app_state.process_audio(tick as u32);
 
                             let waveform_view = app_state.left_waveform_view.as_mut().unwrap();
 
-                            //                         let frame = self
-                            // .wgpu
-                            // .surface()
-                            // .get_current_texture()
-                            // .expect("Failed to acquire next swap chain texture");
                             let view = frame
                                 .texture
                                 .create_view(&wgpu::TextureViewDescriptor::default());
@@ -821,49 +800,9 @@ pub fn main() {
                     }
                     _ => {}
                 }
-                // let (
-                //     Some(app),
-                //     slint::RenderingState::RenderingSetup,
-                //     slint::GraphicsAPI::WGPU24 { device, queue, .. },
-                // ) = (test_window_weak.upgrade(), state, graphics_api)
-                // else {
-                //     return;
-                // };
-
-                // let mut pixels = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(320, 200);
-                // pixels.make_mut_slice().fill(slint::Rgba8Pixel {
-                //     r: 0,
-                //     g: 255,
-                //     b: 0,
-                //     a: 255,
-                // });
-
-                // let texture = device.create_texture_with_data(
-                //     queue,
-                //     &wgpu::TextureDescriptor {
-                //         label: None,
-                //         size: wgpu::Extent3d {
-                //             width: 320,
-                //             height: 200,
-                //             depth_or_array_layers: 1,
-                //         },
-                //         mip_level_count: 1,
-                //         sample_count: 1,
-                //         dimension: wgpu::TextureDimension::D2,
-                //         format: wgpu::TextureFormat::Rgba8Unorm,
-                //         usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                //             | wgpu::TextureUsages::TEXTURE_BINDING,
-                //         view_formats: &[],
-                //     },
-                //     wgpu::util::TextureDataOrder::default(),
-                //     pixels.as_bytes(),
-                // );
-
-                // let imported_image = slint::Image::try_from(texture).unwrap();
-
-                // app.set_app_texture(imported_image);
             })
             .unwrap();
+        test_window.show().unwrap();
     }
 
     // Tie the main thread to the config window, since winit needs to be there on some platforms.

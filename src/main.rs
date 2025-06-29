@@ -95,7 +95,7 @@ impl WaveformWindow {
             // swapchain_format,
             render_window,
             must_reconfigure: true,
-            last_configure_size: (width, height),
+            last_configure_size: (u32::MAX, u32::MAX),
             last_fps_dump_time: Instant::now(),
             frame_count: 0,
             fps_callback,

@@ -328,7 +328,7 @@ impl WlrWgpuSurface {
             queue: Arc::new(queue),
             swapchain_format,
             layer,
-            must_reconfigure_with_size: RefCell::new(None),
+            must_reconfigure_with_size: RefCell::new(Some((1, 1))),
         }
     }
 }
@@ -446,6 +446,12 @@ impl WlrWaylandEventHandler {
         (self.primary_wgpu, self.primary_wgpu_holder) = primary_wgpu_and_anchor.unzip();
         (self.secondary_wgpu, self.secondary_wgpu_holder) = secondary_wgpu_and_anchor.unzip();
 
+        if let Some(wgpu) = self.primary_wgpu.as_ref() {
+            self.surfaces_with_pending_render.push(wgpu.clone());
+        }
+        if let Some(wgpu) = self.secondary_wgpu.as_ref() {
+            self.surfaces_with_pending_render.push(wgpu.clone());
+        }
         self.update_request_redraw_callback(conn.clone(), qh.clone());
     }
 

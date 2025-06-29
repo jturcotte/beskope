@@ -5,6 +5,7 @@ use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
 };
 use smithay_client_toolkit::compositor::Region;
+use std::cell::RefCell;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
@@ -68,8 +69,28 @@ impl CompositorHandler for WlrWaylandEventHandler {
             }
         }
 
-        if !self.surfaces_with_pending_render.contains(&surface.id()) {
-            self.surfaces_with_pending_render.push(surface.id());
+        let wgpu = match surface.id() {
+            id if self
+                .primary_layer
+                .as_ref()
+                .map_or(false, |l| l.wl_surface().id() == id) =>
+            {
+                self.primary_wgpu.as_ref().unwrap()
+            }
+            id if self
+                .secondary_layer
+                .as_ref()
+                .map_or(false, |l| l.wl_surface().id() == id) =>
+            {
+                self.secondary_wgpu.as_ref().unwrap()
+            }
+            _ => panic!(
+                "Received frame callback for a surface that is not a primary or secondary layer: {}",
+                surface.id()
+            ),
+        };
+        if !self.surfaces_with_pending_render.contains(&wgpu) {
+            self.surfaces_with_pending_render.push(wgpu.clone());
 
             if !self.app_state.animation_stopped.load(Ordering::Relaxed) {
                 // Already tell the compositor that we want to draw again for the next output frame.
@@ -188,17 +209,26 @@ impl LayerShellHandler for WlrWaylandEventHandler {
         }
 
         if self.primary_layer.as_ref() == Some(layer) {
-            if let Some((wgpu_surface, anchor_position)) = self.primary_wgpu_holder.take() {
+            // FIXME: Change the holder thing holding the anchor, this is weird. Maybe this should let the app state decide instead
+            if let Some(anchor_position) = self.primary_wgpu_holder.take() {
+                let wgpu = self.primary_wgpu.as_ref().unwrap().clone() as Rc<dyn WgpuSurface>;
                 self.app_state.configure_primary_wgpu_surface(
-                    wgpu_surface,
+                    &wgpu,
                     anchor_position,
                     new_width,
                     new_height,
                 );
                 // Render once to let wgpu finalize the surface initialization.
-                self.app_state.render(layer.wl_surface().id().protocol_id());
+                // FIXME: Isn't the frame callback enough?
+                // self.app_state.render(&wgpu);
             } else if Some(layer) == self.primary_layer.as_ref() {
                 self.app_state.primary_resized(new_width, new_height);
+                *self
+                    .primary_wgpu
+                    .as_mut()
+                    .unwrap()
+                    .must_reconfigure_with_size
+                    .borrow_mut() = Some((new_width, new_height));
             }
 
             // Kick off the animation
@@ -207,17 +237,24 @@ impl LayerShellHandler for WlrWaylandEventHandler {
         }
 
         if self.secondary_layer.as_ref() == Some(layer) {
-            if let Some((wgpu_surface, anchor_position)) = self.secondary_wgpu_holder.take() {
+            if let Some(anchor_position) = self.secondary_wgpu_holder.take() {
+                let wgpu = self.secondary_wgpu.as_ref().unwrap().clone() as Rc<dyn WgpuSurface>;
                 self.app_state.configure_secondary_wgpu_surface(
-                    wgpu_surface,
+                    &wgpu,
                     anchor_position,
                     new_width,
                     new_height,
                 );
                 // Render once to let wgpu finalize the surface initialization.
-                self.app_state.render(layer.wl_surface().id().protocol_id());
+                // self.app_state.render(&wgpu);
             } else if Some(layer) == self.secondary_layer.as_ref() {
                 self.app_state.secondary_resized(new_width, new_height);
+                *self
+                    .secondary_wgpu
+                    .as_mut()
+                    .unwrap()
+                    .must_reconfigure_with_size
+                    .borrow_mut() = Some((new_width, new_height));
             }
 
             // Kick off the animation
@@ -232,7 +269,15 @@ pub struct WlrWgpuSurface {
     device: wgpu::Device,
     surface: wgpu::Surface<'static>,
     queue: Arc<wgpu::Queue>,
+    swapchain_format: wgpu::TextureFormat,
     pub layer: LayerSurface,
+    pub must_reconfigure_with_size: RefCell<Option<(u32, u32)>>,
+}
+
+impl PartialEq for WlrWgpuSurface {
+    fn eq(&self, other: &Self) -> bool {
+        self.layer.wl_surface().id() == other.layer.wl_surface().id()
+    }
 }
 
 impl WlrWgpuSurface {
@@ -273,31 +318,45 @@ impl WlrWgpuSurface {
         let (device, queue) = pollster::block_on(adapter.request_device(&Default::default(), None))
             .expect("Failed to request device");
 
+        let swapchain_capabilities = surface.get_capabilities(&adapter);
+        let swapchain_format = swapchain_capabilities.formats[0];
+
         WlrWgpuSurface {
             adapter,
             device,
             surface,
             queue: Arc::new(queue),
+            swapchain_format,
             layer,
+            must_reconfigure_with_size: RefCell::new(None),
         }
     }
 }
 
 impl WgpuSurface for WlrWgpuSurface {
-    fn adapter(&self) -> &wgpu::Adapter {
-        &self.adapter
-    }
+    // fn adapter(&self) -> &wgpu::Adapter {
+    //     &self.adapter
+    // }
     fn device(&self) -> &wgpu::Device {
         &self.device
     }
-    fn surface(&self) -> &wgpu::Surface<'static> {
-        &self.surface
-    }
+    // fn surface_texture(&self) -> &wgpu::SurfaceTexture {
+    //     self.surface
+    //         .get_current_texture()
+    //         .expect("Failed to acquire next swap chain texture")
+    // }
+    // (&self) -> &wgpu::Surface<'static> {
+    //     &self.surface
+    // }
     fn queue(&self) -> &Arc<wgpu::Queue> {
         &self.queue
     }
     fn surface_id(&self) -> u32 {
         self.layer.wl_surface().id().protocol_id()
+    }
+
+    fn swapchain_format(&self) -> Option<wgpu::TextureFormat> {
+        Some(self.swapchain_format)
     }
 }
 
@@ -308,14 +367,16 @@ pub struct WlrWaylandEventHandler {
     registry_state: RegistryState,
     output_state: OutputState,
 
-    surfaces_with_pending_render: Vec<ObjectId>,
+    surfaces_with_pending_render: Vec<Rc<WlrWgpuSurface>>,
     pending_render_timestamp: u32,
     // panel_config: PanelConfig,
     request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
     primary_layer: Option<LayerSurface>,
     secondary_layer: Option<LayerSurface>,
-    primary_wgpu_holder: Option<(Rc<WlrWgpuSurface>, PanelAnchorPosition)>,
-    secondary_wgpu_holder: Option<(Rc<WlrWgpuSurface>, PanelAnchorPosition)>,
+    primary_wgpu: Option<Rc<WlrWgpuSurface>>,
+    secondary_wgpu: Option<Rc<WlrWgpuSurface>>,
+    primary_wgpu_holder: Option<PanelAnchorPosition>,
+    secondary_wgpu_holder: Option<PanelAnchorPosition>,
     primary_surface_output: Option<ObjectId>,
     pub app_state: ApplicationState,
     app_state_initialized: bool,
@@ -382,8 +443,8 @@ impl WlrWaylandEventHandler {
         self.secondary_layer = secondary_wgpu_and_anchor
             .as_ref()
             .map(|s| s.0.layer.clone());
-        self.primary_wgpu_holder = primary_wgpu_and_anchor;
-        self.secondary_wgpu_holder = secondary_wgpu_and_anchor;
+        (self.primary_wgpu, self.primary_wgpu_holder) = primary_wgpu_and_anchor.unzip();
+        (self.secondary_wgpu, self.secondary_wgpu_holder) = secondary_wgpu_and_anchor.unzip();
 
         self.update_request_redraw_callback(conn.clone(), qh.clone());
     }
@@ -607,6 +668,8 @@ impl WlrWaylandEventLoop {
             request_redraw_callback,
             primary_layer: None,
             secondary_layer: None,
+            primary_wgpu: None,
+            secondary_wgpu: None,
             primary_wgpu_holder: None,
             secondary_wgpu_holder: None,
             primary_surface_output: None,
@@ -634,8 +697,32 @@ impl WlrWaylandEventLoop {
                     .app_state
                     .process_audio(self.state.pending_render_timestamp);
             }
-            for surface_id in self.state.surfaces_with_pending_render.drain(..) {
-                self.state.app_state.render(surface_id.protocol_id());
+            for wgpu in self.state.surfaces_with_pending_render.drain(..) {
+                if let Some((width, height)) = wgpu.must_reconfigure_with_size.take() {
+                    let config = wgpu::SurfaceConfiguration {
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                        format: wgpu.swapchain_format,
+                        width: width.max(1),
+                        height: height.max(1),
+                        present_mode: wgpu::PresentMode::AutoVsync,
+                        desired_maximum_frame_latency: 1,
+                        alpha_mode: wgpu::CompositeAlphaMode::PreMultiplied,
+                        view_formats: vec![],
+                    };
+
+                    // Reconfigure the wgpu surface if needed.
+                    // wgpu.device.configure_surface(&wgpu.surface);
+                    wgpu.surface.configure(wgpu.device(), &config);
+                    // *wgpu.must_reconfigure_with_size.borrow_mut() = false;
+                }
+                let frame = wgpu
+                    .surface
+                    .get_current_texture()
+                    .expect("Failed to acquire next swap chain texture");
+                self.state
+                    .app_state
+                    .render(&(wgpu as Rc<dyn WgpuSurface>), &frame);
+                frame.present();
             }
         }
     }

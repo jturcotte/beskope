@@ -34,20 +34,23 @@ const FFT_SIZE: usize = 2048;
 const NUM_CHANNELS: usize = 2;
 
 pub trait WgpuSurface {
-    fn adapter(&self) -> &wgpu::Adapter;
+    // fn adapter(&self) -> &wgpu::Adapter;
     fn device(&self) -> &wgpu::Device;
-    fn surface(&self) -> &wgpu::Surface<'static>;
+    // fn surface_texture(&self) -> &wgpu::SurfaceTexture;
     fn queue(&self) -> &Arc<wgpu::Queue>;
     fn surface_id(&self) -> u32;
+    fn swapchain_format(&self) -> Option<wgpu::TextureFormat>;
 }
 
 struct WaveformWindow {
+    surface_id: u32,
     wgpu: Rc<dyn WgpuSurface>,
     depth_texture: Option<wgpu::Texture>,
-    config: wgpu::SurfaceConfiguration,
+    // config: wgpu::SurfaceConfiguration,
     swapchain_format: TextureFormat,
     render_window: RenderWindow,
     must_reconfigure: bool,
+    last_configure_size: (u32, u32),
     last_fps_dump_time: Instant,
     frame_count: u32,
     fps_callback: Box<dyn Fn(u32)>,
@@ -61,83 +64,96 @@ enum RenderWindow {
 
 impl WaveformWindow {
     fn new(
-        wgpu: Rc<dyn WgpuSurface>,
+        wgpu: &Rc<dyn WgpuSurface>,
         width: u32,
         height: u32,
         render_window: RenderWindow,
         fps_callback: Box<dyn Fn(u32)>,
     ) -> WaveformWindow {
-        let swapchain_capabilities = wgpu.surface().get_capabilities(wgpu.adapter());
-        let swapchain_format = swapchain_capabilities.formats[0];
+        // let swapchain_capabilities = wgpu.surface().get_capabilities(wgpu.adapter());
+        // let swapchain_format = swapchain_capabilities.formats[0];
 
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: swapchain_format,
-            width: width.max(1),
-            height: height.max(1),
-            present_mode: wgpu::PresentMode::AutoVsync,
-            desired_maximum_frame_latency: 1,
-            alpha_mode: wgpu::CompositeAlphaMode::PreMultiplied,
-            view_formats: vec![],
-        };
+        // let config = wgpu::SurfaceConfiguration {
+        //     usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        //     format: swapchain_format,
+        //     width: width.max(1),
+        //     height: height.max(1),
+        //     present_mode: wgpu::PresentMode::AutoVsync,
+        //     desired_maximum_frame_latency: 1,
+        //     alpha_mode: wgpu::CompositeAlphaMode::PreMultiplied,
+        //     view_formats: vec![],
+        // };
 
         WaveformWindow {
-            wgpu,
-            config,
+            surface_id: wgpu.surface_id(),
+            wgpu: wgpu.clone(),
+            // config,
             depth_texture: None,
-            swapchain_format,
+            swapchain_format: wgpu
+                .swapchain_format()
+                .expect("WaveformWindow::new should be on configured surface"),
+            // swapchain_format,
             render_window,
             must_reconfigure: true,
+            last_configure_size: (width, height),
             last_fps_dump_time: Instant::now(),
             frame_count: 0,
             fps_callback,
         }
     }
 
+    fn surface_id(&self) -> u32 {
+        self.surface_id
+    }
+
+    // FIXME: Pass as a flag to render?
     fn reconfigure(&mut self, width: u32, height: u32) {
         // Reconfigure the surface with the new size
-        self.config.width = width.max(1);
-        self.config.height = height.max(1);
+        // self.config.width = width.max(1);
+        // self.config.height = height.max(1);
         self.must_reconfigure = true;
     }
 
     fn render(
         &mut self,
+        wgpu: &Rc<dyn WgpuSurface>,
+        surface_texture: &wgpu::SurfaceTexture,
         left_waveform_view: &mut Option<Box<dyn WaveformView>>,
         right_waveform_view: &mut Option<Box<dyn WaveformView>>,
     ) {
-        if self.must_reconfigure {
-            self.wgpu
-                .surface()
-                .configure(self.wgpu.device(), &self.config);
+        if self.last_configure_size
+            != (
+                surface_texture.texture.width(),
+                surface_texture.texture.height(),
+            )
+        {
+            // wgpu.surface().configure(wgpu.device(), &self.config);
 
             // Create the depth texture
-            self.depth_texture =
-                Some(self.wgpu.device().create_texture(&wgpu::TextureDescriptor {
-                    label: Some("Depth Texture"),
-                    size: wgpu::Extent3d {
-                        width: self.config.width,
-                        height: self.config.height,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Depth32Float,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                        | wgpu::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                }));
+            self.depth_texture = Some(wgpu.device().create_texture(&wgpu::TextureDescriptor {
+                label: Some("Depth Texture"),
+                size: wgpu::Extent3d {
+                    width: surface_texture.texture.width(),
+                    height: surface_texture.texture.height(),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Depth32Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            }));
 
             self.must_reconfigure = false;
         }
 
-        let frame = self
-            .wgpu
-            .surface()
-            .get_current_texture()
-            .expect("Failed to acquire next swap chain texture");
-        let view = frame
+        // let frame = wgpu
+        //     .surface()
+        //     .get_current_texture()
+        //     .expect("Failed to acquire next swap chain texture");
+        let view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -147,8 +163,7 @@ impl WaveformWindow {
             .unwrap()
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let mut encoder = self
-            .wgpu
+        let mut encoder = wgpu
             .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
@@ -178,8 +193,8 @@ impl WaveformWindow {
                 waveform_view.render(&mut encoder, &view, Some(&depth_texture_view));
             }
         }
-        self.wgpu.queue().submit(Some(encoder.finish()));
-        frame.present();
+        wgpu.queue().submit(Some(encoder.finish()));
+        // frame.present();
 
         let now = Instant::now();
         self.frame_count += 1;
@@ -272,17 +287,18 @@ impl ApplicationState {
 
     fn create_waveform_view(
         &self,
+        wgpu: &Rc<dyn WgpuSurface>,
         style: ui::Style,
         render_window: RenderWindow,
         is_left_channel: bool,
     ) -> Box<dyn WaveformView> {
-        let (window, anchor_position) = match render_window {
+        let (_, anchor_position) = match render_window {
             RenderWindow::Primary => self.primary_waveform_window.as_ref().unwrap(),
             RenderWindow::Secondary => self.secondary_waveform_window.as_ref().unwrap(),
         };
-        let device = window.wgpu.device();
-        let queue = window.wgpu.queue();
-        let swapchain_format = window.swapchain_format;
+        let device = wgpu.device();
+        let queue = wgpu.queue();
+        let swapchain_format = wgpu.swapchain_format().unwrap();
         let mut view: Box<dyn WaveformView> = match style {
             ui::Style::Ridgeline => Box::new(views::RidgelineWaveformView::new(
                 device,
@@ -346,7 +362,7 @@ impl ApplicationState {
 
     fn configure_primary_wgpu_surface(
         &mut self,
-        wgpu_surface: Rc<dyn WgpuSurface>,
+        wgpu: &Rc<dyn WgpuSurface>,
         anchor_position: PanelAnchorPosition,
         width: u32,
         height: u32,
@@ -360,27 +376,25 @@ impl ApplicationState {
                 .unwrap();
         });
 
-        let window = WaveformWindow::new(
-            wgpu_surface.clone(),
-            width,
-            height,
-            RenderWindow::Primary,
-            fps_callback,
-        );
+        let window = WaveformWindow::new(wgpu, width, height, RenderWindow::Primary, fps_callback);
         self.primary_waveform_window = Some((window, anchor_position));
 
         self.left_waveform_view =
-            Some(self.create_waveform_view(self.config.style, RenderWindow::Primary, true));
+            Some(self.create_waveform_view(wgpu, self.config.style, RenderWindow::Primary, true));
 
         if self.config.general.channels == ui::RenderChannels::Both {
-            self.right_waveform_view =
-                Some(self.create_waveform_view(self.config.style, RenderWindow::Primary, false));
+            self.right_waveform_view = Some(self.create_waveform_view(
+                wgpu,
+                self.config.style,
+                RenderWindow::Primary,
+                false,
+            ));
         }
     }
 
     fn configure_secondary_wgpu_surface(
         &mut self,
-        wgpu_surface: Rc<dyn WgpuSurface>,
+        wgpu_surface: &Rc<dyn WgpuSurface>,
         anchor_position: PanelAnchorPosition,
         width: u32,
         height: u32,
@@ -395,7 +409,7 @@ impl ApplicationState {
         });
 
         let window = WaveformWindow::new(
-            wgpu_surface.clone(),
+            wgpu_surface,
             width,
             height,
             RenderWindow::Secondary,
@@ -403,8 +417,12 @@ impl ApplicationState {
         );
         self.secondary_waveform_window = Some((window, anchor_position));
 
-        self.right_waveform_view =
-            Some(self.create_waveform_view(self.config.style, RenderWindow::Secondary, false));
+        self.right_waveform_view = Some(self.create_waveform_view(
+            wgpu_surface,
+            self.config.style,
+            RenderWindow::Secondary,
+            false,
+        ));
     }
 
     fn primary_resized(&mut self, width: u32, height: u32) {
@@ -467,7 +485,7 @@ impl ApplicationState {
             );
         }
     }
-    fn render(&mut self, surface_id: u32) {
+    fn render(&mut self, wgpu: &Rc<dyn WgpuSurface>, surface_texture: &wgpu::SurfaceTexture) {
         if !self.lazy_config_changes.is_empty() {
             if let Some(waveform_view) = self.left_waveform_view.as_mut() {
                 waveform_view
@@ -480,14 +498,24 @@ impl ApplicationState {
         }
 
         if let Some((window, _)) = self.primary_waveform_window.as_mut() {
-            if window.wgpu.surface_id() == surface_id {
-                window.render(&mut self.left_waveform_view, &mut self.right_waveform_view);
+            if window.surface_id() == wgpu.surface_id() {
+                window.render(
+                    wgpu,
+                    surface_texture,
+                    &mut self.left_waveform_view,
+                    &mut self.right_waveform_view,
+                );
             }
         }
 
         if let Some((window, _)) = self.secondary_waveform_window.as_mut() {
-            if window.wgpu.surface_id() == surface_id {
-                window.render(&mut self.left_waveform_view, &mut self.right_waveform_view);
+            if window.surface_id() == wgpu.surface_id() {
+                window.render(
+                    wgpu,
+                    surface_texture,
+                    &mut self.left_waveform_view,
+                    &mut self.right_waveform_view,
+                );
             }
         }
 
@@ -507,12 +535,17 @@ impl ApplicationState {
     }
 
     pub fn recreate_views(&mut self) {
-        if self.primary_waveform_window.is_some() {
-            self.left_waveform_view =
-                Some(self.create_waveform_view(self.config.style, RenderWindow::Primary, true));
+        if let Some((window, _)) = self.primary_waveform_window.as_ref() {
+            self.left_waveform_view = Some(self.create_waveform_view(
+                &window.wgpu,
+                self.config.style,
+                RenderWindow::Primary,
+                true,
+            ));
 
             if self.config.general.channels == ui::RenderChannels::Both {
                 self.right_waveform_view = Some(self.create_waveform_view(
+                    &window.wgpu,
                     self.config.style,
                     RenderWindow::Primary,
                     false,
@@ -521,9 +554,13 @@ impl ApplicationState {
                 self.right_waveform_view = None;
             }
         }
-        if self.secondary_waveform_window.is_some() {
-            self.right_waveform_view =
-                Some(self.create_waveform_view(self.config.style, RenderWindow::Secondary, false));
+        if let Some((window, _)) = self.secondary_waveform_window.as_ref() {
+            self.right_waveform_view = Some(self.create_waveform_view(
+                &window.wgpu,
+                self.config.style,
+                RenderWindow::Secondary,
+                false,
+            ));
         }
     }
 }
@@ -580,25 +617,26 @@ const CONFIG_COMMAND: &[u8] = b"config";
 const QUIT_COMMAND: &[u8] = b"quit";
 
 pub struct SlintWgpuSurface {
-    adapter: wgpu::Adapter,
+    // adapter: wgpu::Adapter,
     device: wgpu::Device,
-    surface: wgpu::Surface<'static>,
+    // surface: wgpu::Surface<'static>,
     queue: Arc<wgpu::Queue>,
+    surface_configuration: Option<wgpu::SurfaceConfiguration>,
     // pub layer: LayerSurface,
 }
 
 impl WgpuSurface for SlintWgpuSurface {
-    fn adapter(&self) -> &wgpu::Adapter {
-        &self.adapter
-    }
+    // fn adapter(&self) -> &wgpu::Adapter {
+    //     &self.adapter
+    // }
 
     fn device(&self) -> &wgpu::Device {
         &self.device
     }
 
-    fn surface(&self) -> &wgpu::Surface<'static> {
-        &self.surface
-    }
+    // fn surface(&self) -> &wgpu::Surface<'static> {
+    //     &self.surface
+    // }
 
     fn queue(&self) -> &Arc<wgpu::Queue> {
         &self.queue
@@ -606,6 +644,12 @@ impl WgpuSurface for SlintWgpuSurface {
 
     fn surface_id(&self) -> u32 {
         0 // Only one window will be used
+    }
+
+    fn swapchain_format(&self) -> Option<wgpu::TextureFormat> {
+        self.surface_configuration
+            .as_ref()
+            .map(|config| config.format)
     }
 }
 

@@ -212,12 +212,8 @@ impl LayerShellHandler for WlrWaylandEventHandler {
             // FIXME: Change the holder thing holding the anchor, this is weird. Maybe this should let the app state decide instead
             if let Some(anchor_position) = self.primary_wgpu_holder.take() {
                 let wgpu = self.primary_wgpu.as_ref().unwrap().clone() as Rc<dyn WgpuSurface>;
-                self.app_state.configure_primary_wgpu_surface(
-                    &wgpu,
-                    anchor_position,
-                    new_width,
-                    new_height,
-                );
+                self.app_state
+                    .configure_primary_wgpu_surface(&wgpu, anchor_position);
                 // Render once to let wgpu finalize the surface initialization.
                 // FIXME: Isn't the frame callback enough?
                 // self.app_state.render(&wgpu);
@@ -239,12 +235,8 @@ impl LayerShellHandler for WlrWaylandEventHandler {
         if self.secondary_layer.as_ref() == Some(layer) {
             if let Some(anchor_position) = self.secondary_wgpu_holder.take() {
                 let wgpu = self.secondary_wgpu.as_ref().unwrap().clone() as Rc<dyn WgpuSurface>;
-                self.app_state.configure_secondary_wgpu_surface(
-                    &wgpu,
-                    anchor_position,
-                    new_width,
-                    new_height,
-                );
+                self.app_state
+                    .configure_secondary_wgpu_surface(&wgpu, anchor_position);
                 // Render once to let wgpu finalize the surface initialization.
                 // self.app_state.render(&wgpu);
             } else if Some(layer) == self.secondary_layer.as_ref() {

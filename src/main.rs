@@ -49,6 +49,7 @@ struct WaveformWindow {
     // config: wgpu::SurfaceConfiguration,
     swapchain_format: TextureFormat,
     render_window: RenderWindow,
+    // FIXME: Remove
     must_reconfigure: bool,
     last_configure_size: (u32, u32),
     last_fps_dump_time: Instant,
@@ -65,8 +66,6 @@ enum RenderWindow {
 impl WaveformWindow {
     fn new(
         wgpu: &Rc<dyn WgpuSurface>,
-        width: u32,
-        height: u32,
         render_window: RenderWindow,
         fps_callback: Box<dyn Fn(u32)>,
     ) -> WaveformWindow {
@@ -95,6 +94,7 @@ impl WaveformWindow {
             // swapchain_format,
             render_window,
             must_reconfigure: true,
+            // Force reconfiguration of the depth texture on the first render
             last_configure_size: (u32::MAX, u32::MAX),
             last_fps_dump_time: Instant::now(),
             frame_count: 0,
@@ -364,8 +364,6 @@ impl ApplicationState {
         &mut self,
         wgpu: &Rc<dyn WgpuSurface>,
         anchor_position: PanelAnchorPosition,
-        width: u32,
-        height: u32,
     ) {
         let config_window = self.config_window.clone();
         let fps_callback = Box::new(move |fps: u32| {
@@ -376,7 +374,7 @@ impl ApplicationState {
                 .unwrap();
         });
 
-        let window = WaveformWindow::new(wgpu, width, height, RenderWindow::Primary, fps_callback);
+        let window = WaveformWindow::new(wgpu, RenderWindow::Primary, fps_callback);
         self.primary_waveform_window = Some((window, anchor_position));
 
         self.left_waveform_view =
@@ -396,8 +394,6 @@ impl ApplicationState {
         &mut self,
         wgpu_surface: &Rc<dyn WgpuSurface>,
         anchor_position: PanelAnchorPosition,
-        width: u32,
-        height: u32,
     ) {
         let config_window = self.config_window.clone();
         let fps_callback = Box::new(move |fps: u32| {
@@ -408,13 +404,7 @@ impl ApplicationState {
                 .unwrap();
         });
 
-        let window = WaveformWindow::new(
-            wgpu_surface,
-            width,
-            height,
-            RenderWindow::Secondary,
-            fps_callback,
-        );
+        let window = WaveformWindow::new(wgpu_surface, RenderWindow::Secondary, fps_callback);
         self.secondary_waveform_window = Some((window, anchor_position));
 
         self.right_waveform_view = Some(self.create_waveform_view(
@@ -776,6 +766,7 @@ pub fn main() {
         let config_window_weak = config_window.as_weak();
         let config = config.clone();
         let mut app_state_capture = None;
+        let mut wgpu = None;
         test_window
             .window()
             .set_rendering_notifier(move |state, graphics_api| {
@@ -799,14 +790,24 @@ pub fn main() {
                                     ..
                                 } = graphics_api
                                 {
-                                    app_state.left_waveform_view =
-                                        Some(app_state.create_waveform_view_no_window(
-                                            ui::Style::Compressed,
-                                            true,
-                                            device,
-                                            &Arc::new(queue.clone()),
-                                            surface_config.format,
-                                        ));
+                                    wgpu = Some(Rc::new(SlintWgpuSurface {
+                                        device: device.clone(),
+                                        queue: Arc::new(queue.clone()),
+                                        surface_configuration: Some(surface_config.clone()),
+                                    })
+                                        as Rc<dyn WgpuSurface>);
+                                    app_state.configure_primary_wgpu_surface(
+                                        &wgpu.as_ref().unwrap(),
+                                        PanelAnchorPosition::Bottom,
+                                    );
+                                    // app_state.left_waveform_view =
+                                    //     Some(app_state.create_waveform_view_no_window(
+                                    //         ui::Style::Compressed,
+                                    //         true,
+                                    //         device,
+                                    //         &Arc::new(queue.clone()),
+                                    //         surface_config.format,
+                                    //     ));
                                 }
                                 app_state_capture = Some(app_state);
                             }
@@ -826,20 +827,21 @@ pub fn main() {
                             // println!("{}", tick);
                             app_state.process_audio(tick as u32);
 
-                            let waveform_view = app_state.left_waveform_view.as_mut().unwrap();
+                            // let waveform_view = app_state.left_waveform_view.as_mut().unwrap();
 
-                            let view = frame
-                                .texture
-                                .create_view(&wgpu::TextureViewDescriptor::default());
+                            // let view = frame
+                            //     .texture
+                            //     .create_view(&wgpu::TextureViewDescriptor::default());
 
-                            let mut encoder =
-                                device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                                    label: None,
-                                });
+                            // let mut encoder =
+                            //     device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            //         label: None,
+                            //     });
+                            app_state.render(&wgpu.as_ref().unwrap(), frame);
 
-                            waveform_view.render(&mut encoder, &view, None);
+                            // waveform_view.render(&mut encoder, &view, None);
 
-                            queue.submit(Some(encoder.finish()));
+                            // queue.submit(Some(encoder.finish()));
                         }
                     }
                     _ => {}

@@ -185,12 +185,12 @@ impl WaveformWindow {
 
         if let Some(waveform_view) = left_waveform_view {
             if waveform_view.render_window() == self.render_window {
-                waveform_view.render(&mut encoder, &view, Some(&depth_texture_view));
+                waveform_view.render(&mut encoder, &view, &depth_texture_view);
             }
         }
         if let Some(waveform_view) = right_waveform_view {
             if waveform_view.render_window() == self.render_window {
-                waveform_view.render(&mut encoder, &view, Some(&depth_texture_view));
+                waveform_view.render(&mut encoder, &view, &depth_texture_view);
             }
         }
         wgpu.queue().submit(Some(encoder.finish()));
@@ -324,41 +324,41 @@ impl ApplicationState {
         view
     }
 
-    fn create_waveform_view_no_window(
-        &self,
-        style: ui::Style,
-        is_left_channel: bool,
-        device: &wgpu::Device,
-        queue: &Arc<wgpu::Queue>,
-        swapchain_format: TextureFormat,
-    ) -> Box<dyn WaveformView> {
-        // let device = window.wgpu.device();
-        // let queue = window.wgpu.queue();
-        // let swapchain_format = window.swapchain_format;
-        let mut view: Box<dyn WaveformView> = match style {
-            ui::Style::Ridgeline => Box::new(views::RidgelineWaveformView::new(
-                device,
-                queue,
-                swapchain_format,
-                RenderWindow::Primary,
-                PanelAnchorPosition::Bottom,
-                self.config.general.channels,
-                is_left_channel,
-            )),
-            ui::Style::Compressed => Box::new(views::CompressedWaveformView::new(
-                device,
-                queue,
-                swapchain_format,
-                RenderWindow::Primary,
-                PanelAnchorPosition::Bottom,
-                self.config.general.channels,
-                is_left_channel,
-            )),
-        };
-        view.set_screen_size(self.screen_size.0, self.screen_size.1);
-        view.apply_lazy_config_changes(&self.config, None);
-        view
-    }
+    // fn create_waveform_view_no_window(
+    //     &self,
+    //     style: ui::Style,
+    //     is_left_channel: bool,
+    //     device: &wgpu::Device,
+    //     queue: &Arc<wgpu::Queue>,
+    //     swapchain_format: TextureFormat,
+    // ) -> Box<dyn WaveformView> {
+    //     // let device = window.wgpu.device();
+    //     // let queue = window.wgpu.queue();
+    //     // let swapchain_format = window.swapchain_format;
+    //     let mut view: Box<dyn WaveformView> = match style {
+    //         ui::Style::Ridgeline => Box::new(views::RidgelineWaveformView::new(
+    //             device,
+    //             queue,
+    //             swapchain_format,
+    //             RenderWindow::Primary,
+    //             PanelAnchorPosition::Bottom,
+    //             self.config.general.channels,
+    //             is_left_channel,
+    //         )),
+    //         ui::Style::Compressed => Box::new(views::CompressedWaveformView::new(
+    //             device,
+    //             queue,
+    //             swapchain_format,
+    //             RenderWindow::Primary,
+    //             PanelAnchorPosition::Bottom,
+    //             self.config.general.channels,
+    //             is_left_channel,
+    //         )),
+    //     };
+    //     view.set_screen_size(self.screen_size.0, self.screen_size.1);
+    //     view.apply_lazy_config_changes(&self.config, None);
+    //     view
+    // }
 
     fn configure_primary_wgpu_surface(
         &mut self,

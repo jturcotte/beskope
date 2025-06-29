@@ -33,7 +33,7 @@ pub trait WaveformView {
         &self,
         encoder: &mut CommandEncoder,
         view: &TextureView,
-        depth_texture_view: Option<&TextureView>,
+        depth_texture_view: &TextureView,
     );
 
     fn process_audio(

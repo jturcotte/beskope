@@ -593,7 +593,7 @@ impl WaveformView for RidgelineWaveformView {
         &self,
         encoder: &mut CommandEncoder,
         view: &TextureView,
-        depth_texture_view: Option<&TextureView>,
+        depth_texture_view: &TextureView,
     ) {
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -607,7 +607,7 @@ impl WaveformView for RidgelineWaveformView {
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: depth_texture_view.expect("FIXME"),
+                    view: depth_texture_view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -635,7 +635,7 @@ impl WaveformView for RidgelineWaveformView {
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: depth_texture_view.expect("FIXME"),
+                    view: depth_texture_view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,

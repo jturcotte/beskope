@@ -24,6 +24,8 @@ use wayland_client::{Connection, QueueHandle};
 use wgpu::TextureFormat;
 use wlr_layers::{PanelAnchorPosition, WlrWaylandEventHandler};
 
+use crate::ui::RIDGELINE_WIDTH;
+
 mod audio;
 mod ui;
 mod views;
@@ -826,7 +828,12 @@ pub fn main() {
                             let tick = test_window.get_tick();
                             // println!("{}", tick);
                             app_state.process_audio(tick as u32);
+                            // FIXME: Not every frame
+                            app_state
+                                .set_screen_size(frame.texture.width(), frame.texture.height());
 
+                            // FIXME: Find a way to apply the dirty screen size in ridgeline
+                            app_state.lazy_config_changes.insert(RIDGELINE_WIDTH);
                             // let waveform_view = app_state.left_waveform_view.as_mut().unwrap();
 
                             // let view = frame

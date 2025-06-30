@@ -342,9 +342,9 @@ impl RidgelineWaveformView {
     }
 
     fn get_transform_matrix(&self, panel_width: u32, horizon_offset: f32) -> [[f32; 4]; 4] {
-        let panel_width = panel_width as f32;
         let screen_width = self.screen_width;
         let screen_height = self.screen_height;
+        let panel_width = screen_height as f32 / 3.0;
 
         // This and the window_x/y assume that the surface is on screen edges.
         // Other panels positioned in-between could make the perspective transform incorrect
@@ -454,11 +454,11 @@ impl RidgelineWaveformView {
             let win_bottom_px = window_y + window_height;
 
             // Map window pixel bounds to frustum bounds
-            let left = full_left + (full_right - full_left) * (win_left_px / screen_width);
-            let right = full_left + (full_right - full_left) * (win_right_px / screen_width);
+            let left = full_left;
+            let right = full_right;
             // Y axis: top is smaller y, bottom is larger y in screen coordinates
-            let top = full_top - (full_top - full_bottom) * (win_top_px / screen_height);
-            let bottom = full_top - (full_top - full_bottom) * (win_bottom_px / screen_height);
+            let top = full_top;
+            let bottom = full_bottom;
 
             // cgmath outputs z values in [-1, 1] for the near and far planes, but wgpu expects them in [0, 1].
             const OPENGL_TO_WGPU_MATRIX: Matrix4<f32> = Matrix4::from_cols(

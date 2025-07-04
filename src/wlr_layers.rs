@@ -218,7 +218,7 @@ impl LayerShellHandler for WlrWaylandEventHandler {
                 // FIXME: Isn't the frame callback enough?
                 // self.app_state.render(&wgpu);
             } else if Some(layer) == self.primary_layer.as_ref() {
-                self.app_state.primary_resized(new_width, new_height);
+                self.app_state.primary_resized();
                 *self
                     .primary_wgpu
                     .as_mut()
@@ -240,7 +240,7 @@ impl LayerShellHandler for WlrWaylandEventHandler {
                 // Render once to let wgpu finalize the surface initialization.
                 // self.app_state.render(&wgpu);
             } else if Some(layer) == self.secondary_layer.as_ref() {
-                self.app_state.secondary_resized(new_width, new_height);
+                self.app_state.secondary_resized();
                 *self
                     .secondary_wgpu
                     .as_mut()
@@ -257,7 +257,7 @@ impl LayerShellHandler for WlrWaylandEventHandler {
 }
 
 pub struct WlrWgpuSurface {
-    adapter: wgpu::Adapter,
+    // adapter: wgpu::Adapter,
     device: wgpu::Device,
     surface: wgpu::Surface<'static>,
     queue: Arc<wgpu::Queue>,
@@ -314,7 +314,7 @@ impl WlrWgpuSurface {
         let swapchain_format = swapchain_capabilities.formats[0];
 
         WlrWgpuSurface {
-            adapter,
+            // adapter,
             device,
             surface,
             queue: Arc::new(queue),

@@ -21,7 +21,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use views::WaveformView;
 use wayland_client::{Connection, QueueHandle};
-use wgpu::TextureFormat;
+// use wgpu::TextureFormat;
 use wlr_layers::{PanelAnchorPosition, WlrWaylandEventHandler};
 
 use crate::ui::RIDGELINE_WIDTH;
@@ -49,7 +49,7 @@ struct WaveformWindow {
     wgpu: Rc<dyn WgpuSurface>,
     depth_texture: Option<wgpu::Texture>,
     // config: wgpu::SurfaceConfiguration,
-    swapchain_format: TextureFormat,
+    // swapchain_format: TextureFormat,
     render_window: RenderWindow,
     // FIXME: Remove
     must_reconfigure: bool,
@@ -90,9 +90,9 @@ impl WaveformWindow {
             wgpu: wgpu.clone(),
             // config,
             depth_texture: None,
-            swapchain_format: wgpu
-                .swapchain_format()
-                .expect("WaveformWindow::new should be on configured surface"),
+            // swapchain_format: wgpu
+            //     .swapchain_format()
+            //     .expect("WaveformWindow::new should be on configured surface"),
             // swapchain_format,
             render_window,
             must_reconfigure: true,
@@ -109,7 +109,7 @@ impl WaveformWindow {
     }
 
     // FIXME: Pass as a flag to render?
-    fn reconfigure(&mut self, width: u32, height: u32) {
+    fn reconfigure(&mut self) {
         // Reconfigure the surface with the new size
         // self.config.width = width.max(1);
         // self.config.height = height.max(1);
@@ -417,14 +417,14 @@ impl ApplicationState {
         ));
     }
 
-    fn primary_resized(&mut self, width: u32, height: u32) {
+    fn primary_resized(&mut self) {
         if let Some((waveform_window, _)) = self.primary_waveform_window.as_mut() {
-            waveform_window.reconfigure(width, height);
+            waveform_window.reconfigure();
         }
     }
-    fn secondary_resized(&mut self, width: u32, height: u32) {
+    fn secondary_resized(&mut self) {
         if let Some((waveform_window, _)) = self.secondary_waveform_window.as_mut() {
-            waveform_window.reconfigure(width, height);
+            waveform_window.reconfigure();
         }
     }
 
@@ -818,10 +818,7 @@ pub fn main() {
                     }
                     slint::RenderingState::BeforeRendering => {
                         if let slint::GraphicsAPI::WGPU24 {
-                            device,
-                            queue,
-                            frame: Some(frame),
-                            ..
+                            frame: Some(frame), ..
                         } = graphics_api
                         {
                             let app_state = app_state_capture.as_mut().unwrap();

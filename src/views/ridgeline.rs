@@ -341,7 +341,7 @@ impl RidgelineWaveformView {
         }
     }
 
-    fn get_transform_matrix(&self, panel_width: u32, horizon_offset: f32) -> [[f32; 4]; 4] {
+    fn get_transform_matrix(&self, _panel_width: u32, horizon_offset: f32) -> [[f32; 4]; 4] {
         let screen_width = self.screen_width;
         let screen_height = self.screen_height;
         let panel_width = screen_height as f32 / 3.0;
@@ -438,7 +438,7 @@ impl RidgelineWaveformView {
             _ => None,
         };
 
-        if let Some((transform_matrix, window_x, window_y)) = transform_left_top {
+        if let Some((transform_matrix, _window_x, _window_y)) = transform_left_top {
             let near_z = 0.0;
             let far_z = 1.0;
 
@@ -448,10 +448,10 @@ impl RidgelineWaveformView {
             let full_left = -1.0 + horizontal_offset;
 
             // Window bounds in pixels
-            let win_left_px = window_x;
-            let win_right_px = window_x + window_width;
-            let win_top_px = window_y;
-            let win_bottom_px = window_y + window_height;
+            // let win_left_px = window_x;
+            // let win_right_px = window_x + window_width;
+            // let win_top_px = window_y;
+            // let win_bottom_px = window_y + window_height;
 
             // Map window pixel bounds to frustum bounds
             let left = full_left;

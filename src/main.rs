@@ -25,6 +25,7 @@ use wayland_client::{Connection, QueueHandle};
 use wlr_layers::{PanelAnchorPosition, WlrWaylandEventHandler};
 
 use crate::ui::RIDGELINE_WIDTH;
+use crate::wlr_layers::WlrCanvasContext;
 
 mod audio;
 mod ui;
@@ -568,6 +569,18 @@ enum AppMessage {
                 ) + Send,
         >,
     ),
+    WlrGlobalCanvasCallback(
+        Box<dyn FnOnce(&mut dyn GlobalCanvas<Context = WlrCanvasContext>, WlrCanvasContext) + Send>,
+    ),
+}
+
+trait GlobalCanvas {
+    type Context;
+    fn app_state(&mut self) -> &mut ApplicationState;
+    fn apply_panel_width_change(&mut self);
+    fn apply_panel_exclusive_ratio_change(&mut self);
+    fn apply_panel_layout(&mut self, context: &Self::Context);
+    fn set_panel_layer(&mut self, layer: ui::PanelLayer);
 }
 
 impl AppMessage {
@@ -578,13 +591,23 @@ impl AppMessage {
         AppMessage::ApplicationStateCallback(Box::new(f))
     }
 
-    pub fn to_event_handler<F>(f: F) -> Self
+    pub fn to_event_handler2<F>(f: F) -> Self
     where
         F: FnOnce(&mut WlrWaylandEventHandler, &Connection, &QueueHandle<WlrWaylandEventHandler>)
             + Send
             + 'static,
     {
         AppMessage::WlrWaylandEventHandlerCallback(Box::new(f))
+    }
+
+    // Crap this can't be compile time, it needs a box dyn
+    pub fn to_event_handler<F>(f: F) -> Self
+    where
+        F: FnOnce(&mut dyn GlobalCanvas<Context = WlrCanvasContext>, WlrCanvasContext)
+            + Send
+            + 'static,
+    {
+        AppMessage::WlrGlobalCanvasCallback(Box::new(f))
     }
 }
 

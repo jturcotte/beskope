@@ -223,9 +223,9 @@ pub fn init(send_app_msg: impl Fn(AppMessage) + Clone + 'static) -> Configuratio
     backend.on_style_changed({
         let send = send_app_msg.clone();
         move |config| {
-            send(AppMessage::to_event_handler(move |handler, conn, qh| {
-                handler.app_state.config.style = config;
-                handler.apply_panel_layout(conn, qh);
+            send(AppMessage::to_event_handler(move |handler, context| {
+                handler.app_state().config.style = config;
+                handler.apply_panel_layout(&context);
             }));
         }
     });
@@ -241,18 +241,18 @@ pub fn init(send_app_msg: impl Fn(AppMessage) + Clone + 'static) -> Configuratio
     backend.on_panel_layout_changed({
         let send = send_app_msg.clone();
         move |config| {
-            send(AppMessage::to_event_handler(move |handler, conn, qh| {
-                handler.app_state.config.general.layout = config;
-                handler.apply_panel_layout(conn, qh);
+            send(AppMessage::to_event_handler(move |handler, context| {
+                handler.app_state().config.general.layout = config;
+                handler.apply_panel_layout(&context);
             }));
         }
     });
     backend.on_ridgeline_panel_layer_changed({
         let send = send_app_msg.clone();
         move |config| {
-            send(AppMessage::to_event_handler(move |handler, _, _| {
-                handler.app_state.config.ridgeline.layer = config;
-                if handler.app_state.config.style == Style::Ridgeline {
+            send(AppMessage::to_event_handler(move |handler, _| {
+                handler.app_state().config.ridgeline.layer = config;
+                if handler.app_state().config.style == Style::Ridgeline {
                     handler.set_panel_layer(config);
                 }
             }));
@@ -261,13 +261,13 @@ pub fn init(send_app_msg: impl Fn(AppMessage) + Clone + 'static) -> Configuratio
     backend.on_ridgeline_panel_width_changed({
         let send = send_app_msg.clone();
         move |config| {
-            send(AppMessage::to_event_handler(move |handler, _, _| {
-                handler.app_state.config.ridgeline.width = config as u32;
+            send(AppMessage::to_event_handler(move |handler, _| {
+                handler.app_state().config.ridgeline.width = config as u32;
                 handler
-                    .app_state
+                    .app_state()
                     .lazy_config_changes
                     .insert(RIDGELINE_WIDTH);
-                if handler.app_state.config.style == Style::Ridgeline {
+                if handler.app_state().config.style == Style::Ridgeline {
                     handler.apply_panel_width_change();
                 }
             }));
@@ -276,9 +276,9 @@ pub fn init(send_app_msg: impl Fn(AppMessage) + Clone + 'static) -> Configuratio
     backend.on_ridgeline_panel_exclusive_ratio_changed({
         let send = send_app_msg.clone();
         move |config| {
-            send(AppMessage::to_event_handler(move |handler, _, _| {
-                handler.app_state.config.ridgeline.exclusive_ratio = config;
-                if handler.app_state.config.style == Style::Ridgeline {
+            send(AppMessage::to_event_handler(move |handler, _| {
+                handler.app_state().config.ridgeline.exclusive_ratio = config;
+                if handler.app_state().config.style == Style::Ridgeline {
                     handler.apply_panel_exclusive_ratio_change();
                 }
             }));
@@ -327,9 +327,9 @@ pub fn init(send_app_msg: impl Fn(AppMessage) + Clone + 'static) -> Configuratio
     backend.on_compressed_panel_layer_changed({
         let send = send_app_msg.clone();
         move |config| {
-            send(AppMessage::to_event_handler(move |handler, _, _| {
-                handler.app_state.config.compressed.layer = config;
-                if handler.app_state.config.style == Style::Compressed {
+            send(AppMessage::to_event_handler(move |handler, _| {
+                handler.app_state().config.compressed.layer = config;
+                if handler.app_state().config.style == Style::Compressed {
                     handler.set_panel_layer(config);
                 }
             }));
@@ -338,9 +338,9 @@ pub fn init(send_app_msg: impl Fn(AppMessage) + Clone + 'static) -> Configuratio
     backend.on_compressed_panel_width_changed({
         let send = send_app_msg.clone();
         move |config| {
-            send(AppMessage::to_event_handler(move |handler, _, _| {
-                handler.app_state.config.compressed.width = config as u32;
-                if handler.app_state.config.style == Style::Compressed {
+            send(AppMessage::to_event_handler(move |handler, _| {
+                handler.app_state().config.compressed.width = config as u32;
+                if handler.app_state().config.style == Style::Compressed {
                     handler.apply_panel_width_change();
                 }
             }));
@@ -349,9 +349,9 @@ pub fn init(send_app_msg: impl Fn(AppMessage) + Clone + 'static) -> Configuratio
     backend.on_compressed_panel_exclusive_ratio_changed({
         let send = send_app_msg.clone();
         move |config| {
-            send(AppMessage::to_event_handler(move |handler, _, _| {
-                handler.app_state.config.compressed.exclusive_ratio = config;
-                if handler.app_state.config.style == Style::Compressed {
+            send(AppMessage::to_event_handler(move |handler, _| {
+                handler.app_state().config.compressed.exclusive_ratio = config;
+                if handler.app_state().config.style == Style::Compressed {
                     handler.apply_panel_exclusive_ratio_change();
                 }
             }));
@@ -409,11 +409,11 @@ pub fn init(send_app_msg: impl Fn(AppMessage) + Clone + 'static) -> Configuratio
         let window_weak = window.as_weak();
         let send = send_app_msg.clone();
         move || {
-            send(AppMessage::to_event_handler(move |handler, conn, qh| {
-                handler.app_state.reload_configuration();
+            send(AppMessage::to_event_handler(move |handler, context| {
+                handler.app_state().reload_configuration();
                 // TODO: Track whether the layout configuration was reverted instead of
                 //       unconditionally recreating surfaces.
-                handler.apply_panel_layout(conn, qh);
+                handler.apply_panel_layout(&context);
             }));
 
             let window = window_weak.upgrade().unwrap();

@@ -33,7 +33,7 @@ use wayland_client::{
 };
 
 use crate::ui::{self, PanelLayer};
-use crate::{AppMessage, ApplicationState, GlobalCanvas, WgpuSurface};
+use crate::{AppMessage, ApplicationState, GlobalCanvas, GlobalCanvasContext, WgpuSurface};
 
 impl CompositorHandler for WlrWaylandEventHandler {
     fn scale_factor_changed(
@@ -68,11 +68,14 @@ impl CompositorHandler for WlrWaylandEventHandler {
                 AppMessage::WlrWaylandEventHandlerCallback(closure) => closure(self, conn, qh),
                 AppMessage::WlrGlobalCanvasCallback(closure) => closure(
                     self,
-                    WlrCanvasContext {
+                    GlobalCanvasContext::Wlr(WlrCanvasContext {
                         conn: conn.clone(),
                         qh: qh.clone(),
-                    },
+                    }),
                 ),
+                AppMessage::SlintGlobalCanvasCallback(_) => {
+                    panic!("Incorrect GlobalCanvas callback type")
+                }
             }
         }
 
@@ -387,7 +390,6 @@ pub struct WlrCanvasContext {
 }
 
 impl GlobalCanvas for WlrWaylandEventHandler {
-    type Context = WlrCanvasContext;
     fn app_state(&mut self) -> &mut ApplicationState {
         &mut self.app_state
     }
@@ -400,8 +402,14 @@ impl GlobalCanvas for WlrWaylandEventHandler {
         self.apply_panel_exclusive_ratio_change();
     }
 
-    fn apply_panel_layout(&mut self, context: &WlrCanvasContext) {
-        self.apply_panel_layout(&context.conn, &context.qh);
+    fn apply_panel_layout(&mut self, context: &GlobalCanvasContext) {
+        match context {
+            GlobalCanvasContext::Wlr(WlrCanvasContext { conn, qh }) => {
+                self.apply_panel_layout(&conn, &qh);
+            }
+            _ => panic!("Incorrect context type"),
+        }
+        // self.apply_panel_layout(&context.conn, &context.qh);
     }
 
     fn set_panel_layer(&mut self, layer: PanelLayer) {

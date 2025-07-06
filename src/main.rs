@@ -569,47 +569,50 @@ enum AppMessage {
                 ) + Send,
         >,
     ),
-    WlrGlobalCanvasCallback(
-        Box<dyn FnOnce(&mut dyn GlobalCanvas<Context = WlrCanvasContext>, WlrCanvasContext) + Send>,
-    ),
+    WlrGlobalCanvasCallback(Box<dyn FnOnce(&mut dyn GlobalCanvas, GlobalCanvasContext) + Send>),
+    SlintGlobalCanvasCallback(Box<dyn FnOnce(&mut dyn GlobalCanvas, GlobalCanvasContext) + Send>),
+}
+
+enum GlobalCanvasContext {
+    Wlr(WlrCanvasContext),
+    Slint(()),
 }
 
 trait GlobalCanvas {
-    type Context;
     fn app_state(&mut self) -> &mut ApplicationState;
     fn apply_panel_width_change(&mut self);
     fn apply_panel_exclusive_ratio_change(&mut self);
-    fn apply_panel_layout(&mut self, context: &Self::Context);
+    fn apply_panel_layout(&mut self, context: &GlobalCanvasContext);
     fn set_panel_layer(&mut self, layer: ui::PanelLayer);
 }
 
-impl AppMessage {
-    pub fn to_app<F>(f: F) -> Self
-    where
-        F: FnOnce(&mut ApplicationState) + Send + 'static,
-    {
-        AppMessage::ApplicationStateCallback(Box::new(f))
-    }
+// impl AppMessage {
+//     pub fn to_app<F>(f: F) -> Self
+//     where
+//         F: FnOnce(&mut ApplicationState) + Send + 'static,
+//     {
+//         AppMessage::ApplicationStateCallback(Box::new(f))
+//     }
 
-    pub fn to_event_handler2<F>(f: F) -> Self
-    where
-        F: FnOnce(&mut WlrWaylandEventHandler, &Connection, &QueueHandle<WlrWaylandEventHandler>)
-            + Send
-            + 'static,
-    {
-        AppMessage::WlrWaylandEventHandlerCallback(Box::new(f))
-    }
+//     pub fn to_event_handler2<F>(f: F) -> Self
+//     where
+//         F: FnOnce(&mut WlrWaylandEventHandler, &Connection, &QueueHandle<WlrWaylandEventHandler>)
+//             + Send
+//             + 'static,
+//     {
+//         AppMessage::WlrWaylandEventHandlerCallback(Box::new(f))
+//     }
 
-    // Crap this can't be compile time, it needs a box dyn
-    pub fn to_event_handler<F>(f: F) -> Self
-    where
-        F: FnOnce(&mut dyn GlobalCanvas<Context = WlrCanvasContext>, WlrCanvasContext)
-            + Send
-            + 'static,
-    {
-        AppMessage::WlrGlobalCanvasCallback(Box::new(f))
-    }
-}
+//     // Crap this can't be compile time, it needs a box dyn
+//     pub fn to_event_handler<F>(f: F) -> Self
+//     where
+//         F: FnOnce(&mut dyn GlobalCanvas<Context = WlrCanvasContext>, WlrCanvasContext)
+//             + Send
+//             + 'static,
+//     {
+//         AppMessage::WlrGlobalCanvasCallback(Box::new(f))
+//     }
+// }
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -668,6 +671,38 @@ impl WgpuSurface for SlintWgpuSurface {
     }
 }
 
+struct SlintGlobalCanvas {
+    app_state: Option<ApplicationState>,
+    test_window: slint::Weak<ui::TestWindow>,
+}
+
+impl GlobalCanvas for SlintGlobalCanvas {
+    fn app_state(&mut self) -> &mut ApplicationState {
+        self.app_state.as_mut().unwrap()
+    }
+
+    fn apply_panel_width_change(&mut self) {
+        // self.app_state.config.general.panel_width = self.panel_width;
+    }
+
+    fn apply_panel_exclusive_ratio_change(&mut self) {
+        // self.app_state.config.general.panel_exclusive_ratio = self.panel_exclusive_ratio;
+    }
+
+    fn apply_panel_layout(&mut self, context: &GlobalCanvasContext) {
+        // context.apply_panel_layout(
+        //     &self.app_state.config,
+        //     self.panel_layer,
+        //     self.panel_width,
+        //     self.panel_exclusive_ratio,
+        // );
+    }
+
+    fn set_panel_layer(&mut self, layer: ui::PanelLayer) {
+        // self.panel_layer = layer;
+    }
+}
+
 pub fn main() {
     let args = Args::parse();
     let socket_path = "beskope.sock".to_ns_name::<GenericNamespaced>().unwrap();
@@ -703,10 +738,33 @@ pub fn main() {
     let request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>> =
         Arc::new(Mutex::new(Arc::new(|| {})));
 
-    let send_app_msg = {
+    let send_msg = {
         let app_msg_tx = app_msg_tx.clone();
         let request_redraw_callback = request_redraw_callback.clone();
         move |msg| {
+            app_msg_tx.send(msg).unwrap();
+            request_redraw_callback.lock().unwrap()();
+        }
+    };
+    let send_app_msg = {
+        let app_msg_tx = app_msg_tx.clone();
+        let request_redraw_callback = request_redraw_callback.clone();
+        move |f| {
+            let msg = AppMessage::ApplicationStateCallback(f);
+            app_msg_tx.send(msg).unwrap();
+            request_redraw_callback.lock().unwrap()();
+        }
+    };
+    let send_canvas_msg = {
+        let wlr = args.window;
+        let app_msg_tx = app_msg_tx.clone();
+        let request_redraw_callback = request_redraw_callback.clone();
+        move |f| {
+            let msg = if wlr {
+                AppMessage::WlrGlobalCanvasCallback(f)
+            } else {
+                AppMessage::SlintGlobalCanvasCallback(f)
+            };
             app_msg_tx.send(msg).unwrap();
             request_redraw_callback.lock().unwrap()();
         }
@@ -719,7 +777,7 @@ pub fn main() {
             ui::Configuration::default()
         }
     };
-    let config_window = ui::init(send_app_msg.clone());
+    let config_window = ui::init(send_app_msg, send_canvas_msg);
     config_window.update_from_configuration(&config);
     if show_config {
         config_window.show().unwrap();
@@ -754,16 +812,18 @@ pub fn main() {
                         match &buf[..n] {
                             CONFIG_COMMAND => {
                                 let config_window_weak = config_window_weak.clone();
-                                send_app_msg(AppMessage::to_app(move |app| {
-                                    let config = app.config.clone();
+                                send_msg(AppMessage::ApplicationStateCallback(Box::new(
+                                    move |app| {
+                                        let config = app.config.clone();
 
-                                    config_window_weak
-                                        .upgrade_in_event_loop(move |window| {
-                                            window.update_from_configuration(&config);
-                                            window.show().unwrap();
-                                        })
-                                        .unwrap();
-                                }));
+                                        config_window_weak
+                                            .upgrade_in_event_loop(move |window| {
+                                                window.update_from_configuration(&config);
+                                                window.show().unwrap();
+                                            })
+                                            .unwrap();
+                                    },
+                                )));
                             }
                             QUIT_COMMAND => std::process::exit(0),
                             _ => eprintln!("Received unknown command: {:?}", &buf[..n]),
@@ -785,6 +845,10 @@ pub fn main() {
     };
 
     let test_window = ui::TestWindow::new().unwrap();
+    let slint_global_canvas = SlintGlobalCanvas {
+        app_state: None,
+        test_window: test_window.as_weak(),
+    };
 
     if !args.window {
         let test_window_weak = test_window.as_weak();

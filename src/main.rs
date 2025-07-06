@@ -16,7 +16,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 use views::WaveformView;
@@ -252,6 +252,7 @@ impl ApplicationState {
         }
     }
 
+    /// Only updates the app state, the configuration window is updated before being shown.
     pub fn reload_configuration(&mut self) {
         let config = match ui::Configuration::load() {
             Ok(config) => config,
@@ -560,15 +561,6 @@ impl ApplicationState {
 
 enum AppMessage {
     ApplicationStateCallback(Box<dyn FnOnce(&mut ApplicationState) + Send>),
-    WlrWaylandEventHandlerCallback(
-        Box<
-            dyn FnOnce(
-                    &mut WlrWaylandEventHandler,
-                    &Connection,
-                    &QueueHandle<WlrWaylandEventHandler>,
-                ) + Send,
-        >,
-    ),
     WlrGlobalCanvasCallback(Box<dyn FnOnce(&mut dyn GlobalCanvas, GlobalCanvasContext) + Send>),
     SlintGlobalCanvasCallback(Box<dyn FnOnce(&mut dyn GlobalCanvas, GlobalCanvasContext) + Send>),
 }
@@ -672,8 +664,28 @@ impl WgpuSurface for SlintWgpuSurface {
 }
 
 struct SlintGlobalCanvas {
+    ui_msg_rx: Receiver<AppMessage>,
     app_state: Option<ApplicationState>,
-    test_window: slint::Weak<ui::TestWindow>,
+    window: slint::Weak<ui::TestWindow>,
+}
+
+impl SlintGlobalCanvas {
+    fn process_messages(&mut self) {
+        // Process UI callbacks here since some require the wayland connection to recreate windows.
+        while let Ok(message) = self.ui_msg_rx.try_recv() {
+            match message {
+                AppMessage::ApplicationStateCallback(closure) => {
+                    closure(self.app_state.as_mut().unwrap())
+                }
+                AppMessage::SlintGlobalCanvasCallback(closure) => {
+                    closure(self, GlobalCanvasContext::Slint(()))
+                }
+                AppMessage::WlrGlobalCanvasCallback(_) => {
+                    panic!("Incorrect GlobalCanvas callback type")
+                }
+            }
+        }
+    }
 }
 
 impl GlobalCanvas for SlintGlobalCanvas {
@@ -783,24 +795,6 @@ pub fn main() {
         config_window.show().unwrap();
     }
 
-    // Spawn the wlr panel rendering in a separate thread, this is supported with wayland
-    if args.window {
-        let config_window_weak = config_window.as_weak();
-        let request_redraw_callback = request_redraw_callback.clone();
-        let config = config.clone();
-        std::thread::spawn(move || {
-            let app_state =
-                ApplicationState::new(config, request_redraw_callback.clone(), config_window_weak);
-
-            let mut layers_even_queue = wlr_layers::WlrWaylandEventLoop::new(
-                app_state,
-                app_msg_rx,
-                request_redraw_callback,
-            );
-            layers_even_queue.run_event_loop();
-        });
-    }
-
     // Listen for toggle commands on the local socket in a background thread
     match ListenerOptions::new().name(socket_path).create_sync() {
         Ok(listener) => {
@@ -844,25 +838,43 @@ pub fn main() {
         }
     };
 
-    let test_window = ui::TestWindow::new().unwrap();
-    let slint_global_canvas = SlintGlobalCanvas {
-        app_state: None,
-        test_window: test_window.as_weak(),
-    };
+    // Keep the window ownership on the stack, it owns everything else when rendering inside a Slint window.
+    let canvas_window = ui::TestWindow::new().unwrap();
 
-    if !args.window {
-        let test_window_weak = test_window.as_weak();
+    // Spawn the wlr panel rendering in a separate thread, this is supported with wayland
+    if args.window {
+        let config_window_weak = config_window.as_weak();
+        let request_redraw_callback = request_redraw_callback.clone();
+        let config = config.clone();
+        std::thread::spawn(move || {
+            let app_state =
+                ApplicationState::new(config, request_redraw_callback.clone(), config_window_weak);
+
+            let mut layers_even_queue = wlr_layers::WlrWaylandEventLoop::new(
+                app_state,
+                app_msg_rx,
+                request_redraw_callback,
+            );
+            layers_even_queue.run_event_loop();
+        });
+    } else {
+        let test_window_weak = canvas_window.as_weak();
         let config_window_weak = config_window.as_weak();
         let config = config.clone();
-        let mut app_state_capture = None;
+        // let mut app_state_capture = None;
+        let mut slint_global_canvas = SlintGlobalCanvas {
+            ui_msg_rx: app_msg_rx,
+            app_state: None,
+            window: canvas_window.as_weak(),
+        };
         let mut wgpu = None;
-        test_window
+        canvas_window
             .window()
             .set_rendering_notifier(move |state, graphics_api| {
                 let test_window = test_window_weak.upgrade().unwrap();
                 match state {
                     slint::RenderingState::RenderingSetup => {
-                        match app_state_capture {
+                        match slint_global_canvas.app_state {
                             None => {
                                 // Initialize the application state
                                 let request_redraw_callback = request_redraw_callback.clone();
@@ -889,16 +901,8 @@ pub fn main() {
                                         &wgpu.as_ref().unwrap(),
                                         PanelAnchorPosition::Bottom,
                                     );
-                                    // app_state.left_waveform_view =
-                                    //     Some(app_state.create_waveform_view_no_window(
-                                    //         ui::Style::Compressed,
-                                    //         true,
-                                    //         device,
-                                    //         &Arc::new(queue.clone()),
-                                    //         surface_config.format,
-                                    //     ));
                                 }
-                                app_state_capture = Some(app_state);
+                                slint_global_canvas.app_state = Some(app_state);
                             }
                             _ => {}
                         };
@@ -908,9 +912,11 @@ pub fn main() {
                             frame: Some(frame), ..
                         } = graphics_api
                         {
-                            let app_state = app_state_capture.as_mut().unwrap();
+                            slint_global_canvas.process_messages();
+
+                            let app_state = slint_global_canvas.app_state.as_mut().unwrap();
                             let tick = test_window.get_tick();
-                            // println!("{}", tick);
+
                             app_state.process_audio(tick as u32);
                             // FIXME: Not every frame
                             app_state
@@ -918,28 +924,15 @@ pub fn main() {
 
                             // FIXME: Find a way to apply the dirty screen size in ridgeline
                             app_state.lazy_config_changes.insert(RIDGELINE_WIDTH);
-                            // let waveform_view = app_state.left_waveform_view.as_mut().unwrap();
 
-                            // let view = frame
-                            //     .texture
-                            //     .create_view(&wgpu::TextureViewDescriptor::default());
-
-                            // let mut encoder =
-                            //     device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            //         label: None,
-                            //     });
                             app_state.render(&wgpu.as_ref().unwrap(), frame);
-
-                            // waveform_view.render(&mut encoder, &view, None);
-
-                            // queue.submit(Some(encoder.finish()));
                         }
                     }
                     _ => {}
                 }
             })
             .unwrap();
-        test_window.show().unwrap();
+        canvas_window.show().unwrap();
     }
 
     // Tie the main thread to the config window, since winit needs to be there on some platforms.

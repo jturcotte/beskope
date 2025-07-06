@@ -415,7 +415,7 @@ pub fn init(
 
     window.on_cancel_clicked({
         let window_weak = window.as_weak();
-        let send_to_app = send_to_app.clone();
+        let send_to_canvas = send_to_canvas.clone();
         move || {
             send_to_canvas(Box::new(move |handler, context| {
                 handler.app_state().reload_configuration();

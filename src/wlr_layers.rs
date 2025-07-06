@@ -65,7 +65,6 @@ impl CompositorHandler for WlrWaylandEventHandler {
         while let Ok(message) = self.ui_msg_rx.try_recv() {
             match message {
                 AppMessage::ApplicationStateCallback(closure) => closure(&mut self.app_state),
-                AppMessage::WlrWaylandEventHandlerCallback(closure) => closure(self, conn, qh),
                 AppMessage::WlrGlobalCanvasCallback(closure) => closure(
                     self,
                     GlobalCanvasContext::Wlr(WlrCanvasContext {

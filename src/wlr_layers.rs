@@ -237,7 +237,7 @@ impl LayerShellHandler for WlrWaylandEventHandler {
 
             if !self.primary_wgpu_configured {
                 let wgpu = wlr_wgpu.clone() as Rc<dyn WgpuSurface>;
-                self.app_state.initialize_primary_waveform_window(&wgpu);
+                self.app_state.initialize_primary_view_surface(&wgpu);
                 self.primary_wgpu_configured = true;
             }
 
@@ -264,7 +264,7 @@ impl LayerShellHandler for WlrWaylandEventHandler {
 
             if !self.secondary_wgpu_configured {
                 let wgpu = wlr_wgpu.clone() as Rc<dyn WgpuSurface>;
-                self.app_state.initialize_secondary_waveform_window(&wgpu);
+                self.app_state.initialize_secondary_view_surface(&wgpu);
                 self.secondary_wgpu_configured = true;
             }
 
@@ -422,8 +422,8 @@ impl WlrWaylandEventHandler {
         self.primary_wgpu = None;
         self.secondary_wgpu = None;
         self.surfaces_with_pending_render.clear();
-        self.app_state.primary_waveform_window = None;
-        self.app_state.secondary_waveform_window = None;
+        self.app_state.primary_view_surface = None;
+        self.app_state.secondary_view_surface = None;
         self.app_state.left_waveform_view = None;
         self.app_state.right_waveform_view = None;
 

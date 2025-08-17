@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use crate::views::ViewTransform;
-use crate::{FFT_SIZE, RenderWindow, VERTEX_BUFFER_SIZE, ui};
+use crate::{FFT_SIZE, RenderSurface, VERTEX_BUFFER_SIZE, ui};
 
 use cgmath::{Matrix4, SquareMatrix};
 use core::f64;
@@ -26,7 +26,7 @@ struct WaveformConfigUniform {
 }
 
 pub struct CompressedWaveformView {
-    render_window: RenderWindow,
+    render_surface: RenderSurface,
     is_left_channel: bool,
     view_transform: Option<ViewTransform>,
     wgpu_queue: Arc<wgpu::Queue>,
@@ -48,7 +48,7 @@ impl CompressedWaveformView {
         device: &wgpu::Device,
         queue: &Arc<wgpu::Queue>,
         swapchain_format: wgpu::TextureFormat,
-        render_window: RenderWindow,
+        render_surface: RenderSurface,
         is_left_channel: bool,
     ) -> CompressedWaveformView {
         // Load the shaders from disk
@@ -267,7 +267,7 @@ impl CompressedWaveformView {
             });
 
         CompressedWaveformView {
-            render_window,
+            render_surface,
             is_left_channel,
             view_transform: None,
             wgpu_queue: queue.clone(),
@@ -287,8 +287,8 @@ impl CompressedWaveformView {
 }
 
 impl WaveformView for CompressedWaveformView {
-    fn render_window(&self) -> RenderWindow {
-        self.render_window
+    fn render_surface(&self) -> RenderSurface {
+        self.render_surface
     }
 
     fn apply_lazy_config_changes(

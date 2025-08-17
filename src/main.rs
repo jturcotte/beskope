@@ -19,10 +19,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use std::time::{Duration, Instant};
 use views::WaveformView;
 
-use crate::views::ViewTransform;
+use crate::views::{RenderSurface, ViewSurface, ViewTransform, WindowMode};
 use crate::wlr_layers::WlrCanvasContext;
 
 mod audio;
@@ -41,134 +40,12 @@ pub trait WgpuSurface {
     fn swapchain_format(&self) -> Option<wgpu::TextureFormat>;
 }
 
-struct WaveformWindow {
-    surface_id: u32,
-    wgpu: Rc<dyn WgpuSurface>,
-    depth_texture: Option<wgpu::Texture>,
-    render_window: RenderWindow,
-    last_configure_size: (u32, u32),
-    last_fps_dump_time: Instant,
-    frame_count: u32,
-    fps_callback: Box<dyn Fn(u32)>,
-}
-
-#[derive(PartialEq, Clone, Copy, Debug)]
-enum WindowMode {
-    WindowPerPanel,
-    WindowPerScene,
-}
-
-#[derive(PartialEq, Clone, Copy, Debug)]
-enum RenderWindow {
-    Primary,
-    Secondary,
-}
-
-impl WaveformWindow {
-    fn new(
-        wgpu: &Rc<dyn WgpuSurface>,
-        render_window: RenderWindow,
-        fps_callback: Box<dyn Fn(u32)>,
-    ) -> WaveformWindow {
-        WaveformWindow {
-            surface_id: wgpu.surface_id(),
-            wgpu: wgpu.clone(),
-            depth_texture: None,
-            render_window,
-            // Force reconfiguration of the depth texture on the first render
-            last_configure_size: (u32::MAX, u32::MAX),
-            last_fps_dump_time: Instant::now(),
-            frame_count: 0,
-            fps_callback,
-        }
-    }
-
-    fn surface_id(&self) -> u32 {
-        self.surface_id
-    }
-
-    fn render(
-        &mut self,
-        wgpu: &Rc<dyn WgpuSurface>,
-        surface_texture: &wgpu::Texture,
-        left_waveform_view: &mut Option<Box<dyn WaveformView>>,
-        right_waveform_view: &mut Option<Box<dyn WaveformView>>,
-    ) {
-        if self.last_configure_size != (surface_texture.width(), surface_texture.height()) {
-            // Create the depth texture
-            self.depth_texture = Some(wgpu.device().create_texture(&wgpu::TextureDescriptor {
-                label: Some("Depth Texture"),
-                size: wgpu::Extent3d {
-                    width: surface_texture.width(),
-                    height: surface_texture.height(),
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Depth32Float,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            }));
-        }
-
-        let view = surface_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let depth_texture_view = self
-            .depth_texture
-            .as_ref()
-            .unwrap()
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut encoder = wgpu
-            .device()
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
-        // Clear the depth texture before rendering the views
-        let _ = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Clear Depth Pass"),
-            color_attachments: &[],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &depth_texture_view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-
-        if let Some(waveform_view) = left_waveform_view {
-            if waveform_view.render_window() == self.render_window {
-                waveform_view.render(&mut encoder, &view, &depth_texture_view);
-            }
-        }
-        if let Some(waveform_view) = right_waveform_view {
-            if waveform_view.render_window() == self.render_window {
-                waveform_view.render(&mut encoder, &view, &depth_texture_view);
-            }
-        }
-        wgpu.queue().submit(Some(encoder.finish()));
-
-        let now = Instant::now();
-        self.frame_count += 1;
-        if now.duration_since(self.last_fps_dump_time) >= Duration::from_secs(1) {
-            (self.fps_callback)(self.frame_count);
-            self.frame_count = 0;
-            self.last_fps_dump_time = now;
-        }
-    }
-}
-
 struct ApplicationState {
     pub config: ui::Configuration,
     pub lazy_config_changes: HashSet<usize>,
     window_mode: WindowMode,
-    primary_waveform_window: Option<WaveformWindow>,
-    secondary_waveform_window: Option<WaveformWindow>,
+    primary_view_surface: Option<ViewSurface>,
+    secondary_view_surface: Option<ViewSurface>,
     last_non_zero_sample_age: usize,
     animation_stopped: Arc<AtomicBool>,
     pub left_waveform_view: Option<Box<dyn WaveformView>>,
@@ -194,8 +71,8 @@ impl ApplicationState {
             config,
             window_mode,
             lazy_config_changes: HashSet::new(),
-            primary_waveform_window: None,
-            secondary_waveform_window: None,
+            primary_view_surface: None,
+            secondary_view_surface: None,
             last_non_zero_sample_age: 0,
             animation_stopped: Arc::new(AtomicBool::new(false)),
             left_waveform_view: None,
@@ -252,7 +129,7 @@ impl ApplicationState {
         &self,
         wgpu: &Rc<dyn WgpuSurface>,
         style: ui::Style,
-        render_window: RenderWindow,
+        render_surface: RenderSurface,
         is_left_channel: bool,
     ) -> Box<dyn WaveformView> {
         let device = wgpu.device();
@@ -263,14 +140,14 @@ impl ApplicationState {
                 device,
                 queue,
                 swapchain_format,
-                render_window,
+                render_surface,
                 is_left_channel,
             )),
             ui::Style::Compressed => Box::new(views::CompressedWaveformView::new(
                 device,
                 queue,
                 swapchain_format,
-                render_window,
+                render_surface,
                 is_left_channel,
             )),
         };
@@ -289,7 +166,7 @@ impl ApplicationState {
     }
 
     /// Initializes the primary waveform window and the views it contains.
-    fn initialize_primary_waveform_window(&mut self, wgpu: &Rc<dyn WgpuSurface>) {
+    fn initialize_primary_view_surface(&mut self, wgpu: &Rc<dyn WgpuSurface>) {
         let config_window = self.config_window.clone();
         let fps_callback = Box::new(move |fps: u32| {
             config_window
@@ -299,25 +176,25 @@ impl ApplicationState {
                 .unwrap();
         });
 
-        let window = WaveformWindow::new(wgpu, RenderWindow::Primary, fps_callback);
-        self.primary_waveform_window = Some(window);
+        let window = ViewSurface::new(wgpu, RenderSurface::Primary, fps_callback);
+        self.primary_view_surface = Some(window);
 
         self.left_waveform_view =
-            Some(self.create_waveform_view(wgpu, self.config.style, RenderWindow::Primary, true));
+            Some(self.create_waveform_view(wgpu, self.config.style, RenderSurface::Primary, true));
 
         // FIXME: This creates it even if the layout is split, but it will be replaced later.
         if self.config.general.channels == ui::RenderChannels::Both {
             self.right_waveform_view = Some(self.create_waveform_view(
                 wgpu,
                 self.config.style,
-                RenderWindow::Primary,
+                RenderSurface::Primary,
                 false,
             ));
         }
     }
 
     /// Initializes the secondary waveform window and the views it contains.
-    fn initialize_secondary_waveform_window(&mut self, wgpu_surface: &Rc<dyn WgpuSurface>) {
+    fn initialize_secondary_view_surface(&mut self, wgpu_surface: &Rc<dyn WgpuSurface>) {
         let config_window = self.config_window.clone();
         let fps_callback = Box::new(move |fps: u32| {
             config_window
@@ -327,13 +204,13 @@ impl ApplicationState {
                 .unwrap();
         });
 
-        let window = WaveformWindow::new(wgpu_surface, RenderWindow::Secondary, fps_callback);
-        self.secondary_waveform_window = Some(window);
+        let window = ViewSurface::new(wgpu_surface, RenderSurface::Secondary, fps_callback);
+        self.secondary_view_surface = Some(window);
 
         self.right_waveform_view = Some(self.create_waveform_view(
             wgpu_surface,
             self.config.style,
-            RenderWindow::Secondary,
+            RenderSurface::Secondary,
             false,
         ));
     }
@@ -368,8 +245,8 @@ impl ApplicationState {
         let fft_inout_buffer = self.fft_inout_buffer.as_mut().unwrap();
         let fft_scratch = self.fft_scratch.as_mut().unwrap();
 
-        if let Some(left_waveform_window) = &mut self.left_waveform_view {
-            left_waveform_window.process_audio(
+        if let Some(left_view_surface) = &mut self.left_waveform_view {
+            left_view_surface.process_audio(
                 timestamp,
                 &data,
                 fft.as_ref(),
@@ -377,8 +254,8 @@ impl ApplicationState {
                 fft_scratch,
             );
         }
-        if let Some(right_waveform_window) = &mut self.right_waveform_view {
-            right_waveform_window.process_audio(
+        if let Some(right_view_surface) = &mut self.right_waveform_view {
+            right_view_surface.process_audio(
                 timestamp,
                 &data,
                 fft.as_ref(),
@@ -437,7 +314,7 @@ impl ApplicationState {
             self.view_transform_dirty = false;
         }
 
-        if let Some(window) = self.primary_waveform_window.as_mut() {
+        if let Some(window) = self.primary_view_surface.as_mut() {
             if window.surface_id() == wgpu.surface_id() {
                 window.render(
                     wgpu,
@@ -448,7 +325,7 @@ impl ApplicationState {
             }
         }
 
-        if let Some(window) = self.secondary_waveform_window.as_mut() {
+        if let Some(window) = self.secondary_view_surface.as_mut() {
             if window.surface_id() == wgpu.surface_id() {
                 window.render(
                     wgpu,
@@ -469,11 +346,11 @@ impl ApplicationState {
     }
 
     pub fn recreate_views(&mut self) {
-        if let Some(window) = self.primary_waveform_window.as_ref() {
+        if let Some(window) = self.primary_view_surface.as_ref() {
             self.left_waveform_view = Some(self.create_waveform_view(
                 &window.wgpu,
                 self.config.style,
-                RenderWindow::Primary,
+                RenderSurface::Primary,
                 true,
             ));
 
@@ -481,18 +358,18 @@ impl ApplicationState {
                 self.right_waveform_view = Some(self.create_waveform_view(
                     &window.wgpu,
                     self.config.style,
-                    RenderWindow::Primary,
+                    RenderSurface::Primary,
                     false,
                 ));
             } else {
                 self.right_waveform_view = None;
             }
         }
-        if let Some(window) = self.secondary_waveform_window.as_ref() {
+        if let Some(window) = self.secondary_view_surface.as_ref() {
             self.right_waveform_view = Some(self.create_waveform_view(
                 &window.wgpu,
                 self.config.style,
-                RenderWindow::Secondary,
+                RenderSurface::Secondary,
                 false,
             ));
         }
@@ -623,7 +500,7 @@ impl GlobalCanvas for SlintGlobalCanvas {
         self.app_state
             .as_mut()
             .unwrap()
-            .initialize_primary_waveform_window(&wgpu);
+            .initialize_primary_view_surface(&wgpu);
         self.apply_panel_exclusive_ratio_change();
     }
 

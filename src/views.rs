@@ -1,9 +1,13 @@
 // Copyright © 2025 Jocelyn Turcotte <turcotte.j@gmail.com>
 // SPDX-License-Identifier: MIT
 
-use std::collections::HashSet;
+use std::{
+    collections::HashSet,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
-use crate::{RenderWindow, WindowMode, ui};
+use crate::{WgpuSurface, ui};
 
 use cgmath::{Matrix4, Rad, SquareMatrix, Vector3};
 use num_complex::Complex;
@@ -18,7 +22,7 @@ pub use ridgeline::RidgelineWaveformView;
 
 pub trait WaveformView {
     /// Target render window of this view (e.g. right channel view is on the secondary window)
-    fn render_window(&self) -> RenderWindow;
+    fn render_surface(&self) -> RenderSurface;
 
     /// Get the current configuration with a list of changes triggered by the UI since the last frame.
     /// `config_changes=None` means that the view is new (everything changed).
@@ -221,6 +225,128 @@ impl Vertex {
                     format: wgpu::VertexFormat::Float32,
                 },
             ],
+        }
+    }
+}
+
+pub struct ViewSurface {
+    surface_id: u32,
+    pub wgpu: Rc<dyn WgpuSurface>,
+    depth_texture: Option<wgpu::Texture>,
+    render_surface: RenderSurface,
+    last_configure_size: (u32, u32),
+    last_fps_dump_time: Instant,
+    frame_count: u32,
+    fps_callback: Box<dyn Fn(u32)>,
+}
+
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub enum WindowMode {
+    WindowPerPanel,
+    WindowPerScene,
+}
+
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub enum RenderSurface {
+    Primary,
+    Secondary,
+}
+
+impl ViewSurface {
+    pub fn new(
+        wgpu: &Rc<dyn WgpuSurface>,
+        render_surface: RenderSurface,
+        fps_callback: Box<dyn Fn(u32)>,
+    ) -> ViewSurface {
+        ViewSurface {
+            surface_id: wgpu.surface_id(),
+            wgpu: wgpu.clone(),
+            depth_texture: None,
+            render_surface,
+            // Force reconfiguration of the depth texture on the first render
+            last_configure_size: (u32::MAX, u32::MAX),
+            last_fps_dump_time: Instant::now(),
+            frame_count: 0,
+            fps_callback,
+        }
+    }
+
+    pub fn surface_id(&self) -> u32 {
+        self.surface_id
+    }
+
+    pub fn render(
+        &mut self,
+        wgpu: &Rc<dyn WgpuSurface>,
+        surface_texture: &wgpu::Texture,
+        left_waveform_view: &mut Option<Box<dyn WaveformView>>,
+        right_waveform_view: &mut Option<Box<dyn WaveformView>>,
+    ) {
+        if self.last_configure_size != (surface_texture.width(), surface_texture.height()) {
+            // Create the depth texture
+            self.depth_texture = Some(wgpu.device().create_texture(&wgpu::TextureDescriptor {
+                label: Some("Depth Texture"),
+                size: wgpu::Extent3d {
+                    width: surface_texture.width(),
+                    height: surface_texture.height(),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Depth32Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            }));
+        }
+
+        let view = surface_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let depth_texture_view = self
+            .depth_texture
+            .as_ref()
+            .unwrap()
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = wgpu
+            .device()
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+        // Clear the depth texture before rendering the views
+        let _ = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Clear Depth Pass"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &depth_texture_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        if let Some(waveform_view) = left_waveform_view {
+            if waveform_view.render_surface() == self.render_surface {
+                waveform_view.render(&mut encoder, &view, &depth_texture_view);
+            }
+        }
+        if let Some(waveform_view) = right_waveform_view {
+            if waveform_view.render_surface() == self.render_surface {
+                waveform_view.render(&mut encoder, &view, &depth_texture_view);
+            }
+        }
+        wgpu.queue().submit(Some(encoder.finish()));
+
+        let now = Instant::now();
+        self.frame_count += 1;
+        if now.duration_since(self.last_fps_dump_time) >= Duration::from_secs(1) {
+            (self.fps_callback)(self.frame_count);
+            self.frame_count = 0;
+            self.last_fps_dump_time = now;
         }
     }
 }

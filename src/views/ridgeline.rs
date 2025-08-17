@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use crate::views::ViewTransform;
-use crate::{FFT_SIZE, RenderWindow, VERTEX_BUFFER_SIZE, ui};
+use crate::{FFT_SIZE, RenderSurface, VERTEX_BUFFER_SIZE, ui};
 
 use cgmath::{Matrix4, SquareMatrix, Vector3, Vector4};
 use core::f64;
@@ -38,7 +38,7 @@ struct AudioSync {
 }
 
 pub struct RidgelineWaveformView {
-    render_window: RenderWindow,
+    render_surface: RenderSurface,
     is_left_channel: bool,
     view_transform: Option<ViewTransform>,
     wgpu_queue: Arc<wgpu::Queue>,
@@ -62,7 +62,7 @@ impl RidgelineWaveformView {
         device: &wgpu::Device,
         queue: &Arc<wgpu::Queue>,
         swapchain_format: wgpu::TextureFormat,
-        render_window: RenderWindow,
+        render_surface: RenderSurface,
         is_left_channel: bool,
     ) -> RidgelineWaveformView {
         // Load the shaders from disk
@@ -307,7 +307,7 @@ impl RidgelineWaveformView {
             });
 
         RidgelineWaveformView {
-            render_window,
+            render_surface,
             is_left_channel,
             view_transform: None,
             wgpu_queue: queue.clone(),
@@ -459,8 +459,8 @@ impl RidgelineWaveformView {
 }
 
 impl WaveformView for RidgelineWaveformView {
-    fn render_window(&self) -> RenderWindow {
-        self.render_window
+    fn render_surface(&self) -> RenderSurface {
+        self.render_surface
     }
 
     fn apply_lazy_config_changes(

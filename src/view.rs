@@ -17,13 +17,14 @@ use wgpu::{CommandEncoder, TextureView};
 mod compressed;
 mod ridgeline;
 
-pub use compressed::CompressedWaveformView;
-pub use ridgeline::RidgelineWaveformView;
+pub use compressed::CompressedView;
+pub use ridgeline::RidgelineView;
 
 pub const VERTEX_BUFFER_SIZE: usize = 44100 * 3;
 pub const FFT_SIZE: usize = 2048;
 
-pub trait WaveformView {
+/// Trait of a visualization view of an audio channel
+pub trait View {
     /// Target render window of this view (e.g. right channel view is on the secondary window)
     fn render_surface(&self) -> RenderSurface;
 
@@ -53,6 +54,7 @@ pub trait WaveformView {
     );
 }
 
+/// State and logic to transform the view onto the surface depending on the configured layout.
 #[derive(Debug, Clone, Copy)]
 pub struct ViewTransform {
     window_mode: WindowMode,
@@ -232,6 +234,8 @@ impl Vertex {
     }
 }
 
+/// Contains common resources to all views when views of multiple channels are rendered
+/// onto the same surface.
 pub struct ViewSurface {
     surface_id: u32,
     pub wgpu: Rc<dyn WgpuSurface>,
@@ -249,6 +253,8 @@ pub enum WindowMode {
     WindowPerScene,
 }
 
+/// When rendering on Wayland with one panel per channel, Secondary is the right channel.
+/// In single surface cases, only Primary is used.
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub enum RenderSurface {
     Primary,
@@ -282,8 +288,8 @@ impl ViewSurface {
         &mut self,
         wgpu: &Rc<dyn WgpuSurface>,
         surface_texture: &wgpu::Texture,
-        left_waveform_view: &mut Option<Box<dyn WaveformView>>,
-        right_waveform_view: &mut Option<Box<dyn WaveformView>>,
+        left_view: &mut Option<Box<dyn View>>,
+        right_view: &mut Option<Box<dyn View>>,
     ) {
         if self.last_configure_size != (surface_texture.width(), surface_texture.height()) {
             // Create the depth texture
@@ -304,7 +310,7 @@ impl ViewSurface {
             }));
         }
 
-        let view = surface_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let texture_view = surface_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let depth_texture_view = self
             .depth_texture
@@ -332,14 +338,14 @@ impl ViewSurface {
             occlusion_query_set: None,
         });
 
-        if let Some(waveform_view) = left_waveform_view {
-            if waveform_view.render_surface() == self.render_surface {
-                waveform_view.render(&mut encoder, &view, &depth_texture_view);
+        if let Some(view) = left_view {
+            if view.render_surface() == self.render_surface {
+                view.render(&mut encoder, &texture_view, &depth_texture_view);
             }
         }
-        if let Some(waveform_view) = right_waveform_view {
-            if waveform_view.render_surface() == self.render_surface {
-                waveform_view.render(&mut encoder, &view, &depth_texture_view);
+        if let Some(view) = right_view {
+            if view.render_surface() == self.render_surface {
+                view.render(&mut encoder, &texture_view, &depth_texture_view);
             }
         }
         wgpu.queue().submit(Some(encoder.finish()));

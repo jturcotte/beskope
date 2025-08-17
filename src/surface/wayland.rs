@@ -424,8 +424,8 @@ impl WlrWaylandEventHandler {
         self.surfaces_with_pending_render.clear();
         self.app_state.primary_view_surface = None;
         self.app_state.secondary_view_surface = None;
-        self.app_state.left_waveform_view = None;
-        self.app_state.right_waveform_view = None;
+        self.app_state.left_view = None;
+        self.app_state.right_view = None;
 
         // Unset the request redraw callback, holding references to old surfaces
         *self.request_redraw_callback.lock().unwrap() = Arc::new(|| {});

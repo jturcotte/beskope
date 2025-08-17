@@ -16,7 +16,7 @@ use std::{borrow::Cow, sync::Arc};
 use wgpu::util::DeviceExt;
 use wgpu::{BufferUsages, CommandEncoder, TextureView};
 
-use super::{Vertex, WaveformView, YValue};
+use super::{Vertex, View, YValue};
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -25,7 +25,7 @@ struct WaveformConfigUniform {
     stroke_color: [f32; 4],
 }
 
-pub struct CompressedWaveformView {
+pub struct CompressedView {
     render_surface: RenderSurface,
     is_left_channel: bool,
     view_transform: Option<ViewTransform>,
@@ -43,14 +43,14 @@ pub struct CompressedWaveformView {
     y_value_write_offset: usize,
 }
 
-impl CompressedWaveformView {
+impl CompressedView {
     pub fn new(
         device: &wgpu::Device,
         queue: &Arc<wgpu::Queue>,
         swapchain_format: wgpu::TextureFormat,
         render_surface: RenderSurface,
         is_left_channel: bool,
-    ) -> CompressedWaveformView {
+    ) -> CompressedView {
         // Load the shaders from disk
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
@@ -266,7 +266,7 @@ impl CompressedWaveformView {
                 cache: None,
             });
 
-        CompressedWaveformView {
+        CompressedView {
             render_surface,
             is_left_channel,
             view_transform: None,
@@ -286,7 +286,7 @@ impl CompressedWaveformView {
     }
 }
 
-impl WaveformView for CompressedWaveformView {
+impl View for CompressedView {
     fn render_surface(&self) -> RenderSurface {
         self.render_surface
     }

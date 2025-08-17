@@ -15,7 +15,7 @@ use std::{borrow::Cow, sync::Arc};
 use wgpu::util::DeviceExt;
 use wgpu::{BufferUsages, CommandEncoder, TextureView};
 
-use super::{Vertex, WaveformView, YValue};
+use super::{Vertex, View, YValue};
 
 const NUM_INSTANCES: usize = 30;
 // FIXME: Don't hardcode the sampling rate here
@@ -37,7 +37,7 @@ struct AudioSync {
     num_instances: f32,
 }
 
-pub struct RidgelineWaveformView {
+pub struct RidgelineView {
     render_surface: RenderSurface,
     is_left_channel: bool,
     view_transform: Option<ViewTransform>,
@@ -57,14 +57,14 @@ pub struct RidgelineWaveformView {
     y_value_write_offset: usize,
 }
 
-impl RidgelineWaveformView {
+impl RidgelineView {
     pub fn new(
         device: &wgpu::Device,
         queue: &Arc<wgpu::Queue>,
         swapchain_format: wgpu::TextureFormat,
         render_surface: RenderSurface,
         is_left_channel: bool,
-    ) -> RidgelineWaveformView {
+    ) -> RidgelineView {
         // Load the shaders from disk
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
@@ -306,7 +306,7 @@ impl RidgelineWaveformView {
                 cache: None,
             });
 
-        RidgelineWaveformView {
+        RidgelineView {
             render_surface,
             is_left_channel,
             view_transform: None,
@@ -458,7 +458,7 @@ impl RidgelineWaveformView {
     }
 }
 
-impl WaveformView for RidgelineWaveformView {
+impl View for RidgelineView {
     fn render_surface(&self) -> RenderSurface {
         self.render_surface
     }

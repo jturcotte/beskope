@@ -19,7 +19,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
-use view::WaveformView;
+use view::View;
 
 use crate::surface::{GlobalCanvas, GlobalCanvasContext, WgpuSurface};
 use crate::view::{
@@ -41,8 +41,8 @@ struct ApplicationState {
     secondary_view_surface: Option<ViewSurface>,
     last_non_zero_sample_age: usize,
     animation_stopped: Arc<AtomicBool>,
-    pub left_waveform_view: Option<Box<dyn WaveformView>>,
-    right_waveform_view: Option<Box<dyn WaveformView>>,
+    pub left_view: Option<Box<dyn View>>,
+    right_view: Option<Box<dyn View>>,
     screen_size: (u32, u32),
     view_transform_dirty: bool,
     audio_input_ringbuf_cons: Option<Caching<Arc<SharedRb<Heap<f32>>>, false, true>>,
@@ -68,8 +68,8 @@ impl ApplicationState {
             secondary_view_surface: None,
             last_non_zero_sample_age: 0,
             animation_stopped: Arc::new(AtomicBool::new(false)),
-            left_waveform_view: None,
-            right_waveform_view: None,
+            left_view: None,
+            right_view: None,
             screen_size: (1, 1),
             view_transform_dirty: true,
             audio_input_ringbuf_cons: None,
@@ -118,25 +118,25 @@ impl ApplicationState {
         self.fft_scratch = Some(vec![Complex::default(); scratch_len]);
     }
 
-    fn create_waveform_view(
+    fn create_view(
         &self,
         wgpu: &Rc<dyn WgpuSurface>,
         style: ui::Style,
         render_surface: RenderSurface,
         is_left_channel: bool,
-    ) -> Box<dyn WaveformView> {
+    ) -> Box<dyn View> {
         let device = wgpu.device();
         let queue = wgpu.queue();
         let swapchain_format = wgpu.swapchain_format().unwrap();
-        let mut view: Box<dyn WaveformView> = match style {
-            ui::Style::Ridgeline => Box::new(view::RidgelineWaveformView::new(
+        let mut view: Box<dyn View> = match style {
+            ui::Style::Ridgeline => Box::new(view::RidgelineView::new(
                 device,
                 queue,
                 swapchain_format,
                 render_surface,
                 is_left_channel,
             )),
-            ui::Style::Compressed => Box::new(view::CompressedWaveformView::new(
+            ui::Style::Compressed => Box::new(view::CompressedView::new(
                 device,
                 queue,
                 swapchain_format,
@@ -158,7 +158,7 @@ impl ApplicationState {
         view
     }
 
-    /// Initializes the primary waveform window and the views it contains.
+    /// Initializes the primary view surface and the views it contains.
     fn initialize_primary_view_surface(&mut self, wgpu: &Rc<dyn WgpuSurface>) {
         let config_window = self.config_window.clone();
         let fps_callback = Box::new(move |fps: u32| {
@@ -172,21 +172,17 @@ impl ApplicationState {
         let window = ViewSurface::new(wgpu, RenderSurface::Primary, fps_callback);
         self.primary_view_surface = Some(window);
 
-        self.left_waveform_view =
-            Some(self.create_waveform_view(wgpu, self.config.style, RenderSurface::Primary, true));
+        self.left_view =
+            Some(self.create_view(wgpu, self.config.style, RenderSurface::Primary, true));
 
         // FIXME: This creates it even if the layout is split, but it will be replaced later.
         if self.config.general.channels == ui::RenderChannels::Both {
-            self.right_waveform_view = Some(self.create_waveform_view(
-                wgpu,
-                self.config.style,
-                RenderSurface::Primary,
-                false,
-            ));
+            self.right_view =
+                Some(self.create_view(wgpu, self.config.style, RenderSurface::Primary, false));
         }
     }
 
-    /// Initializes the secondary waveform window and the views it contains.
+    /// Initializes the secondary view surface and the views it contains.
     fn initialize_secondary_view_surface(&mut self, wgpu_surface: &Rc<dyn WgpuSurface>) {
         let config_window = self.config_window.clone();
         let fps_callback = Box::new(move |fps: u32| {
@@ -200,7 +196,7 @@ impl ApplicationState {
         let window = ViewSurface::new(wgpu_surface, RenderSurface::Secondary, fps_callback);
         self.secondary_view_surface = Some(window);
 
-        self.right_waveform_view = Some(self.create_waveform_view(
+        self.right_view = Some(self.create_view(
             wgpu_surface,
             self.config.style,
             RenderSurface::Secondary,
@@ -238,7 +234,7 @@ impl ApplicationState {
         let fft_inout_buffer = self.fft_inout_buffer.as_mut().unwrap();
         let fft_scratch = self.fft_scratch.as_mut().unwrap();
 
-        if let Some(left_view_surface) = &mut self.left_waveform_view {
+        if let Some(left_view_surface) = &mut self.left_view {
             left_view_surface.process_audio(
                 timestamp,
                 &data,
@@ -247,7 +243,7 @@ impl ApplicationState {
                 fft_scratch,
             );
         }
-        if let Some(right_view_surface) = &mut self.right_waveform_view {
+        if let Some(right_view_surface) = &mut self.right_view {
             right_view_surface.process_audio(
                 timestamp,
                 &data,
@@ -261,7 +257,7 @@ impl ApplicationState {
         if !self.lazy_config_changes.is_empty() || self.view_transform_dirty {
             let channels = self.config.general.channels;
             let layout = self.config.general.layout;
-            if let Some(waveform_view) = self.left_waveform_view.as_mut() {
+            if let Some(view) = self.left_view.as_mut() {
                 let maybe_view_transform = if self.view_transform_dirty {
                     Some(ViewTransform::new(
                         self.screen_size.0 as f32,
@@ -275,13 +271,13 @@ impl ApplicationState {
                     None
                 };
 
-                waveform_view.apply_lazy_config_changes(
+                view.apply_lazy_config_changes(
                     &self.config,
                     Some(&self.lazy_config_changes),
                     maybe_view_transform.as_ref(),
                 );
             }
-            if let Some(waveform_view) = self.right_waveform_view.as_mut() {
+            if let Some(view) = self.right_view.as_mut() {
                 let maybe_view_transform = if self.view_transform_dirty {
                     Some(ViewTransform::new(
                         self.screen_size.0 as f32,
@@ -295,7 +291,7 @@ impl ApplicationState {
                     None
                 };
 
-                waveform_view.apply_lazy_config_changes(
+                view.apply_lazy_config_changes(
                     &self.config,
                     Some(&self.lazy_config_changes),
                     maybe_view_transform.as_ref(),
@@ -312,8 +308,8 @@ impl ApplicationState {
                 window.render(
                     wgpu,
                     surface_texture,
-                    &mut self.left_waveform_view,
-                    &mut self.right_waveform_view,
+                    &mut self.left_view,
+                    &mut self.right_view,
                 );
             }
         }
@@ -323,8 +319,8 @@ impl ApplicationState {
                 window.render(
                     wgpu,
                     surface_texture,
-                    &mut self.left_waveform_view,
-                    &mut self.right_waveform_view,
+                    &mut self.left_view,
+                    &mut self.right_view,
                 );
             }
         }
@@ -340,7 +336,7 @@ impl ApplicationState {
 
     pub fn recreate_views(&mut self) {
         if let Some(window) = self.primary_view_surface.as_ref() {
-            self.left_waveform_view = Some(self.create_waveform_view(
+            self.left_view = Some(self.create_view(
                 &window.wgpu,
                 self.config.style,
                 RenderSurface::Primary,
@@ -348,18 +344,18 @@ impl ApplicationState {
             ));
 
             if self.config.general.channels == ui::RenderChannels::Both {
-                self.right_waveform_view = Some(self.create_waveform_view(
+                self.right_view = Some(self.create_view(
                     &window.wgpu,
                     self.config.style,
                     RenderSurface::Primary,
                     false,
                 ));
             } else {
-                self.right_waveform_view = None;
+                self.right_view = None;
             }
         }
         if let Some(window) = self.secondary_view_surface.as_ref() {
-            self.right_waveform_view = Some(self.create_waveform_view(
+            self.right_view = Some(self.create_view(
                 &window.wgpu,
                 self.config.style,
                 RenderSurface::Secondary,

@@ -21,24 +21,18 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use view::WaveformView;
 
+use crate::surface::WgpuSurface;
+use crate::surface::wayland::WlrCanvasContext;
 use crate::view::{RenderSurface, ViewSurface, ViewTransform, WindowMode};
-use crate::wlr_layers::WlrCanvasContext;
 
 mod audio;
+mod surface;
 mod ui;
 mod view;
-mod wlr_layers;
 
 const VERTEX_BUFFER_SIZE: usize = 44100 * 3;
 const FFT_SIZE: usize = 2048;
 const NUM_CHANNELS: usize = 2;
-
-pub trait WgpuSurface {
-    fn device(&self) -> &wgpu::Device;
-    fn queue(&self) -> &Arc<wgpu::Queue>;
-    fn surface_id(&self) -> u32;
-    fn swapchain_format(&self) -> Option<wgpu::TextureFormat>;
-}
 
 struct ApplicationState {
     pub config: ui::Configuration,
@@ -659,7 +653,7 @@ pub fn main() {
                 config_window_weak,
             );
 
-            let mut layers_even_queue = wlr_layers::WlrWaylandEventLoop::new(
+            let mut layers_even_queue = surface::wayland::WlrWaylandEventLoop::new(
                 app_state,
                 app_msg_rx,
                 request_redraw_callback,

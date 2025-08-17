@@ -19,14 +19,14 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use views::WaveformView;
+use view::WaveformView;
 
-use crate::views::{RenderSurface, ViewSurface, ViewTransform, WindowMode};
+use crate::view::{RenderSurface, ViewSurface, ViewTransform, WindowMode};
 use crate::wlr_layers::WlrCanvasContext;
 
 mod audio;
 mod ui;
-mod views;
+mod view;
 mod wlr_layers;
 
 const VERTEX_BUFFER_SIZE: usize = 44100 * 3;
@@ -136,14 +136,14 @@ impl ApplicationState {
         let queue = wgpu.queue();
         let swapchain_format = wgpu.swapchain_format().unwrap();
         let mut view: Box<dyn WaveformView> = match style {
-            ui::Style::Ridgeline => Box::new(views::RidgelineWaveformView::new(
+            ui::Style::Ridgeline => Box::new(view::RidgelineWaveformView::new(
                 device,
                 queue,
                 swapchain_format,
                 render_surface,
                 is_left_channel,
             )),
-            ui::Style::Compressed => Box::new(views::CompressedWaveformView::new(
+            ui::Style::Compressed => Box::new(view::CompressedWaveformView::new(
                 device,
                 queue,
                 swapchain_format,

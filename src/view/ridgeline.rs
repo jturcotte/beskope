@@ -1,16 +1,15 @@
 // Copyright © 2025 Jocelyn Turcotte <turcotte.j@gmail.com>
 // SPDX-License-Identifier: MIT
 
-use crate::views::ViewTransform;
+use crate::view::ViewTransform;
 use crate::{FFT_SIZE, RenderSurface, VERTEX_BUFFER_SIZE, ui};
 
-use cgmath::{Matrix4, SquareMatrix};
+use cgmath::{Matrix4, SquareMatrix, Vector3, Vector4};
 use core::f64;
 use num_complex::Complex;
 use ringbuf::HeapRb;
 use ringbuf::traits::{Consumer, Observer, RingBuffer};
 use rustfft::Fft;
-use splines::Interpolation;
 use std::collections::HashSet;
 use std::{borrow::Cow, sync::Arc};
 use wgpu::util::DeviceExt;
@@ -18,20 +17,35 @@ use wgpu::{BufferUsages, CommandEncoder, TextureView};
 
 use super::{Vertex, WaveformView, YValue};
 
+const NUM_INSTANCES: usize = 30;
+// FIXME: Don't hardcode the sampling rate here
+const STRIDE_SIZE: usize = 48_000 / NUM_INSTANCES;
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct WaveformConfigUniform {
     fill_color: [f32; 4],
+    highlight_color: [f32; 4],
     stroke_color: [f32; 4],
 }
 
-pub struct CompressedWaveformView {
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct AudioSync {
+    y_value_offsets: [u32; 32],
+    progress: f32,
+    num_instances: f32,
+}
+
+pub struct RidgelineWaveformView {
     render_surface: RenderSurface,
     is_left_channel: bool,
     view_transform: Option<ViewTransform>,
     wgpu_queue: Arc<wgpu::Queue>,
     y_value_buffer: wgpu::Buffer,
-    y_value_offset_buffer: wgpu::Buffer,
+    audio_sync: AudioSync,
+    last_rotate_progress: f64,
+    audio_sync_buffer: wgpu::Buffer,
     transform_buffer: wgpu::Buffer,
     waveform_config_buffer: wgpu::Buffer,
     fill_render_pipeline: wgpu::RenderPipeline,
@@ -43,43 +57,49 @@ pub struct CompressedWaveformView {
     y_value_write_offset: usize,
 }
 
-impl CompressedWaveformView {
+impl RidgelineWaveformView {
     pub fn new(
         device: &wgpu::Device,
         queue: &Arc<wgpu::Queue>,
         swapchain_format: wgpu::TextureFormat,
         render_surface: RenderSurface,
         is_left_channel: bool,
-    ) -> CompressedWaveformView {
+    ) -> RidgelineWaveformView {
         // Load the shaders from disk
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("compressed.wgsl"))),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("ridgeline.wgsl"))),
         });
 
-        // Initialize the vertex buffers with a linear time curve
-        let fill_vertices: Vec<Vertex> = (0..VERTEX_BUFFER_SIZE)
+        // Sit the waveform at the bottom boundary of the -1..1, the shader will adjust it.
+        let fill_vertices: Vec<Vertex> = (0..STRIDE_SIZE)
             .flat_map(|i| {
-                let x = i as f32 / VERTEX_BUFFER_SIZE as f32 * 2.0 - 1.0;
+                let x = i as f32 / (STRIDE_SIZE - 1) as f32 * 2.0 - 1.0;
+                // Point the last vertex to the last audio sample by default.
+                let waveform_index = (VERTEX_BUFFER_SIZE - STRIDE_SIZE + i) as u32;
                 vec![
                     Vertex {
                         position: [x, -1.0],
-                        waveform_index: i as u32,
+                        waveform_index,
                         should_offset: 0.0,
                     },
                     Vertex {
                         position: [x, 0.0],
-                        waveform_index: i as u32,
+                        waveform_index,
                         should_offset: 1.0,
                     },
                 ]
             })
             .collect();
-        let stroke_vertices: Vec<Vertex> = (0..VERTEX_BUFFER_SIZE)
-            .map(|i| Vertex {
-                position: [i as f32 / VERTEX_BUFFER_SIZE as f32 * 2.0 - 1.0, 0.0],
-                waveform_index: i as u32,
-                should_offset: 1.0,
+        let stroke_vertices: Vec<Vertex> = (0..STRIDE_SIZE)
+            .map(|i| {
+                // Point the last vertex to the last audio sample by default.
+                let waveform_index = (VERTEX_BUFFER_SIZE - STRIDE_SIZE + i) as u32;
+                Vertex {
+                    position: [i as f32 / (STRIDE_SIZE - 1) as f32 * 2.0 - 1.0, 0.0],
+                    waveform_index,
+                    should_offset: 1.0,
+                }
             })
             .collect();
         let y_values: Vec<YValue> = vec![YValue { y: 0.0 }; VERTEX_BUFFER_SIZE];
@@ -103,19 +123,17 @@ impl CompressedWaveformView {
         });
 
         // Create the y_value_offset buffer
-        let y_value_offset_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Y Value Offset Buffer"),
-            size: std::mem::size_of::<u32>() as wgpu::BufferAddress,
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        let audio_sync_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Audio Sync Buffer"),
+            size: (std::mem::size_of::<u32>() * 32 + 8) as wgpu::BufferAddress,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        // let transform_matrix_array: [[f32; 4]; 4] = transform_matrix.into();
         // Must be updated by apply_lazy_config_changes
         let identity: [[f32; 4]; 4] = Matrix4::<f32>::identity().into();
         let transform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Transform Buffer"),
-            // contents: bytemuck::cast_slice(&transform_matrix_array),
             contents: bytemuck::cast_slice(&identity),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -124,6 +142,7 @@ impl CompressedWaveformView {
             label: Some("Waveform Config Buffer"),
             contents: bytemuck::cast_slice(&[WaveformConfigUniform {
                 fill_color: [1.0, 1.0, 1.0, 1.0],
+                highlight_color: [1.0, 1.0, 1.0, 1.0],
                 stroke_color: [1.0, 1.0, 1.0, 1.0],
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -136,7 +155,7 @@ impl CompressedWaveformView {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
@@ -164,7 +183,7 @@ impl CompressedWaveformView {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -181,7 +200,7 @@ impl CompressedWaveformView {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: y_value_offset_buffer.as_entire_binding(),
+                    resource: audio_sync_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -210,15 +229,19 @@ impl CompressedWaveformView {
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: Some("vs_main"),
+                entry_point: Some("vs_fill_main"),
                 buffers: &[Vertex::desc()],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: Some("fs_fill_main"),
+                entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
-                targets: &[Some(swapchain_format.into())],
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: swapchain_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleStrip,
@@ -229,7 +252,13 @@ impl CompressedWaveformView {
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
             },
-            depth_stencil: None,
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
             cache: None,
@@ -241,15 +270,19 @@ impl CompressedWaveformView {
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
-                    entry_point: Some("vs_main"),
+                    entry_point: Some("vs_stroke_main"),
                     buffers: &[Vertex::desc()],
                     compilation_options: Default::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
-                    entry_point: Some("fs_stroke_main"),
+                    entry_point: Some("fs_main"),
                     compilation_options: Default::default(),
-                    targets: &[Some(swapchain_format.into())],
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: swapchain_format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
                 }),
                 primitive: wgpu::PrimitiveState {
                     topology: wgpu::PrimitiveTopology::LineStrip,
@@ -260,19 +293,32 @@ impl CompressedWaveformView {
                     polygon_mode: wgpu::PolygonMode::Fill,
                     conservative: false,
                 },
-                depth_stencil: None,
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: true,
+                    // LessEqual is used to avoid z-fighting with the fill pipeline
+                    depth_compare: wgpu::CompareFunction::LessEqual,
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
                 multisample: wgpu::MultisampleState::default(),
                 multiview: None,
                 cache: None,
             });
 
-        CompressedWaveformView {
+        RidgelineWaveformView {
             render_surface,
             is_left_channel,
             view_transform: None,
             wgpu_queue: queue.clone(),
             y_value_buffer,
-            y_value_offset_buffer,
+            audio_sync: AudioSync {
+                y_value_offsets: [0; 32],
+                progress: 0.0,
+                num_instances: NUM_INSTANCES as f32,
+            },
+            last_rotate_progress: 0.0,
+            audio_sync_buffer,
             transform_buffer,
             waveform_config_buffer,
             fill_render_pipeline,
@@ -284,9 +330,135 @@ impl CompressedWaveformView {
             y_value_write_offset: 0,
         }
     }
+
+    fn get_transform_matrix(&self, panel_width: u32, horizon_offset: f32) -> [[f32; 4]; 4] {
+        // FIXME: Make the config relative to the screen height
+        let panel_width = panel_width as f32;
+
+        if let Some(view_transform) = self.view_transform {
+            let screen_width = view_transform.scene_width;
+            let screen_height = view_transform.scene_height;
+
+            let (window_x, window_y, window_width, window_height) =
+                view_transform.get_window_coords(panel_width);
+            let window_to_scene_transform =
+                view_transform.get_window_to_scene_transform(panel_width);
+
+            let near_z = 0.0;
+            let far_z = 1.0;
+
+            let (horizontal_offset, vertical_offset) = if view_transform.is_vertical {
+                (0.0, -horizon_offset)
+            } else {
+                (-horizon_offset, 0.0)
+            };
+            let half_screen = if view_transform.is_vertical {
+                view_transform.scene_width / 2.0
+            } else {
+                view_transform.scene_height / 2.0
+            };
+
+            let full_top = 1.0 + vertical_offset;
+            let full_bottom = -1.0 + vertical_offset;
+            let full_right = 1.0 + horizontal_offset;
+            let full_left = -1.0 + horizontal_offset;
+
+            // Window bounds in pixels
+            let win_left_px = window_x;
+            let win_right_px = window_x + window_width;
+            let win_top_px = window_y;
+            let win_bottom_px = window_y + window_height;
+
+            // Map window pixel bounds to frustum bounds
+            let left = full_left + (full_right - full_left) * (win_left_px / screen_width);
+            let right = full_left + (full_right - full_left) * (win_right_px / screen_width);
+            // Y axis: top is smaller y, bottom is larger y in screen coordinates
+            let top = full_top - (full_top - full_bottom) * (win_top_px / screen_height);
+            let bottom = full_top - (full_top - full_bottom) * (win_bottom_px / screen_height);
+
+            // cgmath outputs z values in [-1, 1] for the near and far planes, but wgpu expects them in [0, 1].
+            const OPENGL_TO_WGPU_MATRIX: Matrix4<f32> = Matrix4::from_cols(
+                Vector4::new(1.0, 0.0, 0.0, 0.0),
+                Vector4::new(0.0, 1.0, 0.0, 0.0),
+                Vector4::new(0.0, 0.0, 0.5, 0.0),
+                Vector4::new(0.0, 0.0, 0.5, 1.0),
+            );
+
+            // Where the half screen is bound to by the geometry.
+            const HALF_SCENE_EXTENT: f32 = 1.0;
+            // Amplitude as reference point if the window takes half the screen
+            // Must match the shader
+            const DEFAULT_AMPLITUDE: f32 = 0.15;
+            // The perspective would fill the screen, but the first instance must be compressed
+            // relatively to the screen to fit where the window frustum will point to.
+            let compress_y = panel_width / half_screen;
+            let wave_amplitude: f32 = DEFAULT_AMPLITUDE * compress_y;
+
+            let half_scene_ratio_with_content = wave_amplitude * 2.0 / HALF_SCENE_EXTENT;
+            let half_screen_pixels_with_content = half_screen * half_scene_ratio_with_content;
+
+            let far_minus_near_z = far_z - near_z;
+
+            // Instead of using a fixed camera position with a FOV, this keeps the near plane fixed
+            // the scene but move the camera back to adjust the FOV so that the waveform history
+            // fits the portion of the screen that the window is covering.
+            //
+            // This code calculates how far the camera should be moved along the Z-axis so that the
+            // farthest point of the waveform’s history, when projected onto the near plane (the screen),
+            // aligns exactly with the edge of the window.
+            // The calculation is based on similar triangles formed by the camera, the near plane, and the far plane.
+            //
+            // Compute the ratio between the depth range (far_minus_near_z) and the visible width
+            // of the panel minus the content width.
+            let ratio_leftnear_leftfar_rightnear =
+                far_minus_near_z / (panel_width - half_screen_pixels_with_content);
+            // Then uses this ratio to determine how much to move the camera back, ensuring that the perspective
+            // projection causes the farthest part of the waveform to touch the window’s edge.
+            let move_camera_z = (half_screen
+                - half_screen_pixels_with_content
+                - (panel_width - half_screen_pixels_with_content))
+                * ratio_leftnear_leftfar_rightnear
+                - near_z;
+
+            let move_scene_matrix =
+                Matrix4::from_translation(Vector3::new(0.0, 0.0, -move_camera_z));
+
+            let compress_y_matrix =
+                // Move the waveform back to the edge
+                Matrix4::from_translation(Vector3::new(0.0, -1.0, 0.0))
+                // Waveform is centered at 0.0, scale it depending on the window size
+                * Matrix4::from_nonuniform_scale(1.0, compress_y, 1.0);
+
+            // The horizon offset is applied to both the frustum and the geometry, but not to the perspective matrix which keeps the horizon
+            // centered where it was.
+            let horizon_translate =
+                Matrix4::from_translation(Vector3::new(horizontal_offset, vertical_offset, 0.0));
+
+            let perspective_matrix = OPENGL_TO_WGPU_MATRIX
+                * cgmath::frustum(
+                    left,
+                    right,
+                    bottom,
+                    top,
+                    near_z + move_camera_z,
+                    far_z + move_camera_z,
+                )
+                * move_scene_matrix;
+
+            (window_to_scene_transform
+                * perspective_matrix
+                * horizon_translate
+                * view_transform.transform_matrix
+                * compress_y_matrix)
+                .into()
+        } else {
+            // If the view transform is not set yet, return an identity matrix
+            Matrix4::<f32>::identity().into()
+        }
+    }
 }
 
-impl WaveformView for CompressedWaveformView {
+impl WaveformView for RidgelineWaveformView {
     fn render_surface(&self) -> RenderSurface {
         self.render_surface
     }
@@ -298,20 +470,28 @@ impl WaveformView for CompressedWaveformView {
         view_transform_change: Option<&ViewTransform>,
     ) {
         if config_changes.is_none_or(|c| {
-            c.contains(&ui::COMPRESSED_FILL_COLOR) || c.contains(&ui::COMPRESSED_STROKE_COLOR)
+            c.contains(&ui::RIDGELINE_FILL_COLOR)
+                || c.contains(&ui::RIDGELINE_HIGHLIGHT_COLOR)
+                || c.contains(&ui::RIDGELINE_STROKE_COLOR)
         }) {
             let waveform_config = WaveformConfigUniform {
                 fill_color: [
-                    config.compressed.fill_color.red() as f32 / 255.0,
-                    config.compressed.fill_color.green() as f32 / 255.0,
-                    config.compressed.fill_color.blue() as f32 / 255.0,
-                    config.compressed.fill_color.alpha() as f32 / 255.0,
+                    config.ridgeline.fill_color.red() as f32 / 255.0,
+                    config.ridgeline.fill_color.green() as f32 / 255.0,
+                    config.ridgeline.fill_color.blue() as f32 / 255.0,
+                    config.ridgeline.fill_color.alpha() as f32 / 255.0,
+                ],
+                highlight_color: [
+                    config.ridgeline.highlight_color.red() as f32 / 255.0,
+                    config.ridgeline.highlight_color.green() as f32 / 255.0,
+                    config.ridgeline.highlight_color.blue() as f32 / 255.0,
+                    config.ridgeline.highlight_color.alpha() as f32 / 255.0,
                 ],
                 stroke_color: [
-                    config.compressed.stroke_color.red() as f32 / 255.0,
-                    config.compressed.stroke_color.green() as f32 / 255.0,
-                    config.compressed.stroke_color.blue() as f32 / 255.0,
-                    config.compressed.stroke_color.alpha() as f32 / 255.0,
+                    config.ridgeline.stroke_color.red() as f32 / 255.0,
+                    config.ridgeline.stroke_color.green() as f32 / 255.0,
+                    config.ridgeline.stroke_color.blue() as f32 / 255.0,
+                    config.ridgeline.stroke_color.alpha() as f32 / 255.0,
                 ],
             };
 
@@ -322,103 +502,22 @@ impl WaveformView for CompressedWaveformView {
             );
         }
 
-        if config_changes.is_none_or(|c| c.contains(&ui::COMPRESSED_TIME_CURVE_CONTROL_POINTS)) {
-            let control_points_with_prefix_suffix_iter =
-                std::iter::once((0.0, 0.0, Interpolation::Linear))
-                    .chain(
-                        config
-                            .compressed
-                            .time_curve
-                            .control_points
-                            .iter()
-                            .map(|cp| {
-                                (
-                                    (cp.t / 3.0 + 1.0) * (VERTEX_BUFFER_SIZE - 1) as f32,
-                                    cp.v,
-                                    Interpolation::CatmullRom,
-                                )
-                            }),
-                    )
-                    .chain(std::iter::once((
-                        (VERTEX_BUFFER_SIZE - 1) as f32,
-                        1.0,
-                        Interpolation::Linear,
-                    )))
-                    .chain(std::iter::once((
-                        (VERTEX_BUFFER_SIZE) as f32,
-                        1.0,
-                        Interpolation::Linear,
-                    )));
-
-            let new_spline = splines::Spline::from_vec(
-                control_points_with_prefix_suffix_iter
-                    .map(|(x, y, interpolation)| splines::Key::new(x, y, interpolation))
-                    .collect(),
-            );
-
-            let fill_vertices = (0..VERTEX_BUFFER_SIZE)
-                .flat_map(|i| {
-                    let x = new_spline.sample(i as f32).unwrap_or(0.0) * 2.0 - 1.0;
-                    vec![
-                        Vertex {
-                            position: [x, -1.0],
-                            waveform_index: i as u32,
-                            should_offset: 0.0,
-                        },
-                        Vertex {
-                            position: [x, 0.0],
-                            waveform_index: i as u32,
-                            should_offset: 1.0,
-                        },
-                    ]
-                })
-                .collect::<Vec<Vertex>>();
-
-            let stroke_vertices = (0..VERTEX_BUFFER_SIZE)
-                .map(|i| {
-                    let x = new_spline.sample(i as f32).unwrap_or(0.0) * 2.0 - 1.0;
-                    Vertex {
-                        position: [x, 0.0],
-                        waveform_index: i as u32,
-                        should_offset: 1.0,
-                    }
-                })
-                .collect::<Vec<Vertex>>();
-
-            // Update fill_vertex_buffer
-            self.wgpu_queue.write_buffer(
-                &self.fill_vertex_buffer,
-                0,
-                bytemuck::cast_slice(&fill_vertices),
-            );
-
-            // Update stroke_vertex_buffer
-            self.wgpu_queue.write_buffer(
-                &self.stroke_vertex_buffer,
-                0,
-                bytemuck::cast_slice(&stroke_vertices),
-            );
-        }
-
         if view_transform_change.is_some()
-            || config_changes.is_none_or(|c| c.contains(&ui::COMPRESSED_WIDTH))
+            || config_changes.is_none_or(|c| {
+                c.contains(&ui::RIDGELINE_WIDTH) || c.contains(&ui::RIDGELINE_HORIZON_OFFSET)
+            })
         {
             if view_transform_change.is_some() {
                 self.view_transform = view_transform_change.cloned();
             }
 
-            if let Some(view_transform) = self.view_transform {
-                let window_to_scene_transform =
-                    view_transform.get_window_to_scene_transform(config.compressed.width as f32);
-                let transform_matrix: [[f32; 4]; 4] =
-                    (window_to_scene_transform * view_transform.transform_matrix).into();
-
-                self.wgpu_queue.write_buffer(
-                    &self.transform_buffer,
-                    0,
-                    bytemuck::cast_slice(&transform_matrix),
-                );
-            }
+            let transform_matrix =
+                self.get_transform_matrix(config.ridgeline.width, config.ridgeline.horizon_offset);
+            self.wgpu_queue.write_buffer(
+                &self.transform_buffer,
+                0,
+                bytemuck::cast_slice(&transform_matrix),
+            );
         }
     }
 
@@ -426,7 +525,7 @@ impl WaveformView for CompressedWaveformView {
         &self,
         encoder: &mut CommandEncoder,
         view: &TextureView,
-        _depth_texture_view: &TextureView,
+        depth_texture_view: &TextureView,
     ) {
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -440,14 +539,21 @@ impl WaveformView for CompressedWaveformView {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth_texture_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
             render_pass.set_pipeline(&self.fill_render_pipeline);
             render_pass.set_vertex_buffer(0, self.fill_vertex_buffer.slice(..));
             render_pass.set_bind_group(0, &self.bind_group, &[]);
-            render_pass.draw(0..(VERTEX_BUFFER_SIZE * 2) as u32, 0..1);
+            render_pass.draw(0..(STRIDE_SIZE * 2) as u32, 0..NUM_INSTANCES as u32);
         }
 
         {
@@ -462,20 +568,27 @@ impl WaveformView for CompressedWaveformView {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth_texture_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
             render_pass.set_pipeline(&self.stroke_render_pipeline);
             render_pass.set_vertex_buffer(0, self.stroke_vertex_buffer.slice(..));
             render_pass.set_bind_group(0, &self.bind_group, &[]);
-            render_pass.draw(0..VERTEX_BUFFER_SIZE as u32, 0..1);
+            render_pass.draw(0..STRIDE_SIZE as u32, 0..NUM_INSTANCES as u32);
         }
     }
 
     fn process_audio(
         self: &mut Self,
-        _timestamp: u32,
+        timestamp: u32,
         data: &[f32],
         fft: &dyn Fft<f32>,
         fft_inout_buffer: &mut [Complex<f32>],
@@ -550,11 +663,45 @@ impl WaveformView for CompressedWaveformView {
             first_pass_len
         };
 
-        // Update the write offset, subtracting the phase so that the vertex shader aligns the
-        // last peak frequency cycle with the end of the waveform.
         let aligned_write_offset =
             (VERTEX_BUFFER_SIZE + self.y_value_write_offset + y_values.len() - phase_samples)
                 % VERTEX_BUFFER_SIZE;
+
+        fn to_progress(t: u32) -> f64 {
+            // t is in milliseconds, convert to seconds
+            let t = t as f64 / 1000.0;
+            // t is in seconds, convert to the number of sample strides
+            t * NUM_INSTANCES as f64
+        }
+
+        // Convert the monotonic timestamp from the compositor to a
+        let full_progress = to_progress(timestamp);
+        // Wrap at 1.0 to get the progress per stride, 0.0 means start position, 1.0 means that
+        // it's at the position of the next stride.
+        // By using the modulo we keep the progress smooth across strides rotation.
+        self.audio_sync.progress = (full_progress % 1.0) as f32;
+
+        // When progress per stride passes 1.0, carry over the animation by moving this stride
+        // to the next waveform stride instance in the shader.
+        let wrapped = full_progress.floor() > self.last_rotate_progress.floor();
+        if wrapped {
+            self.audio_sync.y_value_offsets.rotate_right(1);
+            self.last_rotate_progress = full_progress;
+        }
+
+        // Keep updating the latest stride even between rotations.
+        // The front-most stride is animated while the rest are static
+        // and move backwards.
+        self.audio_sync.y_value_offsets[0] = aligned_write_offset as u32;
+
+        // Update the GPU buffers with the audio sync state
+        self.wgpu_queue.write_buffer(
+            &self.audio_sync_buffer,
+            0,
+            bytemuck::cast_slice(&[self.audio_sync]),
+        );
+
+        // Update the write offset
         self.y_value_write_offset =
             (self.y_value_write_offset + y_values.len()) % VERTEX_BUFFER_SIZE;
 
@@ -567,12 +714,5 @@ impl WaveformView for CompressedWaveformView {
                 bytemuck::cast_slice(second_pass_data),
             );
         }
-
-        // Tell the shader how to read the audio data ring buffer
-        self.wgpu_queue.write_buffer(
-            &self.y_value_offset_buffer,
-            0,
-            bytemuck::cast_slice(&[aligned_write_offset as u32]),
-        );
     }
 }

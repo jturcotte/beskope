@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{WgpuSurface, ui};
+use crate::{surface::WgpuSurface, ui};
 
 use cgmath::{Matrix4, Rad, SquareMatrix, Vector3};
 use num_complex::Complex;

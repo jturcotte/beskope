@@ -1,8 +1,8 @@
 // Copyright © 2025 Jocelyn Turcotte <turcotte.j@gmail.com>
 // SPDX-License-Identifier: MIT
 
-use crate::view::ViewTransform;
-use crate::{FFT_SIZE, RenderSurface, VERTEX_BUFFER_SIZE, ui};
+use crate::ui;
+use crate::view::{FFT_SIZE, RenderSurface, VERTEX_BUFFER_SIZE, ViewTransform};
 
 use cgmath::{Matrix4, SquareMatrix};
 use core::f64;

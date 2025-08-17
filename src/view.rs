@@ -20,6 +20,9 @@ mod ridgeline;
 pub use compressed::CompressedWaveformView;
 pub use ridgeline::RidgelineWaveformView;
 
+pub const VERTEX_BUFFER_SIZE: usize = 44100 * 3;
+pub const FFT_SIZE: usize = 2048;
+
 pub trait WaveformView {
     /// Target render window of this view (e.g. right channel view is on the secondary window)
     fn render_surface(&self) -> RenderSurface;

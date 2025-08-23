@@ -1,13 +1,86 @@
-import { AboutSlint, VerticalBox } from "std-widgets.slint";
+import { AboutSlint, VerticalBox, Slider, Button, HorizontalBox } from "std-widgets.slint";
 
 export component CanvasWindow inherits Window {
-    in property<length> view_width <=> layout.padding;
+    in property<length> view_width;
     out property<duration> tick: animation-tick();
-    background: transparent;
+    in property<image> art_image;
+    in-out property<int> initial_position;
+    in property<int> position;
+    in property<int> length;
+    in property<bool> has_length;
+    in property<string> track_artist: "Artist";
+    in property<string> track_title: "Title";
+    in property<string> track_album: "Album";
+    in property<string> play_button_text: "⏯";
+    callback previous();
+    callback play_pause();
+    callback next();
 
-    layout := VerticalLayout {
-        padding: 10px;
+    out property<duration> initial_position_change_tick: 0;
+    callback reset_initial_position_change_tick();
+    reset_initial_position_change_tick => {
+        initial_position_change_tick = tick;
+    }
+
+    background: transparent;
+    preferred-width: 800px;
+    preferred-height: 800px;
+
+    layout := VerticalBox {
+        Rectangle {}
+
+        // FIXME: Check if vertical or horizontal
+        padding-left: view_width;
+        padding-right: view_width;
+        padding-bottom: view_width / 8;
+        padding-top: view_width / 8;
+
         cache-rendering-hint: true;
-        AboutSlint {  }
+        Image {
+            source: art_image;
+        }
+
+        Slider {
+            visible: has_length;
+            enabled: false;
+            value: position;
+            maximum: length;
+        }
+
+        Text {
+            text: track_artist;
+            font-size: 20px;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: track_title;
+            font-size: 20px;
+            font-weight: 800;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: track_album;
+            font-size: 20px;
+            horizontal-alignment: center;
+            color: #222
+            ;
+        }
+
+        HorizontalBox {
+            Button {
+                text: "⏮";
+                clicked => previous();
+            }
+            Button {
+                text: play_button_text;
+                clicked => play_pause();
+            }
+            Button {
+                text: "⏭";
+                clicked => next();
+            }
+        }
+
+        Rectangle {}
     }
 }

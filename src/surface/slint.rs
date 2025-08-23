@@ -3,10 +3,16 @@
 
 use std::{
     rc::Rc,
-    sync::{Arc, Mutex, mpsc::Receiver},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver},
+    },
 };
 
+use mpris::{FindingError, Player, PlayerFinder, ProgressTick};
 use slint::ComponentHandle;
+use slint::SharedPixelBuffer;
+use std::io::Read;
 
 use crate::{
     AppMessage, ApplicationState, GlobalCanvasContext, surface::GlobalCanvas, ui, view::WindowMode,
@@ -106,6 +112,8 @@ impl GlobalCanvas for SlintGlobalCanvas {
     fn set_panel_layer(&mut self, _layer: ui::PanelLayer) {}
 }
 
+type MprisMessage = Box<dyn FnOnce(&Player) + Send>;
+
 pub fn initialize_slint_surface(
     config: ui::Configuration,
     ui_msg_rx: Receiver<AppMessage>,
@@ -120,8 +128,212 @@ pub fn initialize_slint_surface(
         ui_msg_rx,
         app_state: None,
         wgpu_surface: None,
-        window: canvas_window_weak,
+        window: canvas_window_weak.clone(),
     };
+
+    let (mpris_msg_tx, mpris_msg_rx) = mpsc::channel::<MprisMessage>();
+
+    fn wait_for_player() -> Result<Player, FindingError> {
+        let player_finder = PlayerFinder::new()?;
+        loop {
+            // FIXME: This is expensive, we should listen to DBus signals instead.
+            let player = player_finder.find_active();
+            if player.is_ok() {
+                return player;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+    }
+
+    // Run mpris' progress_tracker.tick() in a separate thread
+    std::thread::spawn(move || {
+        let canvas_window_weak = canvas_window_weak;
+
+        let mut maybe_player: Option<Player> = None;
+        let mut maybe_progress_tracker: Option<mpris::ProgressTracker<'_>> = None;
+        let mut last_status = None;
+        let mut should_refresh_on_first_tick = true;
+
+        loop {
+            // Check if the current player is still active, else looks for a new one.
+            if last_status != Some(mpris::PlaybackStatus::Playing)
+                && last_status != Some(mpris::PlaybackStatus::Paused)
+            {
+                if let Ok(new_player) = wait_for_player() {
+                    maybe_player = Some(new_player);
+                    maybe_progress_tracker =
+                        Some(maybe_player.as_ref().unwrap().track_progress(20).unwrap());
+                }
+            }
+
+            // Send commands sent from the UI to the player
+            while let Ok(closure) = mpris_msg_rx.try_recv() {
+                // Ignore any command sent while there is no player, the UI should be disabled instead.
+                if let Some(player) = maybe_player.as_ref() {
+                    closure(&player);
+                }
+            }
+
+            if let Some(progress_tracker) = maybe_progress_tracker.as_mut() {
+                let ProgressTick {
+                    player_quit,
+                    progress,
+                    progress_changed,
+                    ..
+                } = progress_tracker.tick();
+                if player_quit {
+                    // This is the last tick for this player, reset everything already.
+                    maybe_player = None;
+                    maybe_progress_tracker = None;
+                    last_status = None;
+                    should_refresh_on_first_tick = true;
+
+                    canvas_window_weak
+                        .upgrade_in_event_loop(move |canvas_window| {
+                            canvas_window.set_initial_position(0);
+                            canvas_window.invoke_reset_initial_position_change_tick();
+                            canvas_window.set_length(0);
+                            canvas_window.set_has_length(false);
+                            canvas_window.set_track_artist("".into());
+                            canvas_window.set_track_title("".into());
+                            canvas_window.set_track_album("".into());
+                            canvas_window.set_art_image(slint::Image::default());
+                        })
+                        .unwrap();
+                    continue;
+                } else if progress_changed || should_refresh_on_first_tick {
+                    should_refresh_on_first_tick = false;
+                    last_status = Some(progress.playback_status());
+
+                    let metadata = progress.metadata();
+                    let art_url = metadata.art_url().map(|s| s.to_string());
+                    let maybe_image =
+                        art_url.as_ref().and_then(|url| {
+                            fn load_bytes(
+                                url: &str,
+                            ) -> Result<Vec<u8>, Box<dyn std::error::Error>>
+                            {
+                                let parsed = url::Url::parse(url)?;
+                                if parsed.scheme() == "file" {
+                                    // Use url crate to parse and decode the path
+                                    let path = parsed.to_file_path().map_err(|_| {
+                                        format!("Failed to convert file URL to path: {}", url)
+                                    })?;
+                                    std::fs::read(path).map_err(|e| e.into())
+                                } else if parsed.scheme() == "http" || parsed.scheme() == "https" {
+                                    let resp = ureq::request_url("GET", &parsed)
+                                        .timeout(std::time::Duration::from_secs(5))
+                                        .call()?;
+                                    let mut reader = resp.into_reader();
+                                    let mut buf = Vec::new();
+                                    reader.read_to_end(&mut buf)?;
+                                    Ok(buf)
+                                } else {
+                                    Err(format!("Unsupported art URL scheme: {}", url).into())
+                                }
+                            }
+
+                            fn decode_to_shared_pixel_buffer(
+                                data: &[u8],
+                            ) -> Result<
+                                SharedPixelBuffer<slint::Rgba8Pixel>,
+                                Box<dyn std::error::Error>,
+                            > {
+                                let dyn_img = image::load_from_memory(data)?;
+                                let rgba8 = dyn_img.to_rgba8();
+                                let (width, height) = rgba8.dimensions();
+                                let mut buffer = SharedPixelBuffer::<slint::Rgba8Pixel>::new(
+                                    width as u32,
+                                    height as u32,
+                                );
+                                buffer.make_mut_bytes().copy_from_slice(&rgba8);
+                                Ok(buffer)
+                            }
+
+                            match load_bytes(url)
+                                .and_then(|bytes| decode_to_shared_pixel_buffer(&bytes))
+                            {
+                                Ok(buffer) => Some(buffer),
+                                Err(e) => {
+                                    println!("Failed to load or decode art image: {}", e);
+                                    None
+                                }
+                            }
+                        });
+
+                    let status = progress.playback_status();
+                    let initial_position = progress.initial_position().as_secs() as i32;
+                    let length = progress.length().unwrap_or_default().as_secs() as i32;
+                    let has_length = progress.length().is_some();
+                    let artist = progress
+                        .metadata()
+                        .artists()
+                        .unwrap_or_default()
+                        .join(", ")
+                        .into();
+                    let title = progress.metadata().title().unwrap_or_default().into();
+                    let album = progress.metadata().album_name().unwrap_or_default().into();
+
+                    canvas_window_weak
+                        .upgrade_in_event_loop(move |canvas_window| {
+                            canvas_window.set_initial_position(initial_position);
+                            canvas_window.invoke_reset_initial_position_change_tick();
+                            canvas_window.set_length(length);
+                            canvas_window.set_has_length(has_length);
+                            canvas_window.set_track_artist(artist);
+                            canvas_window.set_track_title(title);
+                            canvas_window.set_track_album(album);
+                            canvas_window.set_play_button_text(
+                                if status == mpris::PlaybackStatus::Playing {
+                                    "⏸".into()
+                                } else {
+                                    "⏵".into()
+                                },
+                            );
+
+                            if let Some(pixel_buffer) = maybe_image {
+                                let image = slint::Image::from_rgba8(pixel_buffer);
+                                canvas_window.set_art_image(image);
+                            } else {
+                                canvas_window.set_art_image(slint::Image::default());
+                            }
+                        })
+                        .unwrap();
+                }
+            }
+        }
+    });
+
+    canvas_window.on_previous({
+        let mpris_msg_tx = mpris_msg_tx.clone();
+        move || {
+            mpris_msg_tx
+                .send(Box::new(|player: &Player| {
+                    player.previous().unwrap();
+                }))
+                .unwrap();
+        }
+    });
+    canvas_window.on_play_pause({
+        let mpris_msg_tx = mpris_msg_tx.clone();
+        move || {
+            mpris_msg_tx
+                .send(Box::new(|player: &Player| {
+                    player.play_pause().unwrap();
+                }))
+                .unwrap();
+        }
+    });
+    canvas_window.on_next({
+        let mpris_msg_tx = mpris_msg_tx.clone();
+        move || {
+            mpris_msg_tx
+                .send(Box::new(|player: &Player| {
+                    player.next().unwrap();
+                }))
+                .unwrap();
+        }
+    });
 
     canvas_window
         .window()
@@ -166,7 +378,21 @@ pub fn initialize_slint_surface(
 
                         let app_state = slint_global_canvas.app_state.as_mut().unwrap();
 
-                        let tick = slint_global_canvas.window.upgrade().unwrap().get_tick();
+                        let window = slint_global_canvas.window.upgrade().unwrap();
+                        let tick = window.get_tick();
+
+                        // Manually update the position property here every second because Slint doesn't require
+                        // actual changes in values to trigger rendering.
+                        // Any property set being a dependency of the cache-rendering-hint sub-tree would
+                        // trigger an update, but we only need to update the slider every second.
+                        let initial_position_changed_tick =
+                            window.get_initial_position_change_tick();
+                        let initial_position = window.get_initial_position();
+                        let new_position = initial_position
+                            + ((tick - initial_position_changed_tick) / 1000) as i32;
+                        if new_position != window.get_position() {
+                            window.set_position(new_position);
+                        }
 
                         app_state.process_audio(tick as u32);
 

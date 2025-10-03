@@ -241,7 +241,7 @@ pub struct ViewSurface {
     pub wgpu: Rc<dyn WgpuSurface>,
     depth_texture: Option<wgpu::Texture>,
     render_surface: RenderSurface,
-    last_configure_size: (u32, u32),
+    depth_texture_size: (u32, u32),
     last_fps_dump_time: Instant,
     frame_count: u32,
     fps_callback: Box<dyn Fn(u32)>,
@@ -273,7 +273,7 @@ impl ViewSurface {
             depth_texture: None,
             render_surface,
             // Force reconfiguration of the depth texture on the first render
-            last_configure_size: (u32::MAX, u32::MAX),
+            depth_texture_size: (u32::MAX, u32::MAX),
             last_fps_dump_time: Instant::now(),
             frame_count: 0,
             fps_callback,
@@ -291,7 +291,7 @@ impl ViewSurface {
         left_view: &mut Option<Box<dyn View>>,
         right_view: &mut Option<Box<dyn View>>,
     ) {
-        if self.last_configure_size != (surface_texture.width(), surface_texture.height()) {
+        if self.depth_texture_size != (surface_texture.width(), surface_texture.height()) {
             // Create the depth texture
             self.depth_texture = Some(wgpu.device().create_texture(&wgpu::TextureDescriptor {
                 label: Some("Depth Texture"),
@@ -308,6 +308,7 @@ impl ViewSurface {
                     | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             }));
+            self.depth_texture_size = (surface_texture.width(), surface_texture.height());
         }
 
         let texture_view = surface_texture.create_view(&wgpu::TextureViewDescriptor::default());

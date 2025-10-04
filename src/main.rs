@@ -253,7 +253,12 @@ impl ApplicationState {
             );
         }
     }
-    fn render(&mut self, wgpu: &Rc<dyn WgpuSurface>, surface_texture: &wgpu::Texture) {
+    fn render_with_clear_color(
+        &mut self,
+        wgpu: &Rc<dyn WgpuSurface>,
+        surface_texture: &wgpu::Texture,
+        clear_color: wgpu::Color,
+    ) {
         if !self.lazy_config_changes.is_empty() || self.view_transform_dirty {
             let channels = self.config.general.channels;
             let layout = self.config.general.layout;
@@ -305,22 +310,24 @@ impl ApplicationState {
 
         if let Some(window) = self.primary_view_surface.as_mut() {
             if window.surface_id() == wgpu.surface_id() {
-                window.render(
+                window.render_with_clear_color(
                     wgpu,
                     surface_texture,
                     &mut self.left_view,
                     &mut self.right_view,
+                    clear_color,
                 );
             }
         }
 
         if let Some(window) = self.secondary_view_surface.as_mut() {
             if window.surface_id() == wgpu.surface_id() {
-                window.render(
+                window.render_with_clear_color(
                     wgpu,
                     surface_texture,
                     &mut self.left_view,
                     &mut self.right_view,
+                    clear_color,
                 );
             }
         }

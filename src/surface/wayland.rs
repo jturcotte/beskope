@@ -629,13 +629,17 @@ impl WlrWaylandEventHandler {
         if !self.surfaces_with_pending_render.is_empty() {
             self.app_state.process_audio(self.pending_render_timestamp);
         }
+        let clear_color = wgpu::Color::TRANSPARENT;
         for wgpu in self.surfaces_with_pending_render.drain(..) {
             let frame = wgpu
                 .surface
                 .get_current_texture()
                 .expect("Failed to acquire next swap chain texture");
-            self.app_state
-                .render(&(wgpu as Rc<dyn WgpuSurface>), &frame.texture);
+            self.app_state.render_with_clear_color(
+                &(wgpu as Rc<dyn WgpuSurface>),
+                &frame.texture,
+                clear_color,
+            );
             frame.present();
         }
     }

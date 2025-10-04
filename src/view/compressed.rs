@@ -427,6 +427,7 @@ impl View for CompressedView {
         encoder: &mut CommandEncoder,
         view: &TextureView,
         _depth_texture_view: &TextureView,
+        clear_color: Option<wgpu::Color>,
     ) {
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -436,7 +437,9 @@ impl View for CompressedView {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
+                        load: clear_color
+                            .map(|c| wgpu::LoadOp::Clear(c))
+                            .unwrap_or(wgpu::LoadOp::Load),
                         store: wgpu::StoreOp::Store,
                     },
                 })],

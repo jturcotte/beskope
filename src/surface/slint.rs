@@ -401,7 +401,14 @@ pub fn initialize_slint_surface(
 
                         let wgpu = slint_global_canvas.wgpu_surface.as_ref().unwrap().clone()
                             as Rc<dyn WgpuSurface>;
-                        app_state.render(&wgpu, surface_texture);
+                        // Grey clear color for Slint
+                        let clear_color = wgpu::Color {
+                            r: 0.66,
+                            g: 0.66,
+                            b: 0.66,
+                            a: 1.0,
+                        };
+                        app_state.render_with_clear_color(&wgpu, surface_texture, clear_color);
                     }
                 }
                 _ => {}

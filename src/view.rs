@@ -42,6 +42,7 @@ pub trait View {
         encoder: &mut CommandEncoder,
         view: &TextureView,
         depth_texture_view: &TextureView,
+        clear_color: Option<wgpu::Color>,
     );
 
     fn process_audio(
@@ -284,12 +285,13 @@ impl ViewSurface {
         self.surface_id
     }
 
-    pub fn render(
+    pub fn render_with_clear_color(
         &mut self,
         wgpu: &Rc<dyn WgpuSurface>,
         surface_texture: &wgpu::Texture,
         left_view: &mut Option<Box<dyn View>>,
         right_view: &mut Option<Box<dyn View>>,
+        clear_color: wgpu::Color,
     ) {
         if self.depth_texture_size != (surface_texture.width(), surface_texture.height()) {
             // Create the depth texture
@@ -323,30 +325,20 @@ impl ViewSurface {
             .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        // Clear the depth texture before rendering the views
-        let _ = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Clear Depth Pass"),
-            color_attachments: &[],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &depth_texture_view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-
         if let Some(view) = left_view {
             if view.render_surface() == self.render_surface {
-                view.render(&mut encoder, &texture_view, &depth_texture_view);
+                view.render(
+                    &mut encoder,
+                    &texture_view,
+                    &depth_texture_view,
+                    Some(clear_color),
+                );
             }
         }
         if let Some(view) = right_view {
             if view.render_surface() == self.render_surface {
-                view.render(&mut encoder, &texture_view, &depth_texture_view);
+                // Right view in dual view per surface layouts is rendered second, so no need to clear.
+                view.render(&mut encoder, &texture_view, &depth_texture_view, None);
             }
         }
         wgpu.queue().submit(Some(encoder.finish()));

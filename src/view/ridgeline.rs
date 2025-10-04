@@ -526,6 +526,7 @@ impl View for RidgelineView {
         encoder: &mut CommandEncoder,
         view: &TextureView,
         depth_texture_view: &TextureView,
+        clear_color: Option<wgpu::Color>,
     ) {
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -535,14 +536,19 @@ impl View for RidgelineView {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
+                        load: clear_color
+                            .map(|c| wgpu::LoadOp::Clear(c))
+                            .unwrap_or(wgpu::LoadOp::Load),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: depth_texture_view,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
+                        // When clearing the color attachment, also clear the depth texture
+                        load: clear_color
+                            .map(|_| wgpu::LoadOp::Clear(1.0))
+                            .unwrap_or(wgpu::LoadOp::Load),
                         store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,

@@ -415,5 +415,6 @@ pub fn initialize_slint_surface(
             }
         })
         .unwrap();
+    // FIXME: Figure out why it doesn't quit
     canvas_window.show().unwrap();
 }

@@ -567,6 +567,10 @@ pub fn main() {
         );
     }
 
-    // Tie the main thread to the config window, since winit needs to be there on some platforms.
-    slint::run_event_loop_until_quit().unwrap();
+    if args.window {
+        slint::run_event_loop().unwrap();
+    } else {
+        // Tie the main thread to the config window, since winit needs to be there on some platforms.
+        slint::run_event_loop_until_quit().unwrap();
+    }
 }

@@ -532,12 +532,12 @@ impl View for RidgelineView {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: clear_color
-                            .map(|c| wgpu::LoadOp::Clear(c))
+                            .map(wgpu::LoadOp::Clear)
                             .unwrap_or(wgpu::LoadOp::Load),
                         store: wgpu::StoreOp::Store,
                     },
@@ -566,7 +566,7 @@ impl View for RidgelineView {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -593,7 +593,7 @@ impl View for RidgelineView {
     }
 
     fn process_audio(
-        self: &mut Self,
+        &mut self,
         timestamp: u32,
         data: &[f32],
         fft: &dyn Fft<f32>,

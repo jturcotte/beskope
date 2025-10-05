@@ -86,7 +86,7 @@ impl ApplicationState {
         let config = match ui::Configuration::load() {
             Ok(config) => config,
             Err(e) => {
-                eprintln!("Failed to load configuration, will use default: {}", e);
+                eprintln!("Failed to load configuration, will use default: {e}");
                 ui::Configuration::default()
             }
         };
@@ -372,10 +372,10 @@ impl ApplicationState {
     }
 }
 
-enum AppMessage {
-    ApplicationStateCallback(Box<dyn FnOnce(&mut ApplicationState) + Send>),
-    WlrGlobalCanvasCallback(Box<dyn FnOnce(&mut dyn GlobalCanvas, GlobalCanvasContext) + Send>),
-    SlintGlobalCanvasCallback(Box<dyn FnOnce(&mut dyn GlobalCanvas, GlobalCanvasContext) + Send>),
+enum AppMessageCallback {
+    ApplicationState(Box<dyn FnOnce(&mut ApplicationState) + Send>),
+    WlrGlobalCanvas(Box<dyn FnOnce(&mut dyn GlobalCanvas, GlobalCanvasContext) + Send>),
+    SlintGlobalCanvas(Box<dyn FnOnce(&mut dyn GlobalCanvas, GlobalCanvasContext) + Send>),
 }
 
 #[derive(Parser, Debug)]
@@ -429,7 +429,7 @@ pub fn main() {
         }
     }
 
-    let (app_msg_tx, app_msg_rx) = mpsc::channel::<AppMessage>();
+    let (app_msg_tx, app_msg_rx) = mpsc::channel::<AppMessageCallback>();
     let request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>> =
         Arc::new(Mutex::new(Arc::new(|| {})));
 
@@ -445,7 +445,7 @@ pub fn main() {
         let app_msg_tx = app_msg_tx.clone();
         let request_redraw_callback = request_redraw_callback.clone();
         move |f| {
-            let msg = AppMessage::ApplicationStateCallback(f);
+            let msg = AppMessageCallback::ApplicationState(f);
             app_msg_tx.send(msg).unwrap();
             request_redraw_callback.lock().unwrap()();
         }
@@ -456,9 +456,9 @@ pub fn main() {
         let request_redraw_callback = request_redraw_callback.clone();
         move |f| {
             let msg = if wlr {
-                AppMessage::WlrGlobalCanvasCallback(f)
+                AppMessageCallback::WlrGlobalCanvas(f)
             } else {
-                AppMessage::SlintGlobalCanvasCallback(f)
+                AppMessageCallback::SlintGlobalCanvas(f)
             };
             app_msg_tx.send(msg).unwrap();
             // FIXME: This queues additional frame requests, this should check if it's stopped or not.
@@ -469,7 +469,7 @@ pub fn main() {
     let config = match ui::Configuration::load() {
         Ok(config) => config,
         Err(e) => {
-            eprintln!("Failed to load configuration: {}", e);
+            eprintln!("Failed to load configuration: {e}");
             ui::Configuration::default()
         }
     };
@@ -502,7 +502,7 @@ pub fn main() {
                         match &buf[..n] {
                             CONFIG_COMMAND => {
                                 let config_window_weak = config_window_weak.clone();
-                                send_msg(AppMessage::ApplicationStateCallback(Box::new(
+                                send_msg(AppMessageCallback::ApplicationState(Box::new(
                                     move |app| {
                                         let config = app.config.clone();
 

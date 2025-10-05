@@ -32,7 +32,7 @@ use wayland_client::{
 };
 
 use crate::ui::{self, PanelLayer};
-use crate::{AppMessage, ApplicationState, GlobalCanvas, GlobalCanvasContext, WgpuSurface};
+use crate::{AppMessageCallback, ApplicationState, GlobalCanvas, GlobalCanvasContext, WgpuSurface};
 
 impl CompositorHandler for WlrWaylandEventHandler {
     fn scale_factor_changed(
@@ -63,15 +63,15 @@ impl CompositorHandler for WlrWaylandEventHandler {
         // Process UI callbacks here since some require the wayland connection to recreate windows.
         while let Ok(message) = self.ui_msg_rx.try_recv() {
             match message {
-                AppMessage::ApplicationStateCallback(closure) => closure(&mut self.app_state),
-                AppMessage::WlrGlobalCanvasCallback(closure) => closure(
+                AppMessageCallback::ApplicationState(closure) => closure(&mut self.app_state),
+                AppMessageCallback::WlrGlobalCanvas(closure) => closure(
                     self,
                     GlobalCanvasContext::Wlr(WlrCanvasContext {
                         conn: conn.clone(),
                         qh: qh.clone(),
                     }),
                 ),
-                AppMessage::SlintGlobalCanvasCallback(_) => {
+                AppMessageCallback::SlintGlobalCanvas(_) => {
                     panic!("Incorrect GlobalCanvas callback type")
                 }
             }
@@ -81,14 +81,14 @@ impl CompositorHandler for WlrWaylandEventHandler {
             id if self
                 .primary_layer
                 .as_ref()
-                .map_or(false, |l| l.wl_surface().id() == id) =>
+                .is_some_and(|l| l.wl_surface().id() == id) =>
             {
                 self.primary_wgpu.as_ref()
             }
             id if self
                 .secondary_layer
                 .as_ref()
-                .map_or(false, |l| l.wl_surface().id() == id) =>
+                .is_some_and(|l| l.wl_surface().id() == id) =>
             {
                 self.secondary_wgpu.as_ref()
             }
@@ -99,12 +99,12 @@ impl CompositorHandler for WlrWaylandEventHandler {
                 None
             }
         } {
-            if !self.surfaces_with_pending_render.contains(&wgpu) {
+            if !self.surfaces_with_pending_render.contains(wgpu) {
                 self.surfaces_with_pending_render.push(wgpu.clone());
 
                 if !self.app_state.animation_stopped.load(Ordering::Relaxed) {
                     // Already tell the compositor that we want to draw again for the next output frame.
-                    surface.frame(&qh, surface.clone());
+                    surface.frame(qh, surface.clone());
                     surface.commit();
                 }
             }
@@ -361,7 +361,7 @@ impl WgpuSurface for WlrWgpuSurface {
 }
 
 pub struct WlrWaylandEventHandler {
-    ui_msg_rx: Receiver<AppMessage>,
+    ui_msg_rx: Receiver<AppMessageCallback>,
     compositor: CompositorState,
     layer_shell: LayerShell,
     registry_state: RegistryState,
@@ -402,7 +402,7 @@ impl GlobalCanvas for WlrWaylandEventHandler {
     fn apply_panel_layout(&mut self, context: &GlobalCanvasContext) {
         match context {
             GlobalCanvasContext::Wlr(WlrCanvasContext { conn, qh }) => {
-                self.apply_panel_layout(&conn, &qh);
+                self.apply_panel_layout(conn, qh);
             }
             _ => panic!("Incorrect context type"),
         }
@@ -477,14 +477,14 @@ impl WlrWaylandEventHandler {
         qh: &QueueHandle<Self>,
     ) -> Rc<WlrWgpuSurface> {
         // A layer surface is created from a surface.
-        let surface = self.compositor.create_surface(&qh);
+        let surface = self.compositor.create_surface(qh);
         // Let mouse events pass through the surface
         surface.set_input_region(Some(Region::new(&self.compositor).unwrap().wl_region()));
 
         // And then we create the layer shell.
         let layer =
             self.layer_shell
-                .create_layer_surface(&qh, surface, Layer::Top, None::<String>, None);
+                .create_layer_surface(qh, surface, Layer::Top, None::<String>, None);
         // Configure the layer surface, providing things like the anchor on screen, desired size and the keyboard
         // interactivity
         layer.set_anchor(anchor);
@@ -492,12 +492,12 @@ impl WlrWaylandEventHandler {
         let (panel_layer, panel_width, exclusive_ratio) = match self.app_state.config.style {
             ui::Style::Compressed => (
                 self.app_state.config.compressed.layer,
-                self.app_state.config.compressed.width as u32,
+                self.app_state.config.compressed.width,
                 self.app_state.config.compressed.exclusive_ratio,
             ),
             ui::Style::Ridgeline => (
                 self.app_state.config.ridgeline.layer,
-                self.app_state.config.ridgeline.width as u32,
+                self.app_state.config.ridgeline.width,
                 self.app_state.config.ridgeline.exclusive_ratio,
             ),
         };
@@ -522,15 +522,15 @@ impl WlrWaylandEventHandler {
 
     pub fn apply_panel_width_change(&mut self) {
         let panel_width = match self.app_state.config.style {
-            ui::Style::Compressed => self.app_state.config.compressed.width as u32,
-            ui::Style::Ridgeline => self.app_state.config.ridgeline.width as u32,
+            ui::Style::Compressed => self.app_state.config.compressed.width,
+            ui::Style::Ridgeline => self.app_state.config.ridgeline.width,
         };
 
         let (width, height) = match self.app_state.config.general.layout {
             crate::ui::PanelLayout::SingleTop | crate::ui::PanelLayout::SingleBottom => {
-                (0, panel_width as u32)
+                (0, panel_width)
             }
-            crate::ui::PanelLayout::TwoPanels => (panel_width as u32, 0),
+            crate::ui::PanelLayout::TwoPanels => (panel_width, 0),
         };
 
         if let Some(layer) = self.primary_layer.as_ref() {
@@ -667,7 +667,7 @@ pub struct WlrWaylandEventLoop {
 impl WlrWaylandEventLoop {
     pub fn new(
         app_state: ApplicationState,
-        ui_msg_rx: Receiver<AppMessage>,
+        ui_msg_rx: Receiver<AppMessageCallback>,
         request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
     ) -> WlrWaylandEventLoop {
         // All Wayland apps start by connecting the compositor (server).

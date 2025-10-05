@@ -46,7 +46,7 @@ pub trait View {
     );
 
     fn process_audio(
-        self: &mut Self,
+        &mut self,
         timestamp: u32,
         data: &[f32],
         fft: &dyn Fft<f32>,

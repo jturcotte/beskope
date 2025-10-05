@@ -122,12 +122,8 @@ impl Configuration {
             std::io::Error::new(std::io::ErrorKind::NotFound, "Config directory not found")
         })?;
 
-        let toml_str = toml::to_string_pretty(self).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("TOML serialization error: {}", e),
-            )
-        })?;
+        let toml_str = toml::to_string_pretty(self)
+            .map_err(|e| io::Error::other(format!("TOML serialization error: {e}")))?;
         let mut file = fs::File::create(config_path)?;
         file.write_all(toml_str.as_bytes())?;
         Ok(())
@@ -139,12 +135,8 @@ impl Configuration {
                 return Ok(Configuration::default());
             }
             let toml_str = fs::read_to_string(config_path)?;
-            let config: Configuration = toml::from_str(&toml_str).map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("TOML deserialization error: {}", e),
-                )
-            })?;
+            let config: Configuration = toml::from_str(&toml_str)
+                .map_err(|e| io::Error::other(format!("TOML deserialization error: {e}")))?;
             Ok(config)
         } else {
             Ok(Configuration::default())
@@ -205,9 +197,9 @@ pub fn init(
         let mut svg_path = String::new();
         let mut command = 'M';
         for i in 0..(width as usize) {
-            let t = (i as f32 / width as f32) * 3.0 - 3.0;
+            let t = (i as f32 / width) * 3.0 - 3.0;
             if let Some(y) = spline.sample(t) {
-                svg_path.push_str(&format!("{}{},{}", command, i, (1.0 - y) * height as f32));
+                svg_path.push_str(&format!("{}{},{}", command, i, (1.0 - y) * height));
             }
             command = 'L';
         }
@@ -395,7 +387,7 @@ pub fn init(
         move || {
             send_to_app(Box::new(move |app_state| {
                 if let Err(e) = app_state.config.save() {
-                    eprintln!("Failed to save configuration: {}", e);
+                    eprintln!("Failed to save configuration: {e}");
                 }
             }));
 
@@ -425,21 +417,21 @@ pub fn init(
 
 impl ConfigurationWindow {
     pub fn update_from_configuration(&self, config: &Configuration) {
-        self.invoke_set_style(config.style.clone());
-        self.invoke_set_panel_channels(config.general.channels.clone());
-        self.invoke_set_panel_layout(config.general.layout.clone());
-        self.invoke_set_ridgeline_panel_layer(config.ridgeline.layer.clone());
+        self.invoke_set_style(config.style);
+        self.invoke_set_panel_channels(config.general.channels);
+        self.invoke_set_panel_layout(config.general.layout);
+        self.invoke_set_ridgeline_panel_layer(config.ridgeline.layer);
         self.invoke_set_ridgeline_panel_width(config.ridgeline.width as i32);
-        self.invoke_set_ridgeline_panel_exclusive_ratio(config.ridgeline.exclusive_ratio as f32);
-        self.invoke_set_ridgeline_fill_color(config.ridgeline.fill_color.clone());
-        self.invoke_set_ridgeline_stroke_color(config.ridgeline.stroke_color.clone());
-        self.invoke_set_ridgeline_highlight_color(config.ridgeline.highlight_color.clone());
-        self.invoke_set_ridgeline_horizon_offset(config.ridgeline.horizon_offset as f32);
-        self.invoke_set_compressed_panel_layer(config.compressed.layer.clone());
+        self.invoke_set_ridgeline_panel_exclusive_ratio(config.ridgeline.exclusive_ratio);
+        self.invoke_set_ridgeline_fill_color(config.ridgeline.fill_color);
+        self.invoke_set_ridgeline_stroke_color(config.ridgeline.stroke_color);
+        self.invoke_set_ridgeline_highlight_color(config.ridgeline.highlight_color);
+        self.invoke_set_ridgeline_horizon_offset(config.ridgeline.horizon_offset);
+        self.invoke_set_compressed_panel_layer(config.compressed.layer);
         self.invoke_set_compressed_panel_width(config.compressed.width as i32);
-        self.invoke_set_compressed_panel_exclusive_ratio(config.compressed.exclusive_ratio as f32);
-        self.invoke_set_compressed_fill_color(config.compressed.fill_color.clone());
-        self.invoke_set_compressed_stroke_color(config.compressed.stroke_color.clone());
+        self.invoke_set_compressed_panel_exclusive_ratio(config.compressed.exclusive_ratio);
+        self.invoke_set_compressed_fill_color(config.compressed.fill_color);
+        self.invoke_set_compressed_stroke_color(config.compressed.stroke_color);
         self.invoke_set_compressed_time_curve_control_points(slint::ModelRc::new(VecModel::from(
             config.compressed.time_curve.control_points.clone(),
         )));

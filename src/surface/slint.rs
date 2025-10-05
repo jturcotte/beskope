@@ -15,7 +15,8 @@ use slint::SharedPixelBuffer;
 use std::io::Read;
 
 use crate::{
-    AppMessage, ApplicationState, GlobalCanvasContext, surface::GlobalCanvas, ui, view::WindowMode,
+    AppMessageCallback, ApplicationState, GlobalCanvasContext, surface::GlobalCanvas, ui,
+    view::WindowMode,
 };
 
 use super::WgpuSurface;
@@ -48,7 +49,7 @@ impl WgpuSurface for SlintWgpuSurface {
 }
 
 struct SlintGlobalCanvas {
-    ui_msg_rx: Receiver<AppMessage>,
+    ui_msg_rx: Receiver<AppMessageCallback>,
     app_state: Option<ApplicationState>,
     wgpu_surface: Option<Rc<SlintWgpuSurface>>,
     window: slint::Weak<ui::CanvasWindow>,
@@ -59,13 +60,13 @@ impl SlintGlobalCanvas {
         // Process UI callbacks here since some require the wayland connection to recreate windows.
         while let Ok(message) = self.ui_msg_rx.try_recv() {
             match message {
-                AppMessage::ApplicationStateCallback(closure) => {
+                AppMessageCallback::ApplicationState(closure) => {
                     closure(self.app_state.as_mut().unwrap())
                 }
-                AppMessage::SlintGlobalCanvasCallback(closure) => {
+                AppMessageCallback::SlintGlobalCanvas(closure) => {
                     closure(self, GlobalCanvasContext::Slint(()))
                 }
-                AppMessage::WlrGlobalCanvasCallback(_) => {
+                AppMessageCallback::WlrGlobalCanvas(_) => {
                     panic!("Incorrect GlobalCanvas callback type")
                 }
             }
@@ -116,7 +117,7 @@ type MprisMessage = Box<dyn FnOnce(&Player) + Send>;
 
 pub fn initialize_slint_surface(
     config: ui::Configuration,
-    ui_msg_rx: Receiver<AppMessage>,
+    ui_msg_rx: Receiver<AppMessageCallback>,
     canvas_window: ui::CanvasWindow,
     config_window_weak: slint::Weak<ui::ConfigurationWindow>,
     request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
@@ -170,7 +171,7 @@ pub fn initialize_slint_surface(
             while let Ok(closure) = mpris_msg_rx.try_recv() {
                 // Ignore any command sent while there is no player, the UI should be disabled instead.
                 if let Some(player) = maybe_player.as_ref() {
-                    closure(&player);
+                    closure(player);
                 }
             }
 
@@ -217,7 +218,7 @@ pub fn initialize_slint_surface(
                                 if parsed.scheme() == "file" {
                                     // Use url crate to parse and decode the path
                                     let path = parsed.to_file_path().map_err(|_| {
-                                        format!("Failed to convert file URL to path: {}", url)
+                                        format!("Failed to convert file URL to path: {url}")
                                     })?;
                                     std::fs::read(path).map_err(|e| e.into())
                                 } else if parsed.scheme() == "http" || parsed.scheme() == "https" {
@@ -229,7 +230,7 @@ pub fn initialize_slint_surface(
                                     reader.read_to_end(&mut buf)?;
                                     Ok(buf)
                                 } else {
-                                    Err(format!("Unsupported art URL scheme: {}", url).into())
+                                    Err(format!("Unsupported art URL scheme: {url}").into())
                                 }
                             }
 
@@ -242,10 +243,8 @@ pub fn initialize_slint_surface(
                                 let dyn_img = image::load_from_memory(data)?;
                                 let rgba8 = dyn_img.to_rgba8();
                                 let (width, height) = rgba8.dimensions();
-                                let mut buffer = SharedPixelBuffer::<slint::Rgba8Pixel>::new(
-                                    width as u32,
-                                    height as u32,
-                                );
+                                let mut buffer =
+                                    SharedPixelBuffer::<slint::Rgba8Pixel>::new(width, height);
                                 buffer.make_mut_bytes().copy_from_slice(&rgba8);
                                 Ok(buffer)
                             }
@@ -255,7 +254,7 @@ pub fn initialize_slint_surface(
                             {
                                 Ok(buffer) => Some(buffer),
                                 Err(e) => {
-                                    println!("Failed to load or decode art image: {}", e);
+                                    println!("Failed to load or decode art image: {e}");
                                     None
                                 }
                             }

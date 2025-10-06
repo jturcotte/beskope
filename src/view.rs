@@ -325,20 +325,27 @@ impl ViewSurface {
             .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
+        // Only clear the first view that renders to this surface
+        let mut clear_flag = Some(clear_color);
+
         if let Some(view) = left_view {
             if view.render_surface() == self.render_surface {
                 view.render(
                     &mut encoder,
                     &texture_view,
                     &depth_texture_view,
-                    Some(clear_color),
+                    clear_flag.take(),
                 );
             }
         }
         if let Some(view) = right_view {
             if view.render_surface() == self.render_surface {
-                // Right view in dual view per surface layouts is rendered second, so no need to clear.
-                view.render(&mut encoder, &texture_view, &depth_texture_view, None);
+                view.render(
+                    &mut encoder,
+                    &texture_view,
+                    &depth_texture_view,
+                    clear_flag.take(),
+                );
             }
         }
         wgpu.queue().submit(Some(encoder.finish()));

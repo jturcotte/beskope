@@ -1,4 +1,47 @@
-import { AboutSlint, VerticalBox, Slider, Button, HorizontalBox } from "std-widgets.slint";
+import { VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+component SvgButton inherits Rectangle {
+    in property source <=> i.source;
+    in property<bool> flip: false;
+    callback clicked();
+
+    width: self.height;
+    height: 36px;
+    border-radius: self.width;
+    i := Image {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 50%;
+        height: 50%;
+        colorize: #000c;
+        rotation-angle: flip ? 180deg : 0deg;
+    }
+    ta := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+    states [
+        down when ta.pressed: {
+            background: #0006;
+            in-out {
+                animate background { duration: 50ms; }
+            }
+        }
+        active when !ta.has-hover: {
+            background: transparent;
+        }
+        active-hover when ta.has-hover: {
+            background: #0004;
+            in {
+                animate background { duration: 500ms; easing: ease-out-quint; }
+            }
+            out {
+                animate background { duration: 500ms; easing: ease-in; }
+            }
+        }
+    ]
+}
 
 export component CanvasWindow inherits Window {
     in property<float> horizontal_padding_ratio: 0.1;
@@ -9,7 +52,7 @@ export component CanvasWindow inherits Window {
     in property<string> track_artist: "Artist";
     in property<string> track_title: "Title";
     in property<string> track_album: "Album";
-    in property<string> play_button_text: "⏯";
+    in property<bool> playing: false;
     callback previous();
     callback play_pause();
     callback next();
@@ -50,18 +93,23 @@ export component CanvasWindow inherits Window {
         }
 
         HorizontalBox {
-            Button {
-                text: "⏮";
+        Rectangle {}
+            SvgButton {
+                source: @image-url("icons/first-track-multimedia-button-svgrepo-com.svg");
                 clicked => previous();
             }
-            Button {
-                text: play_button_text;
+            SvgButton {
+                source: playing
+                    ? @image-url("icons/pause-two-lines-svgrepo-com.svg")
+                    : @image-url("icons/play-arrow-svgrepo-com.svg");
                 clicked => play_pause();
             }
-            Button {
-                text: "⏭";
+            SvgButton {
+                source: @image-url("icons/first-track-multimedia-button-svgrepo-com.svg");
+                flip: true;
                 clicked => next();
             }
+        Rectangle {}
         }
 
         Rectangle {}

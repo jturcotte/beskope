@@ -203,6 +203,7 @@ pub fn initialize_slint_surface(
                             canvas_window.set_track_artist("".into());
                             canvas_window.set_track_title("".into());
                             canvas_window.set_track_album("".into());
+                            canvas_window.set_playing(false);
                             canvas_window.set_art_image(slint::Image::default());
                         })
                         .unwrap();
@@ -282,13 +283,7 @@ pub fn initialize_slint_surface(
                             canvas_window.set_track_artist(artist);
                             canvas_window.set_track_title(title);
                             canvas_window.set_track_album(album);
-                            canvas_window.set_play_button_text(
-                                if status == mpris::PlaybackStatus::Playing {
-                                    "⏸".into()
-                                } else {
-                                    "⏵".into()
-                                },
-                            );
+                            canvas_window.set_playing(status == mpris::PlaybackStatus::Playing);
 
                             if let Some(pixel_buffer) = maybe_image {
                                 let image = slint::Image::from_rgba8(pixel_buffer);

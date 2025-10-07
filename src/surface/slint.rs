@@ -200,10 +200,6 @@ pub fn initialize_slint_surface(
 
                     canvas_window_weak
                         .upgrade_in_event_loop(move |canvas_window| {
-                            canvas_window.set_initial_position(0);
-                            canvas_window.invoke_reset_initial_position_change_tick();
-                            canvas_window.set_length(0);
-                            canvas_window.set_has_length(false);
                             canvas_window.set_track_artist("".into());
                             canvas_window.set_track_title("".into());
                             canvas_window.set_track_album("".into());
@@ -272,9 +268,6 @@ pub fn initialize_slint_surface(
                         });
 
                     let status = progress.playback_status();
-                    let initial_position = progress.initial_position().as_secs() as i32;
-                    let length = progress.length().unwrap_or_default().as_secs() as i32;
-                    let has_length = progress.length().is_some();
                     let artist = progress
                         .metadata()
                         .artists()
@@ -286,10 +279,6 @@ pub fn initialize_slint_surface(
 
                     canvas_window_weak
                         .upgrade_in_event_loop(move |canvas_window| {
-                            canvas_window.set_initial_position(initial_position);
-                            canvas_window.invoke_reset_initial_position_change_tick();
-                            canvas_window.set_length(length);
-                            canvas_window.set_has_length(has_length);
                             canvas_window.set_track_artist(artist);
                             canvas_window.set_track_title(title);
                             canvas_window.set_track_album(album);
@@ -390,19 +379,6 @@ pub fn initialize_slint_surface(
 
                         let window = slint_global_canvas.window.upgrade().unwrap();
                         let tick = window.get_tick();
-
-                        // Manually update the position property here every second because Slint doesn't require
-                        // actual changes in values to trigger rendering.
-                        // Any property set being a dependency of the cache-rendering-hint sub-tree would
-                        // trigger an update, but we only need to update the slider every second.
-                        let initial_position_changed_tick =
-                            window.get_initial_position_change_tick();
-                        let initial_position = window.get_initial_position();
-                        let new_position = initial_position
-                            + ((tick - initial_position_changed_tick) / 1000) as i32;
-                        if new_position != window.get_position() {
-                            window.set_position(new_position);
-                        }
 
                         app_state.process_audio(tick as u32);
 

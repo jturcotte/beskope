@@ -6,10 +6,6 @@ export component CanvasWindow inherits Window {
     in property<float> bottom_padding_ratio: 0.1;
     out property<duration> tick: animation-tick();
     in property<image> art_image;
-    in-out property<int> initial_position;
-    in property<int> position;
-    in property<int> length;
-    in property<bool> has_length;
     in property<string> track_artist: "Artist";
     in property<string> track_title: "Title";
     in property<string> track_album: "Album";
@@ -17,12 +13,6 @@ export component CanvasWindow inherits Window {
     callback previous();
     callback play_pause();
     callback next();
-
-    out property<duration> initial_position_change_tick: 0;
-    callback reset_initial_position_change_tick();
-    reset_initial_position_change_tick => {
-        initial_position_change_tick = tick;
-    }
 
     background: transparent;
     preferred-width: 800px;
@@ -38,13 +28,6 @@ export component CanvasWindow inherits Window {
         cache-rendering-hint: true;
         Image {
             source: art_image;
-        }
-
-        Slider {
-            visible: has_length;
-            enabled: false;
-            value: position;
-            maximum: length;
         }
 
         Text {

@@ -401,15 +401,15 @@ impl View for CompressedView {
         }
 
         if view_transform_change.is_some()
-            || config_changes.is_none_or(|c| c.contains(&ui::COMPRESSED_WIDTH))
+            || config_changes.is_none_or(|c| c.contains(&ui::COMPRESSED_WIDTH_RATIO))
         {
             if view_transform_change.is_some() {
                 self.view_transform = view_transform_change.cloned();
             }
 
             if let Some(view_transform) = self.view_transform {
-                let window_to_scene_transform =
-                    view_transform.get_window_to_scene_transform(config.compressed.width as f32);
+                let window_to_scene_transform = view_transform
+                    .get_window_to_scene_transform(config.compressed.width_ratio as f32);
                 let transform_matrix: [[f32; 4]; 4] =
                     (window_to_scene_transform * view_transform.transform_matrix).into();
 

@@ -21,10 +21,20 @@ pub struct GeneralConfig {
     pub layout: PanelLayout,
 }
 
+const fn ridgeline_width_ratio_default() -> f32 {
+    0.2
+}
+const fn compressed_width_ratio_default() -> f32 {
+    0.05
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RidgelineConfig {
     pub layer: PanelLayer,
-    pub width: u32,
+    /// Ratio relative to the output size
+    #[serde(default = "ridgeline_width_ratio_default")]
+    pub width_ratio: f32,
+    // Ratio relative to the width
     pub exclusive_ratio: f32,
     pub fill_color: slint::Color,
     pub stroke_color: slint::Color,
@@ -40,7 +50,10 @@ pub struct TimeCurveConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CompressedConfig {
     pub layer: PanelLayer,
-    pub width: u32,
+    // Ratio relative to the output size
+    #[serde(default = "compressed_width_ratio_default")]
+    pub width_ratio: f32,
+    // Ratio relative to the width
     pub exclusive_ratio: f32,
     pub fill_color: slint::Color,
     pub stroke_color: slint::Color,
@@ -56,12 +69,12 @@ pub struct Configuration {
 }
 
 // Change tracking IDs for changes applied lazily before rendering. Use their byte offset within the configuration struct.
-pub const RIDGELINE_WIDTH: usize = offset_of!(Configuration, ridgeline.width);
+pub const RIDGELINE_WIDTH_RATIO: usize = offset_of!(Configuration, ridgeline.width_ratio);
 pub const RIDGELINE_FILL_COLOR: usize = offset_of!(Configuration, ridgeline.fill_color);
 pub const RIDGELINE_STROKE_COLOR: usize = offset_of!(Configuration, ridgeline.stroke_color);
 pub const RIDGELINE_HIGHLIGHT_COLOR: usize = offset_of!(Configuration, ridgeline.highlight_color);
 pub const RIDGELINE_HORIZON_OFFSET: usize = offset_of!(Configuration, ridgeline.horizon_offset);
-pub const COMPRESSED_WIDTH: usize = offset_of!(Configuration, compressed.width);
+pub const COMPRESSED_WIDTH_RATIO: usize = offset_of!(Configuration, compressed.width_ratio);
 pub const COMPRESSED_FILL_COLOR: usize = offset_of!(Configuration, compressed.fill_color);
 pub const COMPRESSED_STROKE_COLOR: usize = offset_of!(Configuration, compressed.stroke_color);
 pub const COMPRESSED_TIME_CURVE_CONTROL_POINTS: usize =
@@ -77,7 +90,7 @@ impl Default for Configuration {
             },
             ridgeline: RidgelineConfig {
                 layer: PanelLayer::Bottom,
-                width: 360,
+                width_ratio: ridgeline_width_ratio_default(),
                 exclusive_ratio: 0.6,
                 fill_color: slint::Color::from_argb_u8(205, 64, 112, 172),
                 stroke_color: slint::Color::from_argb_u8(205, 0, 0, 0),
@@ -86,7 +99,7 @@ impl Default for Configuration {
             },
             compressed: CompressedConfig {
                 layer: PanelLayer::Top,
-                width: 80,
+                width_ratio: compressed_width_ratio_default(),
                 exclusive_ratio: 0.55,
                 fill_color: slint::Color::from_argb_u8(153, 128, 128, 128),
                 stroke_color: slint::Color::from_argb_u8(205, 0, 0, 0),
@@ -249,11 +262,11 @@ pub fn init(
         let send_to_canvas = send_to_canvas.clone();
         move |config| {
             send_to_canvas(Box::new(move |handler, _| {
-                handler.app_state().config.ridgeline.width = config as u32;
+                handler.app_state().config.ridgeline.width_ratio = config;
                 handler
                     .app_state()
                     .lazy_config_changes
-                    .insert(RIDGELINE_WIDTH);
+                    .insert(RIDGELINE_WIDTH_RATIO);
                 if handler.app_state().config.style == Style::Ridgeline {
                     handler.apply_panel_width_change();
                 }
@@ -326,11 +339,11 @@ pub fn init(
         let send_to_canvas = send_to_canvas.clone();
         move |config| {
             send_to_canvas(Box::new(move |handler, _| {
-                handler.app_state().config.compressed.width = config as u32;
+                handler.app_state().config.compressed.width_ratio = config;
                 handler
                     .app_state()
                     .lazy_config_changes
-                    .insert(COMPRESSED_WIDTH);
+                    .insert(COMPRESSED_WIDTH_RATIO);
                 if handler.app_state().config.style == Style::Compressed {
                     handler.apply_panel_width_change();
                 }
@@ -421,14 +434,14 @@ impl ConfigurationWindow {
         self.invoke_set_panel_channels(config.general.channels);
         self.invoke_set_panel_layout(config.general.layout);
         self.invoke_set_ridgeline_panel_layer(config.ridgeline.layer);
-        self.invoke_set_ridgeline_panel_width(config.ridgeline.width as i32);
+        self.invoke_set_ridgeline_panel_width(config.ridgeline.width_ratio);
         self.invoke_set_ridgeline_panel_exclusive_ratio(config.ridgeline.exclusive_ratio);
         self.invoke_set_ridgeline_fill_color(config.ridgeline.fill_color);
         self.invoke_set_ridgeline_stroke_color(config.ridgeline.stroke_color);
         self.invoke_set_ridgeline_highlight_color(config.ridgeline.highlight_color);
         self.invoke_set_ridgeline_horizon_offset(config.ridgeline.horizon_offset);
         self.invoke_set_compressed_panel_layer(config.compressed.layer);
-        self.invoke_set_compressed_panel_width(config.compressed.width as i32);
+        self.invoke_set_compressed_panel_width(config.compressed.width_ratio);
         self.invoke_set_compressed_panel_exclusive_ratio(config.compressed.exclusive_ratio);
         self.invoke_set_compressed_fill_color(config.compressed.fill_color);
         self.invoke_set_compressed_stroke_color(config.compressed.stroke_color);

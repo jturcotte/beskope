@@ -331,18 +331,15 @@ impl RidgelineView {
         }
     }
 
-    fn get_transform_matrix(&self, panel_width: u32, horizon_offset: f32) -> [[f32; 4]; 4] {
-        // FIXME: Make the config relative to the screen height
-        let panel_width = panel_width as f32;
-
+    fn get_transform_matrix(&self, panel_width_ratio: f32, horizon_offset: f32) -> [[f32; 4]; 4] {
         if let Some(view_transform) = self.view_transform {
             let screen_width = view_transform.scene_width;
             let screen_height = view_transform.scene_height;
 
             let (window_x, window_y, window_width, window_height) =
-                view_transform.get_window_coords(panel_width);
+                view_transform.get_window_coords(panel_width_ratio);
             let window_to_scene_transform =
-                view_transform.get_window_to_scene_transform(panel_width);
+                view_transform.get_window_to_scene_transform(panel_width_ratio);
 
             let near_z = 0.0;
             let far_z = 1.0;
@@ -352,10 +349,10 @@ impl RidgelineView {
             } else {
                 (-horizon_offset, 0.0)
             };
-            let half_screen = if view_transform.is_vertical {
-                view_transform.scene_width / 2.0
+            let (panel_width, half_screen) = if view_transform.is_vertical {
+                (window_width, view_transform.scene_width / 2.0)
             } else {
-                view_transform.scene_height / 2.0
+                (window_height, view_transform.scene_height / 2.0)
             };
 
             let full_top = 1.0 + vertical_offset;
@@ -504,15 +501,18 @@ impl View for RidgelineView {
 
         if view_transform_change.is_some()
             || config_changes.is_none_or(|c| {
-                c.contains(&ui::RIDGELINE_WIDTH) || c.contains(&ui::RIDGELINE_HORIZON_OFFSET)
+                c.contains(&ui::RIDGELINE_WIDTH_RATIO) || c.contains(&ui::RIDGELINE_HORIZON_OFFSET)
             })
         {
             if view_transform_change.is_some() {
                 self.view_transform = view_transform_change.cloned();
             }
 
-            let transform_matrix =
-                self.get_transform_matrix(config.ridgeline.width, config.ridgeline.horizon_offset);
+            // Compute panel width in pixels from configured ratio and current scene size
+            let transform_matrix = self.get_transform_matrix(
+                config.ridgeline.width_ratio,
+                config.ridgeline.horizon_offset,
+            );
             self.wgpu_queue.write_buffer(
                 &self.transform_buffer,
                 0,

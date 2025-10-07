@@ -88,17 +88,26 @@ impl GlobalCanvas for SlintGlobalCanvas {
 
     fn apply_panel_exclusive_ratio_change(&mut self) {
         let app_state = self.app_state.as_ref().unwrap();
-        let panel_width = match app_state.config.style {
+        let padding_ratio = match app_state.config.style {
             ui::Style::Compressed => {
-                app_state.config.compressed.width as f32
+                app_state.config.compressed.width_ratio as f32
                     * app_state.config.compressed.exclusive_ratio
             }
             ui::Style::Ridgeline => {
-                app_state.config.ridgeline.width as f32 * app_state.config.ridgeline.exclusive_ratio
+                app_state.config.ridgeline.width_ratio as f32
+                    * app_state.config.ridgeline.exclusive_ratio
             }
         };
 
-        self.window.upgrade().unwrap().set_view_width(panel_width);
+        let (horizontal, top, bottom) = match app_state.config.general.layout {
+            ui::PanelLayout::SingleBottom => (0.0, 0.0, padding_ratio),
+            ui::PanelLayout::SingleTop => (0.0, padding_ratio, 0.0),
+            ui::PanelLayout::TwoPanels => (padding_ratio, 0.0, 0.0),
+        };
+        let window = self.window.upgrade().unwrap();
+        window.set_horizontal_padding_ratio(horizontal);
+        window.set_top_padding_ratio(top);
+        window.set_bottom_padding_ratio(bottom);
     }
 
     fn apply_panel_layout(&mut self, _context: &GlobalCanvasContext) {
@@ -254,7 +263,9 @@ pub fn initialize_slint_surface(
                             {
                                 Ok(buffer) => Some(buffer),
                                 Err(e) => {
-                                    println!("Failed to load or decode art image: {e}");
+                                    println!(
+                                        "Failed to load or decode art image for URL [{url}]: {e}"
+                                    );
                                     None
                                 }
                             }

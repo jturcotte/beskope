@@ -1,7 +1,9 @@
 import { AboutSlint, VerticalBox, Slider, Button, HorizontalBox } from "std-widgets.slint";
 
 export component CanvasWindow inherits Window {
-    in property<length> view_width;
+    in property<float> horizontal_padding_ratio: 0.1;
+    in property<float> top_padding_ratio: 0.1;
+    in property<float> bottom_padding_ratio: 0.1;
     out property<duration> tick: animation-tick();
     in property<image> art_image;
     in-out property<int> initial_position;
@@ -26,14 +28,12 @@ export component CanvasWindow inherits Window {
     preferred-width: 800px;
     preferred-height: 800px;
 
-    layout := VerticalBox {
+    VerticalBox {
+        x: parent.width * horizontal_padding_ratio;
+        y: parent.height * top_padding_ratio;
+        width: parent.width - self.x * 2;
+        height: parent.height - parent.height * (bottom_padding_ratio + top_padding_ratio);
         Rectangle {}
-
-        // FIXME: Check if vertical or horizontal
-        padding-left: view_width;
-        padding-right: view_width;
-        padding-bottom: view_width / 8;
-        padding-top: view_width / 8;
 
         cache-rendering-hint: true;
         Image {

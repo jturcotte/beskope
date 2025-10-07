@@ -43,14 +43,14 @@ export global Backend {
     callback panel_layout_changed(PanelLayout);
     callback panel_channels_changed(RenderChannels);
     callback ridgeline_panel_layer_changed(PanelLayer);
-    callback ridgeline_panel_width_changed(int);
+    callback ridgeline_panel_width_changed(float);
     callback ridgeline_panel_exclusive_ratio_changed(float);
     callback ridgeline_fill_color_changed(color);
     callback ridgeline_highlight_color_changed(color);
     callback ridgeline_stroke_color_changed(color);
     callback ridgeline_horizon_offset_changed(float);
     callback compressed_panel_layer_changed(PanelLayer);
-    callback compressed_panel_width_changed(int);
+    callback compressed_panel_width_changed(float);
     callback compressed_panel_exclusive_ratio_changed(float);
     callback compressed_fill_color_changed(color);
     callback compressed_stroke_color_changed(color);
@@ -177,15 +177,15 @@ component RidgelineSettings inherits GridBox {
         Text { text: "Height/Width"; }
         panel_width_slider := LabeledSlider {
             minimum: 1;
-            maximum: 1280;
+            maximum: 49;
             precision: 1;
-            unit: " px";
+            unit: " %";
             changed(value) => {
-                Backend.ridgeline_panel_width_changed(value);
+                Backend.ridgeline_panel_width_changed(value / 100);
             }
-            callback set_panel_width(int);
+            callback set_panel_width(float);
             set_panel_width(width) => {
-                self.value = width;
+                self.value = width * 100;
             }
         }
     }
@@ -295,15 +295,15 @@ component CompressedSettings inherits GridBox {
         Text { text: "Height/Width"; }
         panel_width_slider := LabeledSlider {
             minimum: 1;
-            maximum: 1280;
+            maximum: 49;
             precision: 1;
-            unit: " px";
+            unit: " %";
             changed(value) => {
-                Backend.compressed_panel_width_changed(value);
+                Backend.compressed_panel_width_changed(value / 100);
             }
-            callback set_panel_width(int);
+            callback set_panel_width(float);
             set_panel_width(width) => {
-                self.value = width;
+                self.value = width * 100;
             }
         }
     }

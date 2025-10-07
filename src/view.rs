@@ -120,15 +120,17 @@ impl ViewTransform {
         }
     }
 
-    pub fn get_window_coords(&self, panel_width: f32) -> (f32, f32, f32, f32) {
+    pub fn get_window_coords(&self, panel_width_ratio: f32) -> (f32, f32, f32, f32) {
         // This and the window_x/y assume that the surface is on screen edges.
         // Other panels positioned in-between could make the perspective transform incorrect
         // if they are large and this would require using the actual layer surface position
         // on the screen instead of using the anchor.
         let (window_width, window_height) = match self.layout {
-            ui::PanelLayout::SingleBottom => (self.scene_width, panel_width),
-            ui::PanelLayout::SingleTop => (self.scene_width, panel_width),
-            ui::PanelLayout::TwoPanels => (panel_width, self.scene_height),
+            ui::PanelLayout::SingleBottom => {
+                (self.scene_width, self.scene_height * panel_width_ratio)
+            }
+            ui::PanelLayout::SingleTop => (self.scene_width, self.scene_height * panel_width_ratio),
+            ui::PanelLayout::TwoPanels => (self.scene_width * panel_width_ratio, self.scene_height),
         };
 
         let (window_x, window_y) = match (self.layout, self.is_left_channel) {
@@ -140,8 +142,8 @@ impl ViewTransform {
         (window_x, window_y, window_width, window_height)
     }
 
-    pub fn get_window_to_scene_transform(&self, panel_width: f32) -> Matrix4<f32> {
-        let (_, _, window_width, window_height) = self.get_window_coords(panel_width);
+    pub fn get_window_to_scene_transform(&self, panel_width_ratio: f32) -> Matrix4<f32> {
+        let (_, _, window_width, window_height) = self.get_window_coords(panel_width_ratio);
 
         if self.window_mode == WindowMode::WindowPerScene {
             // The views are first transformed to fit either on the side of the screen inside their own panel,

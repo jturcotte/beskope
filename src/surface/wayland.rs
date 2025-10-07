@@ -132,8 +132,8 @@ impl CompositorHandler for WlrWaylandEventHandler {
             {
                 self.app_state
                     .update_screen_size(size.0 as u32, size.1 as u32);
-                // Adjust the exclusive ratio in case the configuration loaded at startup was too large to fit the screen.
-                self.apply_panel_exclusive_ratio_change();
+                // Adjust the width and exclusive ratio.
+                self.apply_panel_width_change();
             }
         }
     }
@@ -489,24 +489,17 @@ impl WlrWaylandEventHandler {
         // interactivity
         layer.set_anchor(anchor);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        let (panel_layer, panel_width, exclusive_ratio) = match self.app_state.config.style {
-            ui::Style::Compressed => (
-                self.app_state.config.compressed.layer,
-                self.app_state.config.compressed.width,
-                self.app_state.config.compressed.exclusive_ratio,
-            ),
-            ui::Style::Ridgeline => (
-                self.app_state.config.ridgeline.layer,
-                self.app_state.config.ridgeline.width,
-                self.app_state.config.ridgeline.exclusive_ratio,
-            ),
+        let panel_layer = match self.app_state.config.style {
+            ui::Style::Compressed => self.app_state.config.compressed.layer,
+            ui::Style::Ridgeline => self.app_state.config.ridgeline.layer,
         };
+
+        // Set width to 1 pixel until we get an output and size assigned by surface_enter
         if !anchor.intersects(Anchor::BOTTOM) || !anchor.intersects(Anchor::TOP) {
-            layer.set_size(0, panel_width);
+            layer.set_size(0, 1);
         } else {
-            layer.set_size(panel_width, 0);
+            layer.set_size(1, 0);
         }
-        layer.set_exclusive_zone((panel_width as f32 * exclusive_ratio) as i32);
         layer.set_layer(Self::layer_to_wayland_layer(panel_layer));
 
         // In order for the layer surface to be mapped, we need to perform an initial commit with no attached\
@@ -521,16 +514,21 @@ impl WlrWaylandEventHandler {
     }
 
     pub fn apply_panel_width_change(&mut self) {
-        let panel_width = match self.app_state.config.style {
-            ui::Style::Compressed => self.app_state.config.compressed.width,
-            ui::Style::Ridgeline => self.app_state.config.ridgeline.width,
+        // Compute panel width (ratio from configuration) into pixels depending on layout
+        let panel_width_ratio = match self.app_state.config.style {
+            ui::Style::Compressed => self.app_state.config.compressed.width_ratio,
+            ui::Style::Ridgeline => self.app_state.config.ridgeline.width_ratio,
         };
 
         let (width, height) = match self.app_state.config.general.layout {
-            crate::ui::PanelLayout::SingleTop | crate::ui::PanelLayout::SingleBottom => {
-                (0, panel_width)
-            }
-            crate::ui::PanelLayout::TwoPanels => (panel_width, 0),
+            crate::ui::PanelLayout::SingleTop | crate::ui::PanelLayout::SingleBottom => (
+                0,
+                (panel_width_ratio * self.app_state.screen_size.1 as f32) as u32,
+            ),
+            crate::ui::PanelLayout::TwoPanels => (
+                (panel_width_ratio * self.app_state.screen_size.0 as f32) as u32,
+                0,
+            ),
         };
 
         if let Some(layer) = self.primary_layer.as_ref() {
@@ -546,26 +544,35 @@ impl WlrWaylandEventHandler {
     }
 
     pub fn apply_panel_exclusive_ratio_change(&mut self) {
-        let (panel_width, exclusive_ratio) = match self.app_state.config.style {
+        let (panel_width_ratio, exclusive_ratio) = match self.app_state.config.style {
             ui::Style::Compressed => (
-                self.app_state.config.compressed.width as f32,
+                self.app_state.config.compressed.width_ratio,
                 self.app_state.config.compressed.exclusive_ratio,
             ),
             ui::Style::Ridgeline => (
-                self.app_state.config.ridgeline.width as f32,
+                self.app_state.config.ridgeline.width_ratio,
                 self.app_state.config.ridgeline.exclusive_ratio,
             ),
         };
 
         // The window manager won't protect against taking all the screen as exclusive, so leave 1/3
-        // available for windows.
+        // available for windows. Compute panel pixel width first.
+        let panel_pixel_width = match self.app_state.config.general.layout {
+            crate::ui::PanelLayout::SingleTop | crate::ui::PanelLayout::SingleBottom => {
+                panel_width_ratio * self.app_state.screen_size.1 as f32
+            }
+            crate::ui::PanelLayout::TwoPanels => {
+                panel_width_ratio * self.app_state.screen_size.0 as f32
+            }
+        };
+
         let max_exclusive_zone = match self.app_state.config.general.layout {
             crate::ui::PanelLayout::SingleTop | crate::ui::PanelLayout::SingleBottom => {
                 self.app_state.screen_size.1 as f32 * 0.66
             }
             crate::ui::PanelLayout::TwoPanels => self.app_state.screen_size.0 as f32 * 0.33,
         };
-        let value = max_exclusive_zone.min(panel_width * exclusive_ratio);
+        let value = max_exclusive_zone.min(panel_pixel_width * exclusive_ratio);
 
         if let Some(layer) = self.primary_layer.as_ref() {
             layer.set_exclusive_zone(value as i32);

@@ -8,23 +8,20 @@ use ringbuf::storage::Heap;
 use ringbuf::traits::{Consumer, Split};
 use ringbuf::wrap::caching::Caching;
 use ringbuf::{HeapRb, SharedRb};
-use rustfft::{Fft, FftDirection, FftPlanner};
 use slint::ComponentHandle;
 use slint::wgpu_26::{WGPUConfiguration, WGPUSettings};
 use std::collections::HashSet;
 use std::io::prelude::*;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
+use std::sync::{Arc, Condvar};
 use std::thread;
-use view::View;
+use view::{RidgelineView, View, WaveformModel};
 
 use crate::surface::{GlobalCanvas, GlobalCanvasContext, WgpuSurface};
-use crate::view::{
-    FFT_SIZE, RenderSurface, VERTEX_BUFFER_SIZE, ViewSurface, ViewTransform, WindowMode,
-};
+use crate::view::{ConstantQTransformModel, RenderSurface, ViewSurface, ViewTransform, WindowMode};
 
 mod audio;
 mod surface;
@@ -33,22 +30,27 @@ mod view;
 
 const NUM_CHANNELS: usize = 2;
 
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum ChannelTransformMode {
+    Raw,
+    CQT,
+}
+
 struct ApplicationState {
     pub config: ui::Configuration,
     pub lazy_config_changes: HashSet<usize>,
     window_mode: WindowMode,
     primary_view_surface: Option<ViewSurface>,
     secondary_view_surface: Option<ViewSurface>,
-    last_non_zero_sample_age: usize,
     animation_stopped: Arc<AtomicBool>,
-    pub left_view: Option<Box<dyn View>>,
+    left_view: Option<Box<dyn View>>,
     right_view: Option<Box<dyn View>>,
     screen_size: (u32, u32),
     view_transform_dirty: bool,
     audio_input_ringbuf_cons: Option<Caching<Arc<SharedRb<Heap<f32>>>, false, true>>,
-    fft: Option<Arc<dyn Fft<f32>>>,
-    fft_inout_buffer: Option<Vec<Complex<f32>>>,
-    fft_scratch: Option<Vec<Complex<f32>>>,
+    audio_transform_control: Arc<(Mutex<(ChannelTransformMode, ChannelTransformMode)>, Condvar)>,
+    cqt_left: Arc<Mutex<Vec<Complex<f64>>>>,
+    cqt_right: Arc<Mutex<Vec<Complex<f64>>>>,
     request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
     config_window: slint::Weak<ui::ConfigurationWindow>,
 }
@@ -66,16 +68,18 @@ impl ApplicationState {
             lazy_config_changes: HashSet::new(),
             primary_view_surface: None,
             secondary_view_surface: None,
-            last_non_zero_sample_age: 0,
             animation_stopped: Arc::new(AtomicBool::new(false)),
             left_view: None,
             right_view: None,
             screen_size: (1, 1),
             view_transform_dirty: true,
             audio_input_ringbuf_cons: None,
-            fft: None,
-            fft_inout_buffer: None,
-            fft_scratch: None,
+            audio_transform_control: Arc::new((
+                Mutex::new((ChannelTransformMode::Raw, ChannelTransformMode::Raw)),
+                Condvar::new(),
+            )),
+            cqt_left: Arc::new(Mutex::new(Vec::new())),
+            cqt_right: Arc::new(Mutex::new(Vec::new())),
             request_redraw_callback,
             config_window,
         }
@@ -93,29 +97,73 @@ impl ApplicationState {
         self.config = config;
     }
 
-    fn initialize_audio_and_fft(&mut self) {
+    fn initialize_audio_and_transform_thread(&mut self) {
         let (audio_input_ringbuf_prod, audio_input_ringbuf_cons) =
-            HeapRb::<f32>::new(44100 * NUM_CHANNELS).split();
+            HeapRb::<f32>::new(48_000 * NUM_CHANNELS).split();
+        let (transform_thread_ringbuf_prod, transform_thread_ringbuf_cons) =
+            HeapRb::<f32>::new(48_000 * NUM_CHANNELS).split();
 
-        std::thread::spawn({
-            let animation_stopped = self.animation_stopped.clone();
-            let request_redraw_callback = self.request_redraw_callback.clone();
-            move || {
-                audio::initialize_audio_capture(
-                    audio_input_ringbuf_prod,
-                    animation_stopped,
-                    request_redraw_callback,
-                );
-            }
-        });
+        let (sample_rate_tx, sample_rate_rx) = std::sync::mpsc::sync_channel(1);
 
-        let fft = FftPlanner::new().plan_fft(FFT_SIZE, FftDirection::Forward);
-        let scratch_len = fft.get_inplace_scratch_len();
+        std::thread::Builder::new()
+            .name("pw-capture".into())
+            .spawn({
+                let animation_stopped = self.animation_stopped.clone();
+                let request_redraw_callback = self.request_redraw_callback.clone();
+                let audio_transform_control = self.audio_transform_control.clone();
+                let sample_rate_tx = sample_rate_tx.clone();
+                move || {
+                    audio::initialize_audio_capture(
+                        audio_input_ringbuf_prod,
+                        animation_stopped,
+                        request_redraw_callback,
+                        audio_transform_control,
+                        sample_rate_tx,
+                    );
+                }
+            })
+            .unwrap();
 
-        self.audio_input_ringbuf_cons = Some(audio_input_ringbuf_cons);
-        self.fft = Some(fft);
-        self.fft_inout_buffer = Some(vec![Complex::default(); FFT_SIZE]);
-        self.fft_scratch = Some(vec![Complex::default(); scratch_len]);
+        self.audio_input_ringbuf_cons = Some(transform_thread_ringbuf_cons);
+
+        // Block until the audio thread reports the sample rate.
+        // FIXME: Keep updating the transform thread if the sampling rate changes.
+        //        For now I haven't seen PipeWire do that even when changing audio devices.
+        let sample_rate = sample_rate_rx.recv().unwrap() as f64;
+        let bandwidth = (30.0, sample_rate / 2.0);
+        let resolution = 36.0; // third-semitone resolution
+        let guessed_cqt_size =
+            f64::ceil(resolution * f64::log2(bandwidth.1 / bandwidth.0)) as usize;
+        self.cqt_left
+            .lock()
+            .unwrap()
+            .resize(guessed_cqt_size, Complex::<f64>::new(0.0, 0.0));
+        self.cqt_right
+            .lock()
+            .unwrap()
+            .resize(guessed_cqt_size, Complex::<f64>::new(0.0, 0.0));
+
+        std::thread::Builder::new()
+            .name("transform".into())
+            .spawn({
+                let cqt_buffer_left = self.cqt_left.clone();
+                let cqt_buffer_right = self.cqt_right.clone();
+                let audio_transform_control = self.audio_transform_control.clone();
+                move || {
+                    audio::init_audio_transform(
+                        sample_rate as u32,
+                        bandwidth,
+                        resolution,
+                        guessed_cqt_size,
+                        audio_input_ringbuf_cons,
+                        transform_thread_ringbuf_prod,
+                        cqt_buffer_left,
+                        cqt_buffer_right,
+                        audio_transform_control,
+                    );
+                }
+            })
+            .unwrap();
     }
 
     fn create_view(
@@ -128,14 +176,50 @@ impl ApplicationState {
         let device = wgpu.device();
         let queue = wgpu.queue();
         let swapchain_format = wgpu.swapchain_format().unwrap();
+
+        // Enable or disable the expensive CQT from the transform thread based on the selected style.
+        {
+            let mut transform_control_guard = self.audio_transform_control.0.lock().unwrap();
+            let mode = if is_left_channel {
+                &mut transform_control_guard.0
+            } else {
+                &mut transform_control_guard.1
+            };
+            match style {
+                ui::Style::RidgelineFrequency => {
+                    *mode = ChannelTransformMode::CQT;
+                }
+                _ => {
+                    *mode = ChannelTransformMode::Raw;
+                }
+            }
+        }
+
         let mut view: Box<dyn View> = match style {
-            ui::Style::Ridgeline => Box::new(view::RidgelineView::new(
-                device,
-                queue,
-                swapchain_format,
-                render_surface,
-                is_left_channel,
-            )),
+            ui::Style::Ridgeline => {
+                let model = WaveformModel::new(48_000 / 30);
+                Box::new(RidgelineView::new(
+                    device,
+                    queue,
+                    swapchain_format,
+                    render_surface,
+                    is_left_channel,
+                    ui::Style::Ridgeline,
+                    model,
+                ))
+            }
+            ui::Style::RidgelineFrequency => {
+                let model = ConstantQTransformModel::new(self.cqt_left.lock().unwrap().len());
+                Box::new(RidgelineView::new(
+                    device,
+                    queue,
+                    swapchain_format,
+                    render_surface,
+                    is_left_channel,
+                    ui::Style::RidgelineFrequency,
+                    model,
+                ))
+            }
             ui::Style::Compressed => Box::new(view::CompressedView::new(
                 device,
                 queue,
@@ -205,54 +289,37 @@ impl ApplicationState {
     }
 
     fn process_audio(&mut self, timestamp: u32) {
+        // Get samples from the audio input ring buffer.
+        // Will only be fed if the transform thread mode is not Raw for both channels.
         let data: Vec<f32> = self
             .audio_input_ringbuf_cons
             .as_mut()
             .unwrap()
             .pop_iter()
             .collect();
-        if data.iter().all(|&x| x == 0.0) {
-            self.last_non_zero_sample_age += data.len();
-            if self.last_non_zero_sample_age > VERTEX_BUFFER_SIZE * 2 {
-                // Stop requesting new frames and let the audio thread know if they
-                // should wake us up once non-zero samples are available.
-                self.animation_stopped.store(true, Ordering::Relaxed);
 
-                // Hide the FPS counter
-                self.config_window
-                    .upgrade_in_event_loop(move |window| {
-                        window.set_primary_fps(0);
-                        window.set_secondary_fps(0);
-                    })
-                    .unwrap();
-            }
-        } else {
-            self.last_non_zero_sample_age = 0;
-        }
-
-        let fft = self.fft.as_ref().unwrap();
-        let fft_inout_buffer = self.fft_inout_buffer.as_mut().unwrap();
-        let fft_scratch = self.fft_scratch.as_mut().unwrap();
-
+        let audio_data = view::AudioInputData {
+            samples: &data,
+            cqt_left: self.cqt_left.clone(),
+            cqt_right: self.cqt_right.clone(),
+        };
         if let Some(left_view_surface) = &mut self.left_view {
-            left_view_surface.process_audio(
-                timestamp,
-                &data,
-                fft.as_ref(),
-                fft_inout_buffer,
-                fft_scratch,
-            );
+            left_view_surface.process_audio(timestamp, &audio_data);
         }
         if let Some(right_view_surface) = &mut self.right_view {
-            right_view_surface.process_audio(
-                timestamp,
-                &data,
-                fft.as_ref(),
-                fft_inout_buffer,
-                fft_scratch,
-            );
+            right_view_surface.process_audio(timestamp, &audio_data);
         }
     }
+
+    fn hide_fps_counters(&self) {
+        self.config_window
+            .upgrade_in_event_loop(move |window| {
+                window.set_primary_fps(0);
+                window.set_secondary_fps(0);
+            })
+            .unwrap();
+    }
+
     fn render_with_clear_color(
         &mut self,
         wgpu: &Rc<dyn WgpuSurface>,
@@ -542,21 +609,24 @@ pub fn main() {
         let request_redraw_callback = request_redraw_callback.clone();
         let config = config.clone();
         // Spawn the wlr panel rendering in a separate thread, this is supported with wayland
-        std::thread::spawn(move || {
-            let app_state = ApplicationState::new(
-                config,
-                WindowMode::WindowPerPanel,
-                request_redraw_callback.clone(),
-                config_window_weak,
-            );
+        std::thread::Builder::new()
+            .name("wlr-render".into())
+            .spawn(move || {
+                let app_state = ApplicationState::new(
+                    config,
+                    WindowMode::WindowPerPanel,
+                    request_redraw_callback.clone(),
+                    config_window_weak,
+                );
 
-            let mut layers_even_queue = surface::wayland::WlrWaylandEventLoop::new(
-                app_state,
-                app_msg_rx,
-                request_redraw_callback,
-            );
-            layers_even_queue.run_event_loop();
-        });
+                let mut layers_even_queue = surface::wayland::WlrWaylandEventLoop::new(
+                    app_state,
+                    app_msg_rx,
+                    request_redraw_callback,
+                );
+                layers_even_queue.run_event_loop();
+            })
+            .unwrap();
     } else {
         surface::slint::initialize_slint_surface(
             config,

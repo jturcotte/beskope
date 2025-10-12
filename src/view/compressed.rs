@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 use crate::ui;
-use crate::view::{FFT_SIZE, RenderSurface, VERTEX_BUFFER_SIZE, ViewTransform};
+use crate::view::{AudioInputData, FFT_SIZE, RenderSurface, VERTEX_BUFFER_SIZE, ViewTransform};
 
 use cgmath::{Matrix4, SquareMatrix};
 use core::f64;
 use num_complex::Complex;
 use ringbuf::HeapRb;
 use ringbuf::traits::{Consumer, Observer, RingBuffer};
-use rustfft::Fft;
+use rustfft::{Fft, FftPlanner};
 use splines::Interpolation;
 use std::collections::HashSet;
 use std::{borrow::Cow, sync::Arc};
@@ -40,6 +40,9 @@ pub struct CompressedView {
     stroke_vertex_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     fft_input_ringbuf: HeapRb<f32>,
+    fft: Arc<dyn Fft<f32>>,
+    fft_inout_buffer: Vec<Complex<f32>>,
+    fft_scratch: Vec<Complex<f32>>,
     y_value_write_offset: usize,
 }
 
@@ -266,6 +269,10 @@ impl CompressedView {
                 cache: None,
             });
 
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(FFT_SIZE);
+        let scratch_len = fft.get_inplace_scratch_len();
+
         CompressedView {
             render_surface,
             is_left_channel,
@@ -281,6 +288,9 @@ impl CompressedView {
             stroke_vertex_buffer,
             bind_group,
             fft_input_ringbuf: HeapRb::<f32>::new(FFT_SIZE),
+            fft,
+            fft_inout_buffer: vec![Complex::default(); FFT_SIZE],
+            fft_scratch: vec![Complex::default(); scratch_len],
             y_value_write_offset: 0,
         }
     }
@@ -476,19 +486,18 @@ impl View for CompressedView {
         }
     }
 
-    fn process_audio(
-        &mut self,
-        _timestamp: u32,
-        data: &[f32],
-        fft: &dyn Fft<f32>,
-        fft_inout_buffer: &mut [Complex<f32>],
-        fft_scratch: &mut [Complex<f32>],
-    ) {
+    fn process_audio(&mut self, _timestamp: u32, audio_input: &AudioInputData) {
         let audio_sample_skip = if self.is_left_channel { 0 } else { 1 };
 
         // Keep track of the last FFT size samples.
-        self.fft_input_ringbuf
-            .push_iter_overwrite(data.iter().skip(audio_sample_skip).step_by(2).copied());
+        self.fft_input_ringbuf.push_iter_overwrite(
+            audio_input
+                .samples
+                .iter()
+                .skip(audio_sample_skip)
+                .step_by(2)
+                .copied(),
+        );
 
         let phase_samples = if !self.fft_input_ringbuf.is_full() {
             0
@@ -497,21 +506,23 @@ impl View for CompressedView {
             // and align the end of our waveform at the end of the vertex attribute buffer so that the eye
             // isn't totally lost frame over frame.
             let (first, second) = self.fft_input_ringbuf.as_slices();
-            fft_inout_buffer
+            self.fft_inout_buffer
                 .iter_mut()
                 .zip(first.iter().chain(second.iter()))
                 .for_each(|(dst, &y)| *dst = Complex::new(y, 0.));
 
-            fft.process_with_scratch(fft_inout_buffer, fft_scratch);
+            self.fft
+                .process_with_scratch(&mut self.fft_inout_buffer, &mut self.fft_scratch);
 
             // Skipping k=0 makes sense as it doesn't really capture oscillations, also skip frequencies low enough that
             // aligning to them would prevent the waveform from scrolling enough to be noticeable at 60Hz refresh and 44100Hz sampling rates.
             let k_to_skip: usize = (FFT_SIZE as f64 / (44100.0 / 60.0)).ceil() as usize;
 
             // Find the peak frequency
-            let peak_frequency_index = fft_inout_buffer
+            let peak_frequency_index = self
+                .fft_inout_buffer
                 .iter()
-                .take(fft_inout_buffer.len() / 2)
+                .take(self.fft_inout_buffer.len() / 2)
                 .enumerate()
                 .skip(k_to_skip)
                 .max_by(|(_, a), (_, b)| {
@@ -532,12 +543,21 @@ impl View for CompressedView {
             // To be able to perform the inverse FFT, each frequency bin also has a phase.
             // Use this phase to align the waveform to the end of the buffer.
             // This here is the sine phase shift in radians.
-            let phase_shift = fft_inout_buffer[peak_frequency_index].arg();
+            let phase_shift = self.fft_inout_buffer[peak_frequency_index].arg();
 
-            phase_to_samples(phase_shift, peak_frequency_index, fft_inout_buffer.len())
+            phase_to_samples(
+                phase_shift,
+                peak_frequency_index,
+                self.fft_inout_buffer.len(),
+            )
         };
 
-        let data_iter = data.iter().skip(audio_sample_skip).step_by(2).copied();
+        let data_iter = audio_input
+            .samples
+            .iter()
+            .skip(audio_sample_skip)
+            .step_by(2)
+            .copied();
         let y_values: Vec<YValue> = data_iter.map(|sample| YValue { y: sample }).collect();
 
         // First pass: write to the end of the buffer

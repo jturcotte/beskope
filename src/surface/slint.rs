@@ -97,6 +97,10 @@ impl GlobalCanvas for SlintGlobalCanvas {
                 app_state.config.ridgeline.width_ratio as f32
                     * app_state.config.ridgeline.exclusive_ratio
             }
+            ui::Style::RidgelineFrequency => {
+                app_state.config.ridgeline_frequency.width_ratio as f32
+                    * app_state.config.ridgeline_frequency.exclusive_ratio
+            }
         };
 
         let (horizontal, top, bottom) = match app_state.config.general.layout {
@@ -350,7 +354,7 @@ pub fn initialize_slint_surface(
                             request_redraw_callback,
                             config_window_weak.clone(),
                         );
-                        app_state.initialize_audio_and_fft();
+                        app_state.initialize_audio_and_transform_thread();
                         slint_global_canvas.app_state = Some(app_state);
                     }
                 }

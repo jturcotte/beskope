@@ -8,6 +8,7 @@ export * from "canvas.slint";
 @rust-attr(derive(serde::Serialize, serde::Deserialize))
 enum Style {
     Ridgeline,
+    RidgelineFrequency,
     Compressed,
 }
 
@@ -42,13 +43,13 @@ export global Backend {
     callback style_changed(Style);
     callback panel_layout_changed(PanelLayout);
     callback panel_channels_changed(RenderChannels);
-    callback ridgeline_panel_layer_changed(PanelLayer);
-    callback ridgeline_panel_width_changed(float);
-    callback ridgeline_panel_exclusive_ratio_changed(float);
-    callback ridgeline_fill_color_changed(color);
-    callback ridgeline_highlight_color_changed(color);
-    callback ridgeline_stroke_color_changed(color);
-    callback ridgeline_horizon_offset_changed(float);
+    callback ridgeline_panel_layer_changed(Style, PanelLayer);
+    callback ridgeline_panel_width_changed(Style, float);
+    callback ridgeline_panel_exclusive_ratio_changed(Style, float);
+    callback ridgeline_fill_color_changed(Style, color);
+    callback ridgeline_highlight_color_changed(Style, color);
+    callback ridgeline_stroke_color_changed(Style, color);
+    callback ridgeline_horizon_offset_changed(Style, float);
     callback compressed_panel_layer_changed(PanelLayer);
     callback compressed_panel_width_changed(float);
     callback compressed_panel_exclusive_ratio_changed(float);
@@ -128,6 +129,7 @@ component HsvColorSelection inherits GroupBox {
 }
 
 component RidgelineSettings inherits GridBox {
+    in property<Style> tab_style;
     callback set_panel_layer <=> layer_cb.set_panel_layer;
     callback set_panel_width <=> panel_width_slider.set_panel_width;
     callback set_panel_exclusive_ratio <=> panel_exclusive_ratio_slider.set_panel_exclusive_ratio;
@@ -150,13 +152,13 @@ component RidgelineSettings inherits GridBox {
             ];
             selected(current-value) => {
                 if (self.current-index == 0) {
-                    Backend.ridgeline_panel_layer_changed(PanelLayer.Overlay);
+                    Backend.ridgeline_panel_layer_changed(tab_style, PanelLayer.Overlay);
                 } else if (self.current-index == 1) {
-                    Backend.ridgeline_panel_layer_changed(PanelLayer.Top);
+                    Backend.ridgeline_panel_layer_changed(tab_style, PanelLayer.Top);
                 } else if (self.current-index == 2) {
-                    Backend.ridgeline_panel_layer_changed(PanelLayer.Bottom);
+                    Backend.ridgeline_panel_layer_changed(tab_style, PanelLayer.Bottom);
                 } else {
-                    Backend.ridgeline_panel_layer_changed(PanelLayer.Background);
+                    Backend.ridgeline_panel_layer_changed(tab_style, PanelLayer.Background);
                 }
             }
             callback set_panel_layer(PanelLayer);
@@ -181,7 +183,7 @@ component RidgelineSettings inherits GridBox {
             precision: 1;
             unit: " %";
             changed(value) => {
-                Backend.ridgeline_panel_width_changed(value / 100);
+                Backend.ridgeline_panel_width_changed(tab_style, value / 100);
             }
             callback set_panel_width(float);
             set_panel_width(width) => {
@@ -197,7 +199,7 @@ component RidgelineSettings inherits GridBox {
             precision: 1;
             unit: " %";
             changed(value) => {
-                Backend.ridgeline_panel_exclusive_ratio_changed(value / 100);
+                Backend.ridgeline_panel_exclusive_ratio_changed(tab_style, value / 100);
             }
             callback set_panel_exclusive_ratio(float);
             set_panel_exclusive_ratio(ratio) => {
@@ -213,7 +215,7 @@ component RidgelineSettings inherits GridBox {
             precision: 1;
             unit: " %";
             changed(value) => {
-                Backend.ridgeline_horizon_offset_changed(value / 100);
+                Backend.ridgeline_horizon_offset_changed(tab_style, value / 100);
             }
             callback set_horizon_offset(float);
             set_horizon_offset(offset) => {
@@ -228,18 +230,18 @@ component RidgelineSettings inherits GridBox {
             HorizontalLayout {
                 fill_color := HsvColorSelection {
                     width: 33%;
-                    changed(color) => { Backend.ridgeline_fill_color_changed(color); }
+                    changed(color) => { Backend.ridgeline_fill_color_changed(tab_style, color); }
                     title: "Base Fill Color";
                 }
                 highlight_color := HsvColorSelection {
                     width: 33%;
                     title: "Highlight Fill Color";
-                    changed(color) => { Backend.ridgeline_highlight_color_changed(color); }
+                    changed(color) => { Backend.ridgeline_highlight_color_changed(tab_style, color); }
                 }
                 stroke_color := HsvColorSelection {
                     width: 33%;
                     title: "Stroke Color";
-                    changed(color) => { Backend.ridgeline_stroke_color_changed(color); }
+                    changed(color) => { Backend.ridgeline_stroke_color_changed(tab_style, color); }
                 }
             }
         }
@@ -455,13 +457,25 @@ export component ConfigurationWindow inherits Dialog {
     callback set_style <=> style_cb.set_style;
     callback set_panel_layout <=> layout_cb.set_panel_layout;
     callback set_panel_channels <=> channels_cb.set_panel_channels;
-    callback set_ridgeline_panel_layer <=> ridgeline_tab.set_panel_layer;
-    callback set_ridgeline_panel_width <=> ridgeline_tab.set_panel_width;
-    callback set_ridgeline_panel_exclusive_ratio <=> ridgeline_tab.set_panel_exclusive_ratio;
-    callback set_ridgeline_fill_color <=> ridgeline_tab.set_fill_color;
-    callback set_ridgeline_highlight_color <=> ridgeline_tab.set_highlight_color;
-    callback set_ridgeline_stroke_color <=> ridgeline_tab.set_stroke_color;
-    callback set_ridgeline_horizon_offset <=> ridgeline_tab.set_horizon_offset;
+
+    // Waveform ridgeline callbacks
+    callback set_ridgeline_waveform_panel_layer <=> ridgeline_waveform_tab.set_panel_layer;
+    callback set_ridgeline_waveform_panel_width <=> ridgeline_waveform_tab.set_panel_width;
+    callback set_ridgeline_waveform_panel_exclusive_ratio <=> ridgeline_waveform_tab.set_panel_exclusive_ratio;
+    callback set_ridgeline_waveform_fill_color <=> ridgeline_waveform_tab.set_fill_color;
+    callback set_ridgeline_waveform_highlight_color <=> ridgeline_waveform_tab.set_highlight_color;
+    callback set_ridgeline_waveform_stroke_color <=> ridgeline_waveform_tab.set_stroke_color;
+    callback set_ridgeline_waveform_horizon_offset <=> ridgeline_waveform_tab.set_horizon_offset;
+
+    // Frequency ridgeline callbacks
+    callback set_ridgeline_frequency_panel_layer <=> ridgeline_frequency_tab.set_panel_layer;
+    callback set_ridgeline_frequency_panel_width <=> ridgeline_frequency_tab.set_panel_width;
+    callback set_ridgeline_frequency_panel_exclusive_ratio <=> ridgeline_frequency_tab.set_panel_exclusive_ratio;
+    callback set_ridgeline_frequency_fill_color <=> ridgeline_frequency_tab.set_fill_color;
+    callback set_ridgeline_frequency_highlight_color <=> ridgeline_frequency_tab.set_highlight_color;
+    callback set_ridgeline_frequency_stroke_color <=> ridgeline_frequency_tab.set_stroke_color;
+    callback set_ridgeline_frequency_horizon_offset <=> ridgeline_frequency_tab.set_horizon_offset;
+
     callback set_compressed_panel_layer <=> compressed_tab.set_panel_layer;
     callback set_compressed_panel_width <=> compressed_tab.set_panel_width;
     callback set_compressed_panel_exclusive_ratio <=> compressed_tab.set_panel_exclusive_ratio;
@@ -491,18 +505,27 @@ export component ConfigurationWindow inherits Dialog {
                 }
                 style_cb := ComboBox {
                     model: [
-                        "Ridgeline Plot",
+                        "Ridgeline Waveform",
+                        "Ridgeline Frequency",
                         "Compressed Line",
                     ];
                     selected(current-value) => {
-                        Backend.style_changed(self.current-index == 0 ? Style.Ridgeline : Style.Compressed);
+                        if (self.current-index == 0) {
+                            Backend.style_changed(Style.Ridgeline);
+                        } else if (self.current-index == 1) {
+                            Backend.style_changed(Style.RidgelineFrequency);
+                        } else if (self.current-index == 2) {
+                            Backend.style_changed(Style.Compressed);
+                        }
                     }
                     callback set_style(Style);
                     set_style(style) => {
                         if (style == Style.Ridgeline) {
                             self.current-index = 0;
-                        } else {
+                        } else if (style == Style.RidgelineFrequency) {
                             self.current-index = 1;
+                        } else if (style == Style.Compressed) {
+                            self.current-index = 2;
                         }
                     }
                 }
@@ -579,8 +602,12 @@ export component ConfigurationWindow inherits Dialog {
                     clip: true;
                     colspan: 2;
                     Tab {
-                        title: "Ridgeline Plot Settings";
-                        ridgeline_tab := RidgelineSettings { }
+                        title: "Ridgeline Waveform Settings";
+                        ridgeline_waveform_tab := RidgelineSettings { tab_style: Style.Ridgeline; }
+                    }
+                    Tab {
+                        title: "Ridgeline Frequency Settings";
+                        ridgeline_frequency_tab := RidgelineSettings { tab_style: Style.RidgelineFrequency; }
                     }
                     Tab {
                         title: "Compressed Line Settings";

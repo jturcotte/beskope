@@ -106,6 +106,8 @@ impl CompositorHandler for WlrWaylandEventHandler {
                     // Already tell the compositor that we want to draw again for the next output frame.
                     surface.frame(qh, surface.clone());
                     surface.commit();
+                } else {
+                    self.app_state.hide_fps_counters();
                 }
             }
         }
@@ -216,7 +218,7 @@ impl LayerShellHandler for WlrWaylandEventHandler {
     ) {
         if !self.app_state_initialized {
             self.app_state_initialized = true;
-            self.app_state.initialize_audio_and_fft();
+            self.app_state.initialize_audio_and_transform_thread();
         }
 
         let (new_width, new_height) = configure.new_size;
@@ -492,6 +494,7 @@ impl WlrWaylandEventHandler {
         let panel_layer = match self.app_state.config.style {
             ui::Style::Compressed => self.app_state.config.compressed.layer,
             ui::Style::Ridgeline => self.app_state.config.ridgeline.layer,
+            ui::Style::RidgelineFrequency => self.app_state.config.ridgeline_frequency.layer,
         };
 
         // Set width to 1 pixel until we get an output and size assigned by surface_enter
@@ -518,6 +521,7 @@ impl WlrWaylandEventHandler {
         let panel_width_ratio = match self.app_state.config.style {
             ui::Style::Compressed => self.app_state.config.compressed.width_ratio,
             ui::Style::Ridgeline => self.app_state.config.ridgeline.width_ratio,
+            ui::Style::RidgelineFrequency => self.app_state.config.ridgeline_frequency.width_ratio,
         };
 
         let (width, height) = match self.app_state.config.general.layout {
@@ -552,6 +556,10 @@ impl WlrWaylandEventHandler {
             ui::Style::Ridgeline => (
                 self.app_state.config.ridgeline.width_ratio,
                 self.app_state.config.ridgeline.exclusive_ratio,
+            ),
+            ui::Style::RidgelineFrequency => (
+                self.app_state.config.ridgeline_frequency.width_ratio,
+                self.app_state.config.ridgeline_frequency.exclusive_ratio,
             ),
         };
 

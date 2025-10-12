@@ -4,6 +4,7 @@
 use std::{
     collections::HashSet,
     rc::Rc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -11,18 +12,25 @@ use crate::{surface::WgpuSurface, ui};
 
 use cgmath::{Matrix4, Rad, SquareMatrix, Vector3};
 use num_complex::Complex;
-use rustfft::Fft;
 use wgpu::{CommandEncoder, TextureView};
 
 mod compressed;
+pub mod models;
 mod ridgeline;
 
 pub use compressed::CompressedView;
+#[allow(unused_imports)]
+pub use models::{AudioModel, ConstantQTransformModel, WaveformModel}; // re-export for external creation; may be unused in some build features
 pub use ridgeline::RidgelineView;
 
 pub const VERTEX_BUFFER_SIZE: usize = 44100 * 3;
 pub const FFT_SIZE: usize = 2048;
 
+pub struct AudioInputData<'a> {
+    pub samples: &'a [f32],
+    pub cqt_left: Arc<Mutex<Vec<Complex<f64>>>>,
+    pub cqt_right: Arc<Mutex<Vec<Complex<f64>>>>,
+}
 /// Trait of a visualization view of an audio channel
 pub trait View {
     /// Target render window of this view (e.g. right channel view is on the secondary window)
@@ -45,14 +53,7 @@ pub trait View {
         clear_color: Option<wgpu::Color>,
     );
 
-    fn process_audio(
-        &mut self,
-        timestamp: u32,
-        data: &[f32],
-        fft: &dyn Fft<f32>,
-        fft_inout_buffer: &mut [Complex<f32>],
-        fft_scratch: &mut [Complex<f32>],
-    );
+    fn process_audio(&mut self, timestamp: u32, audio_input: &AudioInputData);
 }
 
 /// State and logic to transform the view onto the surface depending on the configured layout.

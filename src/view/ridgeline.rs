@@ -2,14 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 use crate::ui;
-use crate::view::{FFT_SIZE, RenderSurface, VERTEX_BUFFER_SIZE, ViewTransform};
+use crate::view::models::ValuesRange;
+use crate::view::{AudioInputData, AudioModel, RenderSurface, ViewTransform};
 
 use cgmath::{Matrix4, SquareMatrix, Vector3, Vector4};
-use core::f64;
-use num_complex::Complex;
-use ringbuf::HeapRb;
-use ringbuf::traits::{Consumer, Observer, RingBuffer};
-use rustfft::Fft;
 use std::collections::HashSet;
 use std::{borrow::Cow, sync::Arc};
 use wgpu::util::DeviceExt;
@@ -18,15 +14,14 @@ use wgpu::{BufferUsages, CommandEncoder, TextureView};
 use super::{Vertex, View, YValue};
 
 const NUM_INSTANCES: usize = 30;
-// FIXME: Don't hardcode the sampling rate here
-const STRIDE_SIZE: usize = 48_000 / NUM_INSTANCES;
-
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct WaveformConfigUniform {
     fill_color: [f32; 4],
     highlight_color: [f32; 4],
     stroke_color: [f32; 4],
+    apply_highlight_to_front_instance: f32,
+    _padding: [f32; 3],
 }
 
 #[repr(C)]
@@ -37,14 +32,14 @@ struct AudioSync {
     num_instances: f32,
 }
 
-pub struct RidgelineView {
+pub struct RidgelineView<M: AudioModel> {
     render_surface: RenderSurface,
     is_left_channel: bool,
+    style: ui::Style,
     view_transform: Option<ViewTransform>,
     wgpu_queue: Arc<wgpu::Queue>,
     y_value_buffer: wgpu::Buffer,
     audio_sync: AudioSync,
-    last_rotate_progress: f64,
     audio_sync_buffer: wgpu::Buffer,
     transform_buffer: wgpu::Buffer,
     waveform_config_buffer: wgpu::Buffer,
@@ -53,36 +48,44 @@ pub struct RidgelineView {
     stroke_render_pipeline: wgpu::RenderPipeline,
     stroke_vertex_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
-    fft_input_ringbuf: HeapRb<f32>,
-    y_value_write_offset: usize,
+    model: M,
+    stride_len: usize,
+    y_values_buffer_size: usize,
+    write_offset: usize,
+    virtual_stride_index: f64,
 }
 
-impl RidgelineView {
+impl<M: AudioModel> RidgelineView<M> {
     pub fn new(
         device: &wgpu::Device,
         queue: &Arc<wgpu::Queue>,
         swapchain_format: wgpu::TextureFormat,
         render_surface: RenderSurface,
         is_left_channel: bool,
-    ) -> RidgelineView {
+        style: ui::Style,
+        model: M,
+    ) -> RidgelineView<M> {
         // Load the shaders from disk
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("ridgeline.wgsl"))),
         });
 
-        // Sit the waveform at the bottom boundary of the -1..1, the shader will adjust it.
-        let fill_vertices: Vec<Vertex> = (0..STRIDE_SIZE)
+        let stride_len = model.stride_len();
+
+        let fill_vertices: Vec<Vertex> = (0..stride_len)
             .flat_map(|i| {
-                let x = i as f32 / (STRIDE_SIZE - 1) as f32 * 2.0 - 1.0;
-                // Point the last vertex to the last audio sample by default.
-                let waveform_index = (VERTEX_BUFFER_SIZE - STRIDE_SIZE + i) as u32;
+                let x = i as f32 / (stride_len - 1) as f32 * 2.0 - 1.0;
+                let waveform_index = i as u32; // index within stride; shader adds instance offset
                 vec![
+                    // Base fill vertex.
+                    // Extend well into the edge of the screen so that the perspective won't reveal gaps.
                     Vertex {
-                        position: [x, -1.0],
+                        position: [x, -16.0],
                         waveform_index,
                         should_offset: 0.0,
                     },
+                    // Top fill vertex, should_offset==1.0 means that it will be offset by audio data in the shader.
                     Vertex {
                         position: [x, 0.0],
                         waveform_index,
@@ -91,18 +94,20 @@ impl RidgelineView {
                 ]
             })
             .collect();
-        let stroke_vertices: Vec<Vertex> = (0..STRIDE_SIZE)
+        let stroke_vertices: Vec<Vertex> = (0..stride_len)
             .map(|i| {
-                // Point the last vertex to the last audio sample by default.
-                let waveform_index = (VERTEX_BUFFER_SIZE - STRIDE_SIZE + i) as u32;
+                let waveform_index = i as u32;
+                // Stroke only has one vertex per sample
                 Vertex {
-                    position: [i as f32 / (STRIDE_SIZE - 1) as f32 * 2.0 - 1.0, 0.0],
+                    position: [i as f32 / (stride_len - 1) as f32 * 2.0 - 1.0, 0.0],
                     waveform_index,
                     should_offset: 1.0,
                 }
             })
             .collect();
-        let y_values: Vec<YValue> = vec![YValue { y: 0.0 }; VERTEX_BUFFER_SIZE];
+
+        let y_values_buffer_size = stride_len.saturating_mul(NUM_INSTANCES);
+        let y_values: Vec<YValue> = vec![YValue { y: 0.0 }; y_values_buffer_size];
 
         let fill_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Fill Vertex Buffer"),
@@ -144,6 +149,8 @@ impl RidgelineView {
                 fill_color: [1.0, 1.0, 1.0, 1.0],
                 highlight_color: [1.0, 1.0, 1.0, 1.0],
                 stroke_color: [1.0, 1.0, 1.0, 1.0],
+                apply_highlight_to_front_instance: 1.0,
+                _padding: Default::default(),
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -306,18 +313,21 @@ impl RidgelineView {
                 cache: None,
             });
 
+        // Initialize audio_sync offsets; offsets will be populated as data arrives.
+        let audio_sync = AudioSync {
+            y_value_offsets: [0; 32],
+            progress: 0.0,
+            num_instances: NUM_INSTANCES as f32,
+        };
+
         RidgelineView {
             render_surface,
             is_left_channel,
+            style,
             view_transform: None,
             wgpu_queue: queue.clone(),
             y_value_buffer,
-            audio_sync: AudioSync {
-                y_value_offsets: [0; 32],
-                progress: 0.0,
-                num_instances: NUM_INSTANCES as f32,
-            },
-            last_rotate_progress: 0.0,
+            audio_sync,
             audio_sync_buffer,
             transform_buffer,
             waveform_config_buffer,
@@ -326,8 +336,11 @@ impl RidgelineView {
             stroke_render_pipeline,
             stroke_vertex_buffer,
             bind_group,
-            fft_input_ringbuf: HeapRb::<f32>::new(FFT_SIZE),
-            y_value_write_offset: 0,
+            model,
+            stride_len,
+            y_values_buffer_size,
+            write_offset: 0,
+            virtual_stride_index: 0.0,
         }
     }
 
@@ -383,15 +396,16 @@ impl RidgelineView {
 
             // Where the half screen is bound to by the geometry.
             const HALF_SCENE_EXTENT: f32 = 1.0;
-            // Amplitude as reference point if the window takes half the screen
-            // Must match the shader
-            const DEFAULT_AMPLITUDE: f32 = 0.15;
+            // How much a vertex offset by 1.0 in y_value affects the height in scene units.
+            const AMPLITUDE_SCALING: f32 = 0.15;
             // The perspective would fill the screen, but the first instance must be compressed
             // relatively to the screen to fit where the window frustum will point to.
             let compress_y = panel_width / half_screen;
-            let wave_amplitude: f32 = DEFAULT_AMPLITUDE * compress_y;
+            // A -1.0 to 1.0 y_value range will take twice AMPLITUDE_SCALING in scene units
+            // and then will be compressed according to the panel width.
+            let wave_amplitude_max: f32 = AMPLITUDE_SCALING * 2.0 * compress_y;
 
-            let half_scene_ratio_with_content = wave_amplitude * 2.0 / HALF_SCENE_EXTENT;
+            let half_scene_ratio_with_content = wave_amplitude_max / HALF_SCENE_EXTENT;
             let half_screen_pixels_with_content = half_screen * half_scene_ratio_with_content;
 
             let far_minus_near_z = far_z - near_z;
@@ -421,10 +435,24 @@ impl RidgelineView {
                 Matrix4::from_translation(Vector3::new(0.0, 0.0, -move_camera_z));
 
             let compress_y_matrix =
-                // Move the waveform back to the edge
+                // Move the waveform to the edge
                 Matrix4::from_translation(Vector3::new(0.0, -1.0, 0.0))
                 // Waveform is centered at 0.0, scale it depending on the window size
-                * Matrix4::from_nonuniform_scale(1.0, compress_y, 1.0);
+                * Matrix4::from_nonuniform_scale(1.0, compress_y, 1.0)
+                // Depending on the model's range, center and scale the y_values accordingly
+                * match self.model.values_range() {
+                    ValuesRange::NegativeOneToOne => {
+                        // Scale down the y_values range to the amplitude that we want them to have in the scene
+                        Matrix4::from_nonuniform_scale(1.0, AMPLITUDE_SCALING, 1.0)
+                            // Move 0.0 of the y_value to the center before scaling
+                            * Matrix4::from_translation(Vector3::new(0.0, 1.0, 0.0))
+                    }
+                    ValuesRange::ZeroToOne => {
+                        // Use half the scaling vs NegativeOneToOne (same scale, but half the value range), else peaks look too thin.
+                        Matrix4::from_nonuniform_scale(1.0, AMPLITUDE_SCALING, 1.0)
+                    }
+
+                };
 
             // The horizon offset is applied to both the frustum and the geometry, but not to the perspective matrix which keeps the horizon
             // centered where it was.
@@ -455,7 +483,7 @@ impl RidgelineView {
     }
 }
 
-impl View for RidgelineView {
+impl<M: AudioModel> View for RidgelineView<M> {
     fn render_surface(&self) -> RenderSurface {
         self.render_surface
     }
@@ -466,6 +494,13 @@ impl View for RidgelineView {
         config_changes: Option<&HashSet<usize>>,
         view_transform_change: Option<&ViewTransform>,
     ) {
+        // Select the appropriate ridgeline config based on the view's style
+        let ridgeline_config = match self.style {
+            ui::Style::Ridgeline => &config.ridgeline,
+            ui::Style::RidgelineFrequency => &config.ridgeline_frequency,
+            _ => &config.ridgeline, // Fallback (shouldn't happen)
+        };
+
         if config_changes.is_none_or(|c| {
             c.contains(&ui::RIDGELINE_FILL_COLOR)
                 || c.contains(&ui::RIDGELINE_HIGHLIGHT_COLOR)
@@ -473,23 +508,33 @@ impl View for RidgelineView {
         }) {
             let waveform_config = WaveformConfigUniform {
                 fill_color: [
-                    config.ridgeline.fill_color.red() as f32 / 255.0,
-                    config.ridgeline.fill_color.green() as f32 / 255.0,
-                    config.ridgeline.fill_color.blue() as f32 / 255.0,
-                    config.ridgeline.fill_color.alpha() as f32 / 255.0,
+                    ridgeline_config.fill_color.red() as f32 / 255.0,
+                    ridgeline_config.fill_color.green() as f32 / 255.0,
+                    ridgeline_config.fill_color.blue() as f32 / 255.0,
+                    ridgeline_config.fill_color.alpha() as f32 / 255.0,
                 ],
                 highlight_color: [
-                    config.ridgeline.highlight_color.red() as f32 / 255.0,
-                    config.ridgeline.highlight_color.green() as f32 / 255.0,
-                    config.ridgeline.highlight_color.blue() as f32 / 255.0,
-                    config.ridgeline.highlight_color.alpha() as f32 / 255.0,
+                    ridgeline_config.highlight_color.red() as f32 / 255.0,
+                    ridgeline_config.highlight_color.green() as f32 / 255.0,
+                    ridgeline_config.highlight_color.blue() as f32 / 255.0,
+                    ridgeline_config.highlight_color.alpha() as f32 / 255.0,
                 ],
                 stroke_color: [
-                    config.ridgeline.stroke_color.red() as f32 / 255.0,
-                    config.ridgeline.stroke_color.green() as f32 / 255.0,
-                    config.ridgeline.stroke_color.blue() as f32 / 255.0,
-                    config.ridgeline.stroke_color.alpha() as f32 / 255.0,
+                    ridgeline_config.stroke_color.red() as f32 / 255.0,
+                    ridgeline_config.stroke_color.green() as f32 / 255.0,
+                    ridgeline_config.stroke_color.blue() as f32 / 255.0,
+                    ridgeline_config.stroke_color.alpha() as f32 / 255.0,
                 ],
+                // Highlighting front instance values doesn't look good for -1..1 ranges
+                // since it uses abs(y) to mix colors.
+                apply_highlight_to_front_instance: if self.model.values_range()
+                    == ValuesRange::ZeroToOne
+                {
+                    1.0
+                } else {
+                    0.0
+                },
+                _padding: Default::default(),
             };
 
             self.wgpu_queue.write_buffer(
@@ -510,8 +555,8 @@ impl View for RidgelineView {
 
             // Compute panel width in pixels from configured ratio and current scene size
             let transform_matrix = self.get_transform_matrix(
-                config.ridgeline.width_ratio,
-                config.ridgeline.horizon_offset,
+                ridgeline_config.width_ratio,
+                ridgeline_config.horizon_offset,
             );
             self.wgpu_queue.write_buffer(
                 &self.transform_buffer,
@@ -559,7 +604,7 @@ impl View for RidgelineView {
             render_pass.set_pipeline(&self.fill_render_pipeline);
             render_pass.set_vertex_buffer(0, self.fill_vertex_buffer.slice(..));
             render_pass.set_bind_group(0, &self.bind_group, &[]);
-            render_pass.draw(0..(STRIDE_SIZE * 2) as u32, 0..NUM_INSTANCES as u32);
+            render_pass.draw(0..(self.stride_len * 2) as u32, 0..NUM_INSTANCES as u32);
         }
 
         {
@@ -588,91 +633,11 @@ impl View for RidgelineView {
             render_pass.set_pipeline(&self.stroke_render_pipeline);
             render_pass.set_vertex_buffer(0, self.stroke_vertex_buffer.slice(..));
             render_pass.set_bind_group(0, &self.bind_group, &[]);
-            render_pass.draw(0..STRIDE_SIZE as u32, 0..NUM_INSTANCES as u32);
+            render_pass.draw(0..self.stride_len as u32, 0..NUM_INSTANCES as u32);
         }
     }
 
-    fn process_audio(
-        &mut self,
-        timestamp: u32,
-        data: &[f32],
-        fft: &dyn Fft<f32>,
-        fft_inout_buffer: &mut [Complex<f32>],
-        fft_scratch: &mut [Complex<f32>],
-    ) {
-        let audio_sample_skip = if self.is_left_channel { 0 } else { 1 };
-
-        // Keep track of the last FFT size samples.
-        self.fft_input_ringbuf
-            .push_iter_overwrite(data.iter().skip(audio_sample_skip).step_by(2).copied());
-
-        let phase_samples = if !self.fft_input_ringbuf.is_full() {
-            0
-        } else {
-            // Run an FFT on the accumulated latest FFT length samples as a way to find the peak frequency
-            // and align the end of our waveform at the end of the vertex attribute buffer so that the eye
-            // isn't totally lost frame over frame.
-            let (first, second) = self.fft_input_ringbuf.as_slices();
-            fft_inout_buffer
-                .iter_mut()
-                .zip(first.iter().chain(second.iter()))
-                .for_each(|(dst, &y)| *dst = Complex::new(y, 0.));
-
-            fft.process_with_scratch(fft_inout_buffer, fft_scratch);
-
-            // Skipping k=0 makes sense as it doesn't really capture oscillations, also skip frequencies low enough that
-            // aligning to them would prevent the waveform from scrolling enough to be noticeable at 60Hz refresh and 44100Hz sampling rates.
-            let k_to_skip: usize = (FFT_SIZE as f64 / (44100.0 / 60.0)).ceil() as usize;
-
-            // Find the peak frequency
-            let peak_frequency_index = fft_inout_buffer
-                .iter()
-                .take(fft_inout_buffer.len() / 2)
-                .enumerate()
-                .skip(k_to_skip)
-                .max_by(|(_, a), (_, b)| {
-                    a.norm()
-                        .partial_cmp(&b.norm())
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .map(|(i, _)| i)
-                .unwrap_or(0);
-
-            fn phase_to_samples(phase: f32, k: usize, fft_size: usize) -> usize {
-                // When e.g. k=2, the FFT identifies an oscillation that repeats 2 times in the FFT window.
-                // To find the phase shift in samples, find where the phase in radians corresponds vs the FFT buffer size.
-                ((phase + std::f32::consts::PI) / (2.0 * std::f32::consts::PI) * fft_size as f32
-                    / k as f32) as usize
-            }
-
-            // To be able to perform the inverse FFT, each frequency bin also has a phase.
-            // Use this phase to align the waveform to the end of the buffer.
-            // This here is the sine phase shift in radians.
-            let phase_shift = fft_inout_buffer[peak_frequency_index].arg();
-
-            phase_to_samples(phase_shift, peak_frequency_index, fft_inout_buffer.len())
-        };
-
-        let data_iter = data.iter().skip(audio_sample_skip).step_by(2).copied();
-        let y_values: Vec<YValue> = data_iter.map(|sample| YValue { y: sample }).collect();
-
-        // First pass: write to the end of the buffer
-        let first_pass_len = {
-            let first_pass_len = VERTEX_BUFFER_SIZE - self.y_value_write_offset;
-            let first_pass_data = &y_values[..first_pass_len.min(y_values.len())];
-            self.wgpu_queue.write_buffer(
-                &self.y_value_buffer,
-                (self.y_value_write_offset * std::mem::size_of::<YValue>()) as wgpu::BufferAddress,
-                bytemuck::cast_slice(first_pass_data),
-            );
-
-            first_pass_len
-        };
-
-        let aligned_write_offset =
-            (VERTEX_BUFFER_SIZE + self.y_value_write_offset + y_values.len() - phase_samples)
-                % VERTEX_BUFFER_SIZE;
-
+    fn process_audio(&mut self, timestamp: u32, audio_input: &AudioInputData) {
         fn to_progress(t: u32) -> f64 {
             // t is in milliseconds, convert to seconds
             let t = t as f64 / 1000.0;
@@ -682,43 +647,66 @@ impl View for RidgelineView {
 
         // Convert the monotonic timestamp from the compositor to a
         let full_progress = to_progress(timestamp);
+
         // Wrap at 1.0 to get the progress per stride, 0.0 means start position, 1.0 means that
         // it's at the position of the next stride.
         // By using the modulo we keep the progress smooth across strides rotation.
         self.audio_sync.progress = (full_progress % 1.0) as f32;
 
-        // When progress per stride passes 1.0, carry over the animation by moving this stride
-        // to the next waveform stride instance in the shader.
-        let wrapped = full_progress.floor() > self.last_rotate_progress.floor();
-        if wrapped {
-            self.audio_sync.y_value_offsets.rotate_right(1);
-            self.last_rotate_progress = full_progress;
+        // Check if we've crossed a rotation boundary (time-based, not sample-based).
+        let current_floor = full_progress.floor();
+        let previous_floor = self.virtual_stride_index.floor();
+        let wraps = (current_floor - previous_floor) as i32;
+
+        // On rotation: advance write_offset to start a new stride in the ring buffer.
+        if wraps > 0 {
+            // Rotate right: shift historical offsets to make room for new frozen stride.
+            let offsets = &mut self.audio_sync.y_value_offsets[..NUM_INSTANCES];
+            let effective_wraps = (wraps as usize).min(NUM_INSTANCES);
+            if effective_wraps > 0 {
+                offsets.rotate_right(effective_wraps);
+            }
+            // Advance write_offset by one stride to start writing the new front stride.
+            self.write_offset = (self.write_offset + self.stride_len) % self.y_values_buffer_size;
+            self.virtual_stride_index = full_progress;
+
+            // Instance 0 always points to write_offset (the actively updating front stride).
+            // Historical instances (1+) point to successively older frozen strides via rotated offsets.
+            self.audio_sync.y_value_offsets[0] = self.write_offset as u32;
         }
 
-        // Keep updating the latest stride even between rotations.
-        // The front-most stride is animated while the rest are static
-        // and move backwards.
-        self.audio_sync.y_value_offsets[0] = aligned_write_offset as u32;
+        // Process audio with callback to write values directly to GPU buffer
+        let write_offset = self.write_offset;
+        let wgpu_queue = &self.wgpu_queue;
+        let y_value_buffer = &self.y_value_buffer;
 
-        // Update the GPU buffers with the audio sync state
+        let audio_sample_skip = if self.is_left_channel { 0 } else { 1 };
+        let channel_samples = audio_input
+            .samples
+            .iter()
+            .skip(audio_sample_skip)
+            .step_by(2)
+            .copied();
+        let cqt = if self.is_left_channel {
+            audio_input.cqt_left.clone()
+        } else {
+            audio_input.cqt_right.clone()
+        };
+
+        self.model.process_audio(channel_samples, cqt, |values| {
+            // Since the write_offset is aligned, we can write in one chunk.
+            assert!(write_offset + values.len() <= self.y_values_buffer_size);
+            wgpu_queue.write_buffer(
+                y_value_buffer,
+                (write_offset * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
+                bytemuck::cast_slice(&values),
+            );
+        });
+
         self.wgpu_queue.write_buffer(
             &self.audio_sync_buffer,
             0,
             bytemuck::cast_slice(&[self.audio_sync]),
         );
-
-        // Update the write offset
-        self.y_value_write_offset =
-            (self.y_value_write_offset + y_values.len()) % VERTEX_BUFFER_SIZE;
-
-        // Second pass: write to the beginning of the buffer
-        if first_pass_len < y_values.len() {
-            let second_pass_data = &y_values[first_pass_len..];
-            self.wgpu_queue.write_buffer(
-                &self.y_value_buffer,
-                0,
-                bytemuck::cast_slice(second_pass_data),
-            );
-        }
     }
 }

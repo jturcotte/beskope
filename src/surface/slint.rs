@@ -255,15 +255,19 @@ pub fn initialize_slint_surface(
                                 Ok(buffer)
                             }
 
-                            match load_bytes(url)
-                                .and_then(|bytes| decode_to_shared_pixel_buffer(&bytes))
-                            {
-                                Ok(buffer) => Some(buffer),
-                                Err(e) => {
-                                    println!(
-                                        "Failed to load or decode art image for URL [{url}]: {e}"
-                                    );
-                                    None
+                            if url.is_empty() {
+                                None
+                            } else {
+                                match load_bytes(url)
+                                    .and_then(|bytes| decode_to_shared_pixel_buffer(&bytes))
+                                {
+                                    Ok(buffer) => Some(buffer),
+                                    Err(e) => {
+                                        println!(
+                                            "Failed to load or decode art image for URL [{url}]: {e}"
+                                        );
+                                        None
+                                    }
                                 }
                             }
                         });
@@ -396,6 +400,6 @@ pub fn initialize_slint_surface(
             }
         })
         .unwrap();
-    // FIXME: Figure out why it doesn't quit
+
     canvas_window.show().unwrap();
 }

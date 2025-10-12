@@ -384,9 +384,9 @@ pub fn initialize_slint_surface(
                             as Rc<dyn WgpuSurface>;
                         // Grey clear color for Slint
                         let clear_color = wgpu::Color {
-                            r: 0.66,
-                            g: 0.66,
-                            b: 0.66,
+                            r: 0.2,
+                            g: 0.2,
+                            b: 0.2,
                             a: 1.0,
                         };
                         app_state.render_with_clear_color(&wgpu, surface_texture, clear_color);

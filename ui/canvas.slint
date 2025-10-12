@@ -3,17 +3,18 @@ import { VerticalBox, HorizontalBox } from "std-widgets.slint";
 component SvgButton inherits Rectangle {
     in property source <=> i.source;
     in property<bool> flip: false;
+    in property<length> x_offset: 0px;
     callback clicked();
 
     width: self.height;
-    height: 36px;
+    height: 48px;
     border-radius: self.width;
     i := Image {
-        x: (parent.width - self.width) / 2;
+        x: (parent.width - self.width) / 2 + x_offset;
         y: (parent.height - self.height) / 2;
-        width: 50%;
-        height: 50%;
-        colorize: #000c;
+        width: 40%;
+        height: 40%;
+        colorize: #fffc;
         rotation-angle: flip ? 180deg : 0deg;
     }
     ta := TouchArea {
@@ -23,7 +24,7 @@ component SvgButton inherits Rectangle {
     }
     states [
         down when ta.pressed: {
-            background: #0006;
+            background: #fff2;
             in-out {
                 animate background { duration: 50ms; }
             }
@@ -32,7 +33,7 @@ component SvgButton inherits Rectangle {
             background: transparent;
         }
         active-hover when ta.has-hover: {
-            background: #0004;
+            background: #fff4;
             in {
                 animate background { duration: 500ms; easing: ease-out-quint; }
             }
@@ -78,19 +79,20 @@ export component CanvasWindow inherits Window {
             text: track_artist;
             font-size: 20px;
             horizontal-alignment: center;
+            color: white;
         }
         Text {
             text: track_title;
             font-size: 20px;
             font-weight: 800;
             horizontal-alignment: center;
+            color: white;
         }
         Text {
             text: track_album;
             font-size: 20px;
             horizontal-alignment: center;
-            color: #222
-            ;
+            color: #aaa;
         }
 
         HorizontalBox {
@@ -103,6 +105,8 @@ export component CanvasWindow inherits Window {
                 source: playing
                     ? @image-url("icons/pause-two-lines-svgrepo-com.svg")
                     : @image-url("icons/play-arrow-svgrepo-com.svg");
+                // The play icon looks off-center due to its shape, move it a bit.
+                x_offset: playing ? 0px : 2px;
                 clicked => play_pause();
             }
             SvgButton {

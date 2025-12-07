@@ -12,7 +12,7 @@ use tracing::instrument;
 use wgpu::util::DeviceExt;
 use wgpu::{BufferUsages, CommandEncoder, TextureView};
 
-use super::{Vertex, View, YValue};
+use super::{Vertex, View};
 
 const NUM_INSTANCES: usize = 30;
 #[repr(C)]
@@ -109,7 +109,7 @@ impl<M: AudioModel> RidgelineView<M> {
             .collect();
 
         let y_values_buffer_size = stride_len.saturating_mul(NUM_INSTANCES);
-        let y_values: Vec<YValue> = vec![YValue { y: 0.0 }; y_values_buffer_size];
+        let y_values: Vec<f32> = vec![0.0; y_values_buffer_size];
 
         let fill_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Fill Vertex Buffer"),

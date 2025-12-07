@@ -17,7 +17,7 @@ use tracing::instrument;
 use wgpu::util::DeviceExt;
 use wgpu::{BufferUsages, CommandEncoder, TextureView};
 
-use super::{Vertex, View, YValue};
+use super::{Vertex, View};
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -87,7 +87,7 @@ impl CompressedView {
                 should_offset: 1.0,
             })
             .collect();
-        let y_values: Vec<YValue> = vec![YValue { y: 0.0 }; VERTEX_BUFFER_SIZE];
+        let y_values: Vec<f32> = vec![0.0; VERTEX_BUFFER_SIZE];
 
         let fill_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Fill Vertex Buffer"),
@@ -563,7 +563,7 @@ impl View for CompressedView {
             .skip(audio_sample_skip)
             .step_by(2)
             .copied();
-        let y_values: Vec<YValue> = data_iter.map(|sample| YValue { y: sample }).collect();
+        let y_values: Vec<f32> = data_iter.collect();
 
         // First pass: write to the end of the buffer
         let first_pass_len = {
@@ -571,7 +571,7 @@ impl View for CompressedView {
             let first_pass_data = &y_values[..first_pass_len.min(y_values.len())];
             self.wgpu_queue.write_buffer(
                 &self.y_value_buffer,
-                (self.y_value_write_offset * std::mem::size_of::<YValue>()) as wgpu::BufferAddress,
+                (self.y_value_write_offset * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
                 bytemuck::cast_slice(first_pass_data),
             );
 

@@ -7,6 +7,7 @@ use crate::view::models::ValuesRange;
 
 use super::AudioModel;
 use num_complex::Complex;
+use tracing::instrument;
 
 pub struct ConstantQTransformModel {
     y_values: Vec<f32>,
@@ -20,6 +21,7 @@ impl ConstantQTransformModel {
     }
 
     /// Converts complex outputs to magnitudes and then to dB
+    #[instrument(skip(self, cqt))]
     fn update_magnitudes_db_scaled(&mut self, cqt: Arc<Mutex<Vec<Complex<f64>>>>) {
         // Range floor
         const MIN_DB: f64 = -70.0;

@@ -18,6 +18,10 @@ use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar};
 use std::thread;
+use tracing::instrument;
+use tracing_chrome::ChromeLayerBuilder;
+use tracing_subscriber::filter;
+use tracing_subscriber::prelude::*;
 use view::{RidgelineView, View, WaveformModel};
 
 use crate::surface::{GlobalCanvas, GlobalCanvasContext, WgpuSurface};
@@ -56,6 +60,7 @@ struct ApplicationState {
 }
 
 impl ApplicationState {
+    #[instrument(skip(request_redraw_callback, config_window))]
     fn new(
         config: ui::Configuration,
         window_mode: WindowMode,
@@ -86,6 +91,7 @@ impl ApplicationState {
     }
 
     /// Only updates the app state, the configuration window is updated before being shown.
+    #[instrument(skip(self))]
     pub fn reload_configuration(&mut self) {
         let config = match ui::Configuration::load() {
             Ok(config) => config,
@@ -97,6 +103,7 @@ impl ApplicationState {
         self.config = config;
     }
 
+    #[instrument(skip(self))]
     fn initialize_audio_and_transform_thread(&mut self) {
         let (audio_input_ringbuf_prod, audio_input_ringbuf_cons) =
             HeapRb::<f32>::new(48_000 * NUM_CHANNELS).split();
@@ -166,6 +173,7 @@ impl ApplicationState {
             .unwrap();
     }
 
+    #[instrument(skip(self, wgpu))]
     fn create_view(
         &self,
         wgpu: &Rc<dyn WgpuSurface>,
@@ -243,6 +251,7 @@ impl ApplicationState {
     }
 
     /// Initializes the primary view surface and the views it contains.
+    #[instrument(skip(self, wgpu))]
     fn initialize_primary_view_surface(&mut self, wgpu: &Rc<dyn WgpuSurface>) {
         let config_window = self.config_window.clone();
         let fps_callback = Box::new(move |fps: u32| {
@@ -267,6 +276,7 @@ impl ApplicationState {
     }
 
     /// Initializes the secondary view surface and the views it contains.
+    #[instrument(skip(self, wgpu_surface))]
     fn initialize_secondary_view_surface(&mut self, wgpu_surface: &Rc<dyn WgpuSurface>) {
         let config_window = self.config_window.clone();
         let fps_callback = Box::new(move |fps: u32| {
@@ -288,6 +298,7 @@ impl ApplicationState {
         ));
     }
 
+    #[instrument(skip(self))]
     fn process_audio(&mut self, timestamp: u32) {
         // Get samples from the audio input ring buffer.
         // Will only be fed if the transform thread mode is not Raw for both channels.
@@ -320,6 +331,7 @@ impl ApplicationState {
             .unwrap();
     }
 
+    #[instrument(skip(self, wgpu))]
     fn render_with_clear_color(
         &mut self,
         wgpu: &Rc<dyn WgpuSurface>,
@@ -400,6 +412,7 @@ impl ApplicationState {
         }
     }
 
+    #[instrument(skip(self))]
     fn update_screen_size(&mut self, width: u32, height: u32) {
         if width != self.screen_size.0 || height != self.screen_size.1 {
             self.screen_size.0 = width;
@@ -408,6 +421,7 @@ impl ApplicationState {
         }
     }
 
+    #[instrument(skip(self))]
     pub fn recreate_views(&mut self) {
         if let Some(window) = self.primary_view_surface.as_ref() {
             self.left_view = Some(self.create_view(
@@ -445,6 +459,22 @@ enum AppMessageCallback {
     SlintGlobalCanvas(Box<dyn FnOnce(&mut dyn GlobalCanvas, GlobalCanvasContext) + Send>),
 }
 
+impl std::fmt::Debug for AppMessageCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AppMessageCallback::ApplicationState(_) => {
+                write!(f, "ApplicationState(<closure>)")
+            }
+            AppMessageCallback::WlrGlobalCanvas(_) => {
+                write!(f, "WlrGlobalCanvas(<closure>)")
+            }
+            AppMessageCallback::SlintGlobalCanvas(_) => {
+                write!(f, "SlintGlobalCanvas(<closure>)")
+            }
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 struct Args {
@@ -460,6 +490,10 @@ struct Args {
     /// Quit the running instance of beskope and exit.
     #[arg(short = 'q', long = "quit")]
     quit: bool,
+
+    /// Record a frame timing trace that can be viewed at https://ui.perfetto.dev
+    #[arg(long = "trace")]
+    trace: bool,
 }
 
 const CONFIG_COMMAND: &[u8] = b"config";
@@ -468,6 +502,23 @@ const QUIT_COMMAND: &[u8] = b"quit";
 pub fn main() {
     let args = Args::parse();
     let socket_path = "beskope.sock".to_ns_name::<GenericNamespaced>().unwrap();
+
+    let _tracing_guard = if args.trace {
+        let (chrome_layer, guard) = ChromeLayerBuilder::new().include_args(true).build();
+        tracing_subscriber::registry()
+            .with(chrome_layer.with_filter(filter::filter_fn(|metadata| {
+                // Returns `true` if and only if the span or event's target is
+                // "http_access".
+                metadata
+                    .module_path()
+                    .iter()
+                    .all(|path| !path.starts_with("naga"))
+            })))
+            .init();
+        Some(guard)
+    } else {
+        None
+    };
 
     let mut show_config = false;
     if args.config || args.quit {

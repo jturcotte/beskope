@@ -15,6 +15,7 @@ use spa::pod::Pod;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Condvar, Mutex};
+use tracing::info_span;
 
 use crate::ChannelTransformMode;
 
@@ -230,6 +231,7 @@ pub fn init_audio_transform(
         };
 
         if left_mode == ChannelTransformMode::Raw || right_mode == ChannelTransformMode::Raw {
+            let _s = info_span!("Raw transform").entered();
             // Forward the data for both channels even if only one is needed
             transform_thread_ringbuf_prod.push_slice(&data);
         }
@@ -237,6 +239,7 @@ pub fn init_audio_transform(
         if left_mode == ChannelTransformMode::CQT {
             let mut lock = cqt_buffer_left.lock().unwrap();
             let buffer = lock.as_mut();
+            let _s = info_span!("Left CQT samples", sample_count = data.len() / 2).entered();
             for i in data.iter().skip(0).step_by(2) {
                 cqt_left.qdft_scalar(&i, buffer);
             }
@@ -245,6 +248,7 @@ pub fn init_audio_transform(
         if right_mode == ChannelTransformMode::CQT {
             let mut lock = cqt_buffer_right.lock().unwrap();
             let buffer = lock.as_mut();
+            let _s = info_span!("Right CQT transform", sample_count = data.len() / 2).entered();
             for i in data.iter().skip(1).step_by(2) {
                 cqt_right.qdft_scalar(&i, buffer);
             }

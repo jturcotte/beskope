@@ -10,6 +10,7 @@ use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
+use tracing::{Level, instrument, span, warn};
 use wayland_client::EventQueue;
 use wayland_client::backend::ObjectId;
 
@@ -35,6 +36,7 @@ use crate::ui::{self, PanelLayer};
 use crate::{AppMessageCallback, ApplicationState, GlobalCanvas, GlobalCanvasContext, WgpuSurface};
 
 impl CompositorHandler for WlrWaylandEventHandler {
+    #[instrument(skip(self))]
     fn scale_factor_changed(
         &mut self,
         _conn: &Connection,
@@ -44,6 +46,7 @@ impl CompositorHandler for WlrWaylandEventHandler {
     ) {
     }
 
+    #[instrument(skip(self))]
     fn transform_changed(
         &mut self,
         _conn: &Connection,
@@ -53,6 +56,7 @@ impl CompositorHandler for WlrWaylandEventHandler {
     ) {
     }
 
+    #[instrument(skip(self))]
     fn frame(
         &mut self,
         conn: &Connection,
@@ -62,6 +66,7 @@ impl CompositorHandler for WlrWaylandEventHandler {
     ) {
         // Process UI callbacks here since some require the wayland connection to recreate windows.
         while let Ok(message) = self.ui_msg_rx.try_recv() {
+            let _span = span!(Level::INFO, "ui_msg_rx handler", message = ?message).entered();
             match message {
                 AppMessageCallback::ApplicationState(closure) => closure(&mut self.app_state),
                 AppMessageCallback::WlrGlobalCanvas(closure) => closure(
@@ -117,6 +122,7 @@ impl CompositorHandler for WlrWaylandEventHandler {
         }
     }
 
+    #[instrument(skip(self))]
     fn surface_enter(
         &mut self,
         _conn: &Connection,
@@ -140,6 +146,7 @@ impl CompositorHandler for WlrWaylandEventHandler {
         }
     }
 
+    #[instrument(skip(self))]
     fn surface_leave(
         &mut self,
         conn: &Connection,
@@ -166,6 +173,7 @@ impl OutputHandler for WlrWaylandEventHandler {
         &mut self.output_state
     }
 
+    #[instrument(skip(self))]
     fn new_output(
         &mut self,
         _conn: &Connection,
@@ -174,6 +182,7 @@ impl OutputHandler for WlrWaylandEventHandler {
     ) {
     }
 
+    #[instrument(skip(self))]
     fn update_output(
         &mut self,
         _conn: &Connection,
@@ -192,6 +201,7 @@ impl OutputHandler for WlrWaylandEventHandler {
         }
     }
 
+    #[instrument(skip(self))]
     fn output_destroyed(
         &mut self,
         _conn: &Connection,
@@ -202,12 +212,14 @@ impl OutputHandler for WlrWaylandEventHandler {
 }
 
 impl LayerShellHandler for WlrWaylandEventHandler {
+    #[instrument(skip(self))]
     fn closed(&mut self, conn: &Connection, qh: &QueueHandle<Self>, _layer: &LayerSurface) {
         // The client should destroy the resource after receiving this event,
         // and create a new surface if they so choose.
         self.apply_panel_layout(conn, qh);
     }
 
+    #[instrument(skip(self))]
     fn configure(
         &mut self,
         _conn: &Connection,
@@ -294,6 +306,7 @@ impl PartialEq for WlrWgpuSurface {
 }
 
 impl WlrWgpuSurface {
+    #[instrument]
     fn new(
         conn: Connection,
         _qh: QueueHandle<WlrWaylandEventHandler>,
@@ -417,6 +430,7 @@ impl GlobalCanvas for WlrWaylandEventHandler {
 }
 
 impl WlrWaylandEventHandler {
+    #[instrument(skip(self))]
     pub fn apply_panel_layout(&mut self, conn: &Connection, qh: &QueueHandle<Self>) {
         // Already destroy existing layers and wgpu surfaces
         self.primary_layer = None;
@@ -472,6 +486,7 @@ impl WlrWaylandEventHandler {
         self.update_request_redraw_callback(conn.clone(), qh.clone());
     }
 
+    #[instrument(skip(self))]
     fn create_layer_surface(
         &self,
         anchor: Anchor,
@@ -516,6 +531,7 @@ impl WlrWaylandEventHandler {
         Rc::new(WlrWgpuSurface::new(conn.clone(), qh, layer))
     }
 
+    #[instrument(skip(self))]
     pub fn apply_panel_width_change(&mut self) {
         // Compute panel width (ratio from configuration) into pixels depending on layout
         let panel_width_ratio = match self.app_state.config.style {
@@ -547,6 +563,7 @@ impl WlrWaylandEventHandler {
         self.apply_panel_exclusive_ratio_change();
     }
 
+    #[instrument(skip(self))]
     pub fn apply_panel_exclusive_ratio_change(&mut self) {
         let (panel_width_ratio, exclusive_ratio) = match self.app_state.config.style {
             ui::Style::Compressed => (
@@ -601,6 +618,7 @@ impl WlrWaylandEventHandler {
         }
     }
 
+    #[instrument(skip(self))]
     pub fn set_panel_layer(&mut self, layer: PanelLayer) {
         let wayland_layer = Self::layer_to_wayland_layer(layer);
         if let Some(layer) = self.primary_layer.as_ref() {
@@ -621,6 +639,7 @@ impl WlrWaylandEventHandler {
                 .as_ref()
                 .map(|l| l.wl_surface().clone());
             Arc::new(move || {
+                let _span = span!(Level::INFO, "request_redraw_callback").entered();
                 if let Some(surface) = &primary_surface {
                     surface.frame(&qh, surface.clone());
                     surface.commit();
@@ -636,6 +655,7 @@ impl WlrWaylandEventHandler {
         };
     }
 
+    #[instrument(skip(self))]
     fn render_pending(&mut self) {
         // With two windows, we have to render outside the frame callback, after we've
         // drained the pending wayland messages, so that we can request new frame callbacks
@@ -655,6 +675,8 @@ impl WlrWaylandEventHandler {
                 &frame.texture,
                 clear_color,
             );
+
+            let _span = span!(Level::INFO, "Presenting frame").entered();
             frame.present();
         }
     }
@@ -680,6 +702,7 @@ pub struct WlrWaylandEventLoop {
 }
 
 impl WlrWaylandEventLoop {
+    #[instrument(skip(app_state, ui_msg_rx, request_redraw_callback))]
     pub fn new(
         app_state: ApplicationState,
         ui_msg_rx: Receiver<AppMessageCallback>,
@@ -734,6 +757,7 @@ impl WlrWaylandEventLoop {
         WlrWaylandEventLoop { event_queue, state }
     }
 
+    #[instrument(skip(self))]
     pub fn run_event_loop(&mut self) {
         // We don't draw immediately, the configure will notify us when to first draw.
         loop {

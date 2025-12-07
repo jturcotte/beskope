@@ -8,6 +8,7 @@ use crate::view::{AudioInputData, AudioModel, RenderSurface, ViewTransform};
 use cgmath::{Matrix4, SquareMatrix, Vector3, Vector4};
 use std::collections::HashSet;
 use std::{borrow::Cow, sync::Arc};
+use tracing::instrument;
 use wgpu::util::DeviceExt;
 use wgpu::{BufferUsages, CommandEncoder, TextureView};
 
@@ -56,6 +57,7 @@ pub struct RidgelineView<M: AudioModel> {
 }
 
 impl<M: AudioModel> RidgelineView<M> {
+    #[instrument(skip(model))]
     pub fn new(
         device: &wgpu::Device,
         queue: &Arc<wgpu::Queue>,
@@ -344,6 +346,7 @@ impl<M: AudioModel> RidgelineView<M> {
         }
     }
 
+    #[instrument(skip(self))]
     fn get_transform_matrix(&self, panel_width_ratio: f32, horizon_offset: f32) -> [[f32; 4]; 4] {
         if let Some(view_transform) = self.view_transform {
             let screen_width = view_transform.scene_width;
@@ -488,6 +491,7 @@ impl<M: AudioModel> View for RidgelineView<M> {
         self.render_surface
     }
 
+    #[instrument(skip(self))]
     fn apply_lazy_config_changes(
         &mut self,
         config: &ui::Configuration,
@@ -566,6 +570,7 @@ impl<M: AudioModel> View for RidgelineView<M> {
         }
     }
 
+    #[instrument(skip(self))]
     fn render(
         &self,
         encoder: &mut CommandEncoder,
@@ -637,6 +642,7 @@ impl<M: AudioModel> View for RidgelineView<M> {
         }
     }
 
+    #[instrument(skip(self, audio_input))]
     fn process_audio(&mut self, timestamp: u32, audio_input: &AudioInputData) {
         fn to_progress(t: u32) -> f64 {
             // t is in milliseconds, convert to seconds

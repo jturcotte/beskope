@@ -13,6 +13,7 @@ use rustfft::{Fft, FftPlanner};
 use splines::Interpolation;
 use std::collections::HashSet;
 use std::{borrow::Cow, sync::Arc};
+use tracing::instrument;
 use wgpu::util::DeviceExt;
 use wgpu::{BufferUsages, CommandEncoder, TextureView};
 
@@ -47,6 +48,7 @@ pub struct CompressedView {
 }
 
 impl CompressedView {
+    #[instrument(skip(device, queue))]
     pub fn new(
         device: &wgpu::Device,
         queue: &Arc<wgpu::Queue>,
@@ -301,6 +303,7 @@ impl View for CompressedView {
         self.render_surface
     }
 
+    #[instrument(skip(self))]
     fn apply_lazy_config_changes(
         &mut self,
         config: &ui::Configuration,
@@ -432,6 +435,7 @@ impl View for CompressedView {
         }
     }
 
+    #[instrument(skip(self))]
     fn render(
         &self,
         encoder: &mut CommandEncoder,
@@ -486,6 +490,7 @@ impl View for CompressedView {
         }
     }
 
+    #[instrument(skip(self, audio_input))]
     fn process_audio(&mut self, _timestamp: u32, audio_input: &AudioInputData) {
         let audio_sample_skip = if self.is_left_channel { 0 } else { 1 };
 

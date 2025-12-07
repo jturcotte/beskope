@@ -12,6 +12,7 @@ use crate::{surface::WgpuSurface, ui};
 
 use cgmath::{Matrix4, Rad, SquareMatrix, Vector3};
 use num_complex::Complex;
+use tracing::instrument;
 use wgpu::{CommandEncoder, TextureView};
 
 mod compressed;
@@ -266,6 +267,7 @@ pub enum RenderSurface {
 }
 
 impl ViewSurface {
+    #[instrument(skip(wgpu, fps_callback))]
     pub fn new(
         wgpu: &Rc<dyn WgpuSurface>,
         render_surface: RenderSurface,
@@ -288,6 +290,7 @@ impl ViewSurface {
         self.surface_id
     }
 
+    #[instrument(skip(self, wgpu, left_view, right_view))]
     pub fn render_with_clear_color(
         &mut self,
         wgpu: &Rc<dyn WgpuSurface>,

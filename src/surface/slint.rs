@@ -359,7 +359,7 @@ pub fn initialize_slint_surface(
                     }
                 }
                 slint::RenderingState::BeforeRendering => {
-                    if let slint::GraphicsAPI::WGPU26 {
+                    if let slint::GraphicsAPI::WGPU27 {
                         device,
                         queue,
                         surface_texture: Some(surface_texture),

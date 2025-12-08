@@ -9,7 +9,7 @@ use ringbuf::traits::{Consumer, Split};
 use ringbuf::wrap::caching::Caching;
 use ringbuf::{HeapRb, SharedRb};
 use slint::ComponentHandle;
-use slint::wgpu_26::{WGPUConfiguration, WGPUSettings};
+use slint::wgpu_27::{WGPUConfiguration, WGPUSettings};
 use std::collections::HashSet;
 use std::io::prelude::*;
 use std::rc::Rc;
@@ -599,7 +599,8 @@ pub fn main() {
     wgpu_settings.device_required_limits = wgpu::Limits::default();
 
     slint::BackendSelector::new()
-        .require_wgpu_26(WGPUConfiguration::Automatic(wgpu_settings))
+        .require_wgpu_27(WGPUConfiguration::Automatic(wgpu_settings))
+        .renderer_name("skia".to_owned())
         .select()
         .expect("Unable to create Slint backend with WGPU based renderer");
 

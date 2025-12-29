@@ -40,7 +40,7 @@ pub fn initialize_audio_capture(
         *pw::keys::MEDIA_TYPE => "Audio",
         *pw::keys::MEDIA_CATEGORY => "Monitor",
         *pw::keys::MEDIA_ROLE => "Music",
-        *pw::keys::NODE_LATENCY => "128/48000",
+        *pw::keys::NODE_LATENCY => "256/48000",
         // Capture from the sink monitor ports
         *pw::keys::STREAM_CAPTURE_SINK => "true",
     };
@@ -226,7 +226,10 @@ pub fn init_audio_transform(
 
             (
                 *guard,
-                audio_input_ringbuf_cons.pop_iter().collect::<Vec<f32>>(),
+                audio_input_ringbuf_cons
+                    .pop_iter()
+                    .take(64 * 2) // Lock output in chunks of 64 samples to avoid blocking rendering for too long
+                    .collect::<Vec<f32>>(),
             )
         };
 

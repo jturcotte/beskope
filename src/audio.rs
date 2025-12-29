@@ -182,6 +182,7 @@ pub fn initialize_audio_capture(
     main_loop.run();
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn init_audio_transform(
     sample_rate: u32,
     bandwidth: (f64, f64),
@@ -239,21 +240,21 @@ pub fn init_audio_transform(
             transform_thread_ringbuf_prod.push_slice(&data);
         }
 
-        if left_mode == ChannelTransformMode::CQT {
+        if left_mode == ChannelTransformMode::Cqt {
             let mut lock = cqt_buffer_left.lock().unwrap();
             let buffer = lock.as_mut();
             let _s = info_span!("Left CQT samples", sample_count = data.len() / 2).entered();
-            for i in data.iter().skip(0).step_by(2) {
-                cqt_left.qdft_scalar(&i, buffer);
+            for i in data.iter().step_by(2) {
+                cqt_left.qdft_scalar(i, buffer);
             }
         }
 
-        if right_mode == ChannelTransformMode::CQT {
+        if right_mode == ChannelTransformMode::Cqt {
             let mut lock = cqt_buffer_right.lock().unwrap();
             let buffer = lock.as_mut();
             let _s = info_span!("Right CQT transform", sample_count = data.len() / 2).entered();
             for i in data.iter().skip(1).step_by(2) {
-                cqt_right.qdft_scalar(&i, buffer);
+                cqt_right.qdft_scalar(i, buffer);
             }
         }
     }

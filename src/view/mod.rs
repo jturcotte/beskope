@@ -328,25 +328,25 @@ impl ViewSurface {
         // Only clear the first view that renders to this surface
         let mut clear_flag = Some(clear_color);
 
-        if let Some(view) = left_view {
-            if view.render_surface() == self.render_surface {
-                view.render(
-                    &mut encoder,
-                    &texture_view,
-                    &depth_texture_view,
-                    clear_flag.take(),
-                );
-            }
+        if let Some(view) = left_view
+            && view.render_surface() == self.render_surface
+        {
+            view.render(
+                &mut encoder,
+                &texture_view,
+                &depth_texture_view,
+                clear_flag.take(),
+            );
         }
-        if let Some(view) = right_view {
-            if view.render_surface() == self.render_surface {
-                view.render(
-                    &mut encoder,
-                    &texture_view,
-                    &depth_texture_view,
-                    clear_flag.take(),
-                );
-            }
+        if let Some(view) = right_view
+            && view.render_surface() == self.render_surface
+        {
+            view.render(
+                &mut encoder,
+                &texture_view,
+                &depth_texture_view,
+                clear_flag.take(),
+            );
         }
         wgpu.queue().submit(Some(encoder.finish()));
 

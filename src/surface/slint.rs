@@ -90,15 +90,14 @@ impl GlobalCanvas for SlintGlobalCanvas {
         let app_state = self.app_state.as_ref().unwrap();
         let padding_ratio = match app_state.config.style {
             ui::Style::Compressed => {
-                app_state.config.compressed.width_ratio as f32
+                app_state.config.compressed.width_ratio
                     * app_state.config.compressed.exclusive_ratio
             }
             ui::Style::Ridgeline => {
-                app_state.config.ridgeline.width_ratio as f32
-                    * app_state.config.ridgeline.exclusive_ratio
+                app_state.config.ridgeline.width_ratio * app_state.config.ridgeline.exclusive_ratio
             }
             ui::Style::RidgelineFrequency => {
-                app_state.config.ridgeline_frequency.width_ratio as f32
+                app_state.config.ridgeline_frequency.width_ratio
                     * app_state.config.ridgeline_frequency.exclusive_ratio
             }
         };
@@ -172,12 +171,11 @@ pub fn initialize_slint_surface(
             // Check if the current player is still active, else looks for a new one.
             if last_status != Some(mpris::PlaybackStatus::Playing)
                 && last_status != Some(mpris::PlaybackStatus::Paused)
+                && let Ok(new_player) = wait_for_player()
             {
-                if let Ok(new_player) = wait_for_player() {
-                    maybe_player = Some(new_player);
-                    maybe_progress_tracker =
-                        Some(maybe_player.as_ref().unwrap().track_progress(20).unwrap());
-                }
+                maybe_player = Some(new_player);
+                maybe_progress_tracker =
+                    Some(maybe_player.as_ref().unwrap().track_progress(20).unwrap());
             }
 
             // Send commands sent from the UI to the player

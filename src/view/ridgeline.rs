@@ -705,7 +705,7 @@ impl<M: AudioModel> View for RidgelineView<M> {
             wgpu_queue.write_buffer(
                 y_value_buffer,
                 (write_offset * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
-                bytemuck::cast_slice(&values),
+                bytemuck::cast_slice(values),
             );
         });
 

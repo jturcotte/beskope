@@ -421,8 +421,8 @@ impl View for CompressedView {
             }
 
             if let Some(view_transform) = self.view_transform {
-                let window_to_scene_transform = view_transform
-                    .get_window_to_scene_transform(config.compressed.width_ratio as f32);
+                let window_to_scene_transform =
+                    view_transform.get_window_to_scene_transform(config.compressed.width_ratio);
                 let transform_matrix: [[f32; 4]; 4] =
                     (window_to_scene_transform * view_transform.transform_matrix).into();
 

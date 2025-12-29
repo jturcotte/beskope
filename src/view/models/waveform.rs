@@ -97,7 +97,7 @@ impl AudioModel for WaveformModel {
     }
 
     fn values_range(&self) -> ValuesRange {
-        return ValuesRange::NegativeOneToOne;
+        ValuesRange::NegativeOneToOne
     }
 
     fn process_audio<I, W>(

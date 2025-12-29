@@ -50,7 +50,7 @@ impl AudioModel for ConstantQTransformModel {
     }
 
     fn values_range(&self) -> ValuesRange {
-        return ValuesRange::ZeroToOne;
+        ValuesRange::ZeroToOne
     }
 
     fn process_audio<I, W>(

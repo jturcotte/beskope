@@ -103,17 +103,16 @@ impl CompositorHandler for WlrWaylandEventHandler {
                 // so ignore any unknown surface.
                 None
             }
-        } {
-            if !self.surfaces_with_pending_render.contains(wgpu) {
-                self.surfaces_with_pending_render.push(wgpu.clone());
+        } && !self.surfaces_with_pending_render.contains(wgpu)
+        {
+            self.surfaces_with_pending_render.push(wgpu.clone());
 
-                if !self.app_state.animation_stopped.load(Ordering::Relaxed) {
-                    // Already tell the compositor that we want to draw again for the next output frame.
-                    surface.frame(qh, surface.clone());
-                    surface.commit();
-                } else {
-                    self.app_state.hide_fps_counters();
-                }
+            if !self.app_state.animation_stopped.load(Ordering::Relaxed) {
+                // Already tell the compositor that we want to draw again for the next output frame.
+                surface.frame(qh, surface.clone());
+                surface.commit();
+            } else {
+                self.app_state.hide_fps_counters();
             }
         }
 
@@ -189,15 +188,14 @@ impl OutputHandler for WlrWaylandEventHandler {
         _qh: &QueueHandle<Self>,
         output: wl_output::WlOutput,
     ) {
-        if self.primary_surface_output == Some(output.id()) {
-            if let Some(size) = self
+        if self.primary_surface_output == Some(output.id())
+            && let Some(size) = self
                 .output_state
                 .info(&output)
                 .and_then(|info| info.logical_size)
-            {
-                self.app_state
-                    .update_screen_size(size.0 as u32, size.1 as u32);
-            }
+        {
+            self.app_state
+                .update_screen_size(size.0 as u32, size.1 as u32);
         }
     }
 

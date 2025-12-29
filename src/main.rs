@@ -37,7 +37,7 @@ const NUM_CHANNELS: usize = 2;
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum ChannelTransformMode {
     Raw,
-    CQT,
+    Cqt,
 }
 
 struct ApplicationState {
@@ -195,7 +195,7 @@ impl ApplicationState {
             };
             match style {
                 ui::Style::RidgelineFrequency => {
-                    *mode = ChannelTransformMode::CQT;
+                    *mode = ChannelTransformMode::Cqt;
                 }
                 _ => {
                     *mode = ChannelTransformMode::Raw;
@@ -387,28 +387,28 @@ impl ApplicationState {
             self.view_transform_dirty = false;
         }
 
-        if let Some(window) = self.primary_view_surface.as_mut() {
-            if window.surface_id() == wgpu.surface_id() {
-                window.render_with_clear_color(
-                    wgpu,
-                    surface_texture,
-                    &mut self.left_view,
-                    &mut self.right_view,
-                    clear_color,
-                );
-            }
+        if let Some(window) = self.primary_view_surface.as_mut()
+            && window.surface_id() == wgpu.surface_id()
+        {
+            window.render_with_clear_color(
+                wgpu,
+                surface_texture,
+                &mut self.left_view,
+                &mut self.right_view,
+                clear_color,
+            );
         }
 
-        if let Some(window) = self.secondary_view_surface.as_mut() {
-            if window.surface_id() == wgpu.surface_id() {
-                window.render_with_clear_color(
-                    wgpu,
-                    surface_texture,
-                    &mut self.left_view,
-                    &mut self.right_view,
-                    clear_color,
-                );
-            }
+        if let Some(window) = self.secondary_view_surface.as_mut()
+            && window.surface_id() == wgpu.surface_id()
+        {
+            window.render_with_clear_color(
+                wgpu,
+                surface_texture,
+                &mut self.left_view,
+                &mut self.right_view,
+                clear_color,
+            );
         }
     }
 
@@ -453,6 +453,7 @@ impl ApplicationState {
     }
 }
 
+#[allow(clippy::type_complexity)]
 enum AppMessageCallback {
     ApplicationState(Box<dyn FnOnce(&mut ApplicationState) + Send>),
     WlrGlobalCanvas(Box<dyn FnOnce(&mut dyn GlobalCanvas, GlobalCanvasContext) + Send>),

@@ -343,7 +343,17 @@ impl LayerShellWgpuSurface {
             .expect("Failed to request device");
 
         let swapchain_capabilities = surface.get_capabilities(&adapter);
-        let swapchain_format = swapchain_capabilities.formats[0];
+        let swapchain_format = swapchain_capabilities
+            .formats
+            .iter()
+            .find(|f| {
+                matches!(
+                    f,
+                    wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm
+                )
+            })
+            .unwrap_or(&swapchain_capabilities.formats[0])
+            .clone();
 
         LayerShellWgpuSurface {
             device,

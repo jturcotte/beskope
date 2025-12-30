@@ -477,6 +477,8 @@ dependencies = [
  "ureq",
  "url",
  "wayland-client",
+ "wayland-protocols 0.31.2",
+ "wayland-protocols-wlr",
  "wgpu",
 ]
 
@@ -4871,7 +4873,7 @@ dependencies = [
  "wayland-client",
  "wayland-csd-frame",
  "wayland-cursor",
- "wayland-protocols",
+ "wayland-protocols 0.32.9",
  "wayland-protocols-wlr",
  "wayland-scanner",
  "xkbcommon 0.7.0",
@@ -4897,7 +4899,7 @@ dependencies = [
  "wayland-client",
  "wayland-csd-frame",
  "wayland-cursor",
- "wayland-protocols",
+ "wayland-protocols 0.32.9",
  "wayland-protocols-experimental",
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
@@ -5897,6 +5899,18 @@ dependencies = [
 
 [[package]]
 name = "wayland-protocols"
+version = "0.31.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f81f365b8b4a97f422ac0e8737c438024b5951734506b0e1d775c73030561f4"
+dependencies = [
+ "bitflags 2.10.0",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-scanner",
+]
+
+[[package]]
+name = "wayland-protocols"
 version = "0.32.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "efa790ed75fbfd71283bd2521a1cfdc022aabcc28bdcff00851f9e4ae88d9901"
@@ -5916,7 +5930,7 @@ dependencies = [
  "bitflags 2.10.0",
  "wayland-backend",
  "wayland-client",
- "wayland-protocols",
+ "wayland-protocols 0.32.9",
  "wayland-scanner",
 ]
 
@@ -5929,7 +5943,7 @@ dependencies = [
  "bitflags 2.10.0",
  "wayland-backend",
  "wayland-client",
- "wayland-protocols",
+ "wayland-protocols 0.32.9",
  "wayland-scanner",
 ]
 
@@ -5942,7 +5956,7 @@ dependencies = [
  "bitflags 2.10.0",
  "wayland-backend",
  "wayland-client",
- "wayland-protocols",
+ "wayland-protocols 0.32.9",
  "wayland-scanner",
 ]
 
@@ -5955,7 +5969,7 @@ dependencies = [
  "bitflags 2.10.0",
  "wayland-backend",
  "wayland-client",
- "wayland-protocols",
+ "wayland-protocols 0.32.9",
  "wayland-scanner",
 ]
 
@@ -6727,7 +6741,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wayland-backend",
  "wayland-client",
- "wayland-protocols",
+ "wayland-protocols 0.32.9",
  "wayland-protocols-plasma",
  "web-sys",
  "web-time",

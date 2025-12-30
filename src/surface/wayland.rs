@@ -27,13 +27,23 @@ use smithay_client_toolkit::{
     },
 };
 use wayland_client::{
-    Connection, Proxy, QueueHandle,
+    Connection, Dispatch, Proxy, QueueHandle,
     globals::registry_queue_init,
     protocol::{wl_output, wl_surface},
 };
+use wayland_protocols::wp::fractional_scale::v1::client::{
+    wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
+};
+use wayland_protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
 
 use crate::ui::{self, PanelLayer};
 use crate::{AppMessageCallback, ApplicationState, GlobalCanvas, GlobalCanvasContext, WgpuSurface};
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum SurfaceKind {
+    Primary,
+    Secondary,
+}
 
 impl CompositorHandler for WaylandEventHandler {
     #[instrument(skip(self))]
@@ -44,6 +54,7 @@ impl CompositorHandler for WaylandEventHandler {
         _surface: &wl_surface::WlSurface,
         _new_factor: i32,
     ) {
+        // We only use fractional scale protocol, ignore wl_output integer scale
     }
 
     #[instrument(skip(self))]
@@ -132,15 +143,13 @@ impl CompositorHandler for WaylandEventHandler {
         // Assume that both layers are on the same output, so only process changes on the primary layer.
         if Some(surface.id()) == self.primary_layer.as_ref().map(|l| l.wl_surface().id()) {
             self.primary_surface_output = Some(output.id());
-            if let Some(size) = self
-                .output_state
-                .info(output)
-                .and_then(|info| info.logical_size)
-            {
-                self.app_state
-                    .update_screen_size(size.0 as u32, size.1 as u32);
-                // Adjust the width and exclusive ratio.
-                self.apply_panel_width_change();
+            if let Some(info) = self.output_state.info(output) {
+                if let Some(size) = info.logical_size {
+                    self.app_state
+                        .update_screen_size(size.0 as u32, size.1 as u32);
+                    // Adjust the width and exclusive ratio.
+                    self.apply_panel_width_change();
+                }
             }
         }
     }
@@ -189,13 +198,12 @@ impl OutputHandler for WaylandEventHandler {
         output: wl_output::WlOutput,
     ) {
         if self.primary_surface_output == Some(output.id())
-            && let Some(size) = self
-                .output_state
-                .info(&output)
-                .and_then(|info| info.logical_size)
+            && let Some(info) = self.output_state.info(&output)
         {
-            self.app_state
-                .update_screen_size(size.0 as u32, size.1 as u32);
+            if let Some(size) = info.logical_size {
+                self.app_state
+                    .update_screen_size(size.0 as u32, size.1 as u32);
+            }
         }
     }
 
@@ -235,56 +243,28 @@ impl LayerShellHandler for WaylandEventHandler {
 
         if self.primary_layer.as_ref() == Some(layer) {
             let layer_wgpu = self.primary_wgpu.as_ref().unwrap().clone();
-            let config = wgpu::SurfaceConfiguration {
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                format: layer_wgpu.swapchain_format,
-                width: new_width.max(1),
-                height: new_height.max(1),
-                present_mode: wgpu::PresentMode::AutoVsync,
-                desired_maximum_frame_latency: 1,
-                alpha_mode: wgpu::CompositeAlphaMode::PreMultiplied,
-                view_formats: vec![],
-            };
-            layer_wgpu.surface.configure(layer_wgpu.device(), &config);
+            self.primary_configured_size = Some((new_width.max(1), new_height.max(1)));
+            self.set_viewport_destination(SurfaceKind::Primary, new_width, new_height);
+            self.configure_layer_surface(layer, &layer_wgpu, qh, new_width, new_height, true);
 
             if !self.primary_wgpu_configured {
                 let wgpu = layer_wgpu.clone() as Rc<dyn WgpuSurface>;
                 self.app_state.initialize_primary_view_surface(&wgpu);
                 self.primary_wgpu_configured = true;
             }
-
-            self.surfaces_with_pending_render.push(layer_wgpu);
-
-            // Kick off the animation
-            layer.wl_surface().frame(qh, layer.wl_surface().clone());
-            layer.wl_surface().commit();
         }
 
         if self.secondary_layer.as_ref() == Some(layer) {
             let layer_wgpu = self.secondary_wgpu.as_ref().unwrap().clone();
-            let config = wgpu::SurfaceConfiguration {
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                format: layer_wgpu.swapchain_format,
-                width: new_width.max(1),
-                height: new_height.max(1),
-                present_mode: wgpu::PresentMode::AutoVsync,
-                desired_maximum_frame_latency: 1,
-                alpha_mode: wgpu::CompositeAlphaMode::PreMultiplied,
-                view_formats: vec![],
-            };
-            layer_wgpu.surface.configure(layer_wgpu.device(), &config);
+            self.secondary_configured_size = Some((new_width.max(1), new_height.max(1)));
+            self.set_viewport_destination(SurfaceKind::Secondary, new_width, new_height);
+            self.configure_layer_surface(layer, &layer_wgpu, qh, new_width, new_height, true);
 
             if !self.secondary_wgpu_configured {
                 let wgpu = layer_wgpu.clone() as Rc<dyn WgpuSurface>;
                 self.app_state.initialize_secondary_view_surface(&wgpu);
                 self.secondary_wgpu_configured = true;
             }
-
-            self.surfaces_with_pending_render.push(layer_wgpu);
-
-            // Kick off the animation
-            layer.wl_surface().frame(qh, layer.wl_surface().clone());
-            layer.wl_surface().commit();
         }
     }
 }
@@ -389,6 +369,15 @@ pub struct WaylandEventHandler {
     layer_shell: LayerShell,
     registry_state: RegistryState,
     output_state: OutputState,
+    fractional_scale: Option<f64>,
+
+    // Fractional scale staging protocol and viewporter support
+    viewporter: Option<wp_viewporter::WpViewporter>,
+    fractional_scale_manager: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
+    primary_viewport: Option<wp_viewport::WpViewport>,
+    secondary_viewport: Option<wp_viewport::WpViewport>,
+    primary_fractional_scale: Option<wp_fractional_scale_v1::WpFractionalScaleV1>,
+    secondary_fractional_scale: Option<wp_fractional_scale_v1::WpFractionalScaleV1>,
 
     surfaces_with_pending_render: Vec<Rc<LayerShellWgpuSurface>>,
     pending_render_timestamp: u32,
@@ -400,6 +389,8 @@ pub struct WaylandEventHandler {
     primary_wgpu_configured: bool,
     secondary_wgpu_configured: bool,
     primary_surface_output: Option<ObjectId>,
+    primary_configured_size: Option<(u32, u32)>,
+    secondary_configured_size: Option<(u32, u32)>,
     pub app_state: ApplicationState,
     app_state_initialized: bool,
 }
@@ -509,6 +500,12 @@ impl WaylandEventHandler {
         self.primary_wgpu = None;
         self.secondary_wgpu = None;
         self.surfaces_with_pending_render.clear();
+        self.primary_configured_size = None;
+        self.secondary_configured_size = None;
+        self.primary_viewport = None;
+        self.secondary_viewport = None;
+        self.primary_fractional_scale = None;
+        self.secondary_fractional_scale = None;
         self.app_state.primary_view_surface = None;
         self.app_state.secondary_view_surface = None;
         self.app_state.left_view = None;
@@ -520,11 +517,13 @@ impl WaylandEventHandler {
         let (primary_wgpu, secondary_wgpu) = match self.app_state.config.general.layout {
             crate::ui::PanelLayout::TwoPanels => (
                 Some(self.create_layer_surface(
+                    SurfaceKind::Primary,
                     Anchor::TOP | Anchor::LEFT | Anchor::BOTTOM,
                     conn,
                     qh,
                 )),
                 Some(self.create_layer_surface(
+                    SurfaceKind::Secondary,
                     Anchor::TOP | Anchor::RIGHT | Anchor::BOTTOM,
                     conn,
                     qh,
@@ -532,6 +531,7 @@ impl WaylandEventHandler {
             ),
             crate::ui::PanelLayout::SingleTop => (
                 Some(self.create_layer_surface(
+                    SurfaceKind::Primary,
                     Anchor::LEFT | Anchor::TOP | Anchor::RIGHT,
                     conn,
                     qh,
@@ -540,6 +540,7 @@ impl WaylandEventHandler {
             ),
             crate::ui::PanelLayout::SingleBottom => (
                 Some(self.create_layer_surface(
+                    SurfaceKind::Primary,
                     Anchor::LEFT | Anchor::BOTTOM | Anchor::RIGHT,
                     conn,
                     qh,
@@ -559,7 +560,8 @@ impl WaylandEventHandler {
 
     #[instrument(skip(self))]
     fn create_layer_surface(
-        &self,
+        &mut self,
+        kind: SurfaceKind,
         anchor: Anchor,
         conn: &Connection,
         qh: &QueueHandle<Self>,
@@ -590,6 +592,27 @@ impl WaylandEventHandler {
             layer.set_size(1, 0);
         }
         layer.set_layer(Self::layer_to_wayland_layer(panel_layer));
+
+        // Attach viewporter and fractional-scale objects if the compositor supports them.
+        let viewport = self
+            .viewporter
+            .as_ref()
+            .map(|vp| vp.get_viewport(&layer.wl_surface(), qh, kind));
+        let fractional_scale = self
+            .fractional_scale_manager
+            .as_ref()
+            .map(|mgr| mgr.get_fractional_scale(&layer.wl_surface(), qh, kind));
+
+        match kind {
+            SurfaceKind::Primary => {
+                self.primary_viewport = viewport;
+                self.primary_fractional_scale = fractional_scale;
+            }
+            SurfaceKind::Secondary => {
+                self.secondary_viewport = viewport;
+                self.secondary_fractional_scale = fractional_scale;
+            }
+        }
 
         // In order for the layer surface to be mapped, we need to perform an initial commit with no attached\
         // buffer. For more info, see WaylandSurface::commit
@@ -726,6 +749,88 @@ impl WaylandEventHandler {
         };
     }
 
+    fn configure_layer_surface(
+        &mut self,
+        layer: &LayerSurface,
+        wgpu: &Rc<LayerShellWgpuSurface>,
+        qh: &QueueHandle<Self>,
+        new_width: u32,
+        new_height: u32,
+        request_frame: bool,
+    ) {
+        let scale = self.effective_scale();
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: wgpu.swapchain_format,
+            width: ((new_width.max(1) as f64 * scale).ceil() as u32).max(1),
+            height: ((new_height.max(1) as f64 * scale).ceil() as u32).max(1),
+            present_mode: wgpu::PresentMode::AutoVsync,
+            desired_maximum_frame_latency: 1,
+            alpha_mode: wgpu::CompositeAlphaMode::PreMultiplied,
+            view_formats: vec![],
+        };
+        wgpu.surface.configure(wgpu.device(), &config);
+
+        self.surfaces_with_pending_render.push(wgpu.clone());
+
+        if request_frame {
+            // Kick off the animation
+            layer.wl_surface().frame(qh, layer.wl_surface().clone());
+            layer.wl_surface().commit();
+        }
+    }
+
+    fn effective_scale(&self) -> f64 {
+        self.fractional_scale.unwrap_or(1.0)
+    }
+
+    fn set_viewport_destination(&self, kind: SurfaceKind, width: u32, height: u32) {
+        let viewport = match kind {
+            SurfaceKind::Primary => self.primary_viewport.as_ref(),
+            SurfaceKind::Secondary => self.secondary_viewport.as_ref(),
+        };
+
+        if let Some(viewport) = viewport {
+            viewport.set_destination(width as i32, height as i32);
+        }
+    }
+
+    fn update_fractional_scale(&mut self, new_scale_120: u32, qh: &QueueHandle<Self>) {
+        const DENOMINATOR: f64 = 120.0;
+        let new_scale = (new_scale_120 as f64 / DENOMINATOR).max(1.0);
+
+        // Without viewporter support we cannot correctly map non-integer scales.
+        if self.viewporter.is_none() {
+            return;
+        }
+
+        if self.fractional_scale == Some(new_scale) {
+            return;
+        }
+
+        self.fractional_scale = Some(new_scale);
+
+        self.reconfigure_swapchains_for_scale(qh);
+    }
+
+    fn reconfigure_swapchains_for_scale(&mut self, qh: &QueueHandle<Self>) {
+        if let (Some(layer), Some(wgpu), Some((width, height))) = (
+            self.primary_layer.clone(),
+            self.primary_wgpu.clone(),
+            self.primary_configured_size,
+        ) {
+            self.configure_layer_surface(&layer, &wgpu, qh, width, height, false);
+        }
+
+        if let (Some(layer), Some(wgpu), Some((width, height))) = (
+            self.secondary_layer.clone(),
+            self.secondary_wgpu.clone(),
+            self.secondary_configured_size,
+        ) {
+            self.configure_layer_surface(&layer, &wgpu, qh, width, height, false);
+        }
+    }
+
     #[instrument(skip(self))]
     fn render_pending(&mut self) {
         // With two windows, we have to render outside the frame callback, after we've
@@ -759,6 +864,60 @@ delegate_output!(WaylandEventHandler);
 delegate_layer!(WaylandEventHandler);
 
 delegate_registry!(WaylandEventHandler);
+
+// Those Dispatch types are not implemented by smithay client toolkit, so we have to do it ourselves.
+impl Dispatch<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1, ()>
+    for WaylandEventHandler
+{
+    fn event(
+        _state: &mut Self,
+        _proxy: &wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+        _event: wp_fractional_scale_manager_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, SurfaceKind> for WaylandEventHandler {
+    fn event(
+        state: &mut Self,
+        _proxy: &wp_fractional_scale_v1::WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        _data: &SurfaceKind,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
+            state.update_fractional_scale(scale, qh);
+        }
+    }
+}
+
+impl Dispatch<wp_viewporter::WpViewporter, ()> for WaylandEventHandler {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wp_viewporter::WpViewporter,
+        _event: wp_viewporter::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<wp_viewport::WpViewport, SurfaceKind> for WaylandEventHandler {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wp_viewport::WpViewport,
+        _event: wp_viewport::Event,
+        _data: &SurfaceKind,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
 
 impl ProvidesRegistryState for WaylandEventHandler {
     fn registry(&mut self) -> &mut RegistryState {
@@ -802,12 +961,22 @@ impl WaylandEventLoop {
         let registry_state = RegistryState::new(&globals);
         let output_state = OutputState::new(&globals, &qh);
 
+        let viewporter = globals.bind(&qh, 1..=1, ()).ok();
+        let fractional_scale_manager = globals.bind(&qh, 1..=1, ()).ok();
+
         let mut state = WaylandEventHandler {
             ui_msg_rx,
             compositor,
             layer_shell,
             registry_state,
             output_state,
+            fractional_scale: None,
+            viewporter,
+            fractional_scale_manager,
+            primary_viewport: None,
+            secondary_viewport: None,
+            primary_fractional_scale: None,
+            secondary_fractional_scale: None,
             surfaces_with_pending_render: Vec::new(),
             pending_render_timestamp: 0,
             request_redraw_callback,
@@ -818,6 +987,8 @@ impl WaylandEventLoop {
             primary_wgpu_configured: false,
             secondary_wgpu_configured: false,
             primary_surface_output: None,
+            primary_configured_size: None,
+            secondary_configured_size: None,
             app_state,
             app_state_initialized: false,
         };

@@ -66,7 +66,7 @@ impl SlintGlobalCanvas {
                 AppMessageCallback::SlintGlobalCanvas(closure) => {
                     closure(self, GlobalCanvasContext::Slint(()))
                 }
-                AppMessageCallback::WlrGlobalCanvas(_) => {
+                AppMessageCallback::LayerShellGlobalCanvas(_) => {
                     panic!("Incorrect GlobalCanvas callback type")
                 }
             }

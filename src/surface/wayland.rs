@@ -35,7 +35,7 @@ use wayland_client::{
 use crate::ui::{self, PanelLayer};
 use crate::{AppMessageCallback, ApplicationState, GlobalCanvas, GlobalCanvasContext, WgpuSurface};
 
-impl CompositorHandler for WlrWaylandEventHandler {
+impl CompositorHandler for WaylandEventHandler {
     #[instrument(skip(self))]
     fn scale_factor_changed(
         &mut self,
@@ -69,9 +69,9 @@ impl CompositorHandler for WlrWaylandEventHandler {
             let _span = span!(Level::INFO, "ui_msg_rx handler", message = ?message).entered();
             match message {
                 AppMessageCallback::ApplicationState(closure) => closure(&mut self.app_state),
-                AppMessageCallback::WlrGlobalCanvas(closure) => closure(
+                AppMessageCallback::LayerShellGlobalCanvas(closure) => closure(
                     self,
-                    GlobalCanvasContext::Wlr(WlrCanvasContext {
+                    GlobalCanvasContext::LayerShell(LayerShellCanvasContext {
                         conn: conn.clone(),
                         qh: qh.clone(),
                     }),
@@ -167,7 +167,7 @@ impl CompositorHandler for WlrWaylandEventHandler {
     }
 }
 
-impl OutputHandler for WlrWaylandEventHandler {
+impl OutputHandler for WaylandEventHandler {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
     }
@@ -209,7 +209,7 @@ impl OutputHandler for WlrWaylandEventHandler {
     }
 }
 
-impl LayerShellHandler for WlrWaylandEventHandler {
+impl LayerShellHandler for WaylandEventHandler {
     #[instrument(skip(self))]
     fn closed(&mut self, conn: &Connection, qh: &QueueHandle<Self>, _layer: &LayerSurface) {
         // The client should destroy the resource after receiving this event,
@@ -234,10 +234,10 @@ impl LayerShellHandler for WlrWaylandEventHandler {
         let (new_width, new_height) = configure.new_size;
 
         if self.primary_layer.as_ref() == Some(layer) {
-            let wlr_wgpu = self.primary_wgpu.as_ref().unwrap().clone();
+            let layer_wgpu = self.primary_wgpu.as_ref().unwrap().clone();
             let config = wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                format: wlr_wgpu.swapchain_format,
+                format: layer_wgpu.swapchain_format,
                 width: new_width.max(1),
                 height: new_height.max(1),
                 present_mode: wgpu::PresentMode::AutoVsync,
@@ -245,15 +245,15 @@ impl LayerShellHandler for WlrWaylandEventHandler {
                 alpha_mode: wgpu::CompositeAlphaMode::PreMultiplied,
                 view_formats: vec![],
             };
-            wlr_wgpu.surface.configure(wlr_wgpu.device(), &config);
+            layer_wgpu.surface.configure(layer_wgpu.device(), &config);
 
             if !self.primary_wgpu_configured {
-                let wgpu = wlr_wgpu.clone() as Rc<dyn WgpuSurface>;
+                let wgpu = layer_wgpu.clone() as Rc<dyn WgpuSurface>;
                 self.app_state.initialize_primary_view_surface(&wgpu);
                 self.primary_wgpu_configured = true;
             }
 
-            self.surfaces_with_pending_render.push(wlr_wgpu);
+            self.surfaces_with_pending_render.push(layer_wgpu);
 
             // Kick off the animation
             layer.wl_surface().frame(qh, layer.wl_surface().clone());
@@ -261,10 +261,10 @@ impl LayerShellHandler for WlrWaylandEventHandler {
         }
 
         if self.secondary_layer.as_ref() == Some(layer) {
-            let wlr_wgpu = self.secondary_wgpu.as_ref().unwrap().clone();
+            let layer_wgpu = self.secondary_wgpu.as_ref().unwrap().clone();
             let config = wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                format: wlr_wgpu.swapchain_format,
+                format: layer_wgpu.swapchain_format,
                 width: new_width.max(1),
                 height: new_height.max(1),
                 present_mode: wgpu::PresentMode::AutoVsync,
@@ -272,15 +272,15 @@ impl LayerShellHandler for WlrWaylandEventHandler {
                 alpha_mode: wgpu::CompositeAlphaMode::PreMultiplied,
                 view_formats: vec![],
             };
-            wlr_wgpu.surface.configure(wlr_wgpu.device(), &config);
+            layer_wgpu.surface.configure(layer_wgpu.device(), &config);
 
             if !self.secondary_wgpu_configured {
-                let wgpu = wlr_wgpu.clone() as Rc<dyn WgpuSurface>;
+                let wgpu = layer_wgpu.clone() as Rc<dyn WgpuSurface>;
                 self.app_state.initialize_secondary_view_surface(&wgpu);
                 self.secondary_wgpu_configured = true;
             }
 
-            self.surfaces_with_pending_render.push(wlr_wgpu);
+            self.surfaces_with_pending_render.push(layer_wgpu);
 
             // Kick off the animation
             layer.wl_surface().frame(qh, layer.wl_surface().clone());
@@ -289,7 +289,7 @@ impl LayerShellHandler for WlrWaylandEventHandler {
     }
 }
 
-pub struct WlrWgpuSurface {
+pub struct LayerShellWgpuSurface {
     device: wgpu::Device,
     surface: wgpu::Surface<'static>,
     queue: Arc<wgpu::Queue>,
@@ -297,19 +297,19 @@ pub struct WlrWgpuSurface {
     pub layer: LayerSurface,
 }
 
-impl PartialEq for WlrWgpuSurface {
+impl PartialEq for LayerShellWgpuSurface {
     fn eq(&self, other: &Self) -> bool {
         self.layer.wl_surface().id() == other.layer.wl_surface().id()
     }
 }
 
-impl WlrWgpuSurface {
+impl LayerShellWgpuSurface {
     #[instrument]
     fn new(
         conn: Connection,
-        _qh: QueueHandle<WlrWaylandEventHandler>,
+        _qh: QueueHandle<WaylandEventHandler>,
         layer: LayerSurface,
-    ) -> WlrWgpuSurface {
+    ) -> LayerShellWgpuSurface {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
@@ -345,7 +345,7 @@ impl WlrWgpuSurface {
         let swapchain_capabilities = surface.get_capabilities(&adapter);
         let swapchain_format = swapchain_capabilities.formats[0];
 
-        WlrWgpuSurface {
+        LayerShellWgpuSurface {
             device,
             surface,
             queue: Arc::new(queue),
@@ -355,7 +355,7 @@ impl WlrWgpuSurface {
     }
 }
 
-impl WgpuSurface for WlrWgpuSurface {
+impl WgpuSurface for LayerShellWgpuSurface {
     fn device(&self) -> &wgpu::Device {
         &self.device
     }
@@ -373,20 +373,20 @@ impl WgpuSurface for WlrWgpuSurface {
     }
 }
 
-pub struct WlrWaylandEventHandler {
+pub struct WaylandEventHandler {
     ui_msg_rx: Receiver<AppMessageCallback>,
     compositor: CompositorState,
     layer_shell: LayerShell,
     registry_state: RegistryState,
     output_state: OutputState,
 
-    surfaces_with_pending_render: Vec<Rc<WlrWgpuSurface>>,
+    surfaces_with_pending_render: Vec<Rc<LayerShellWgpuSurface>>,
     pending_render_timestamp: u32,
     request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
     primary_layer: Option<LayerSurface>,
     secondary_layer: Option<LayerSurface>,
-    primary_wgpu: Option<Rc<WlrWgpuSurface>>,
-    secondary_wgpu: Option<Rc<WlrWgpuSurface>>,
+    primary_wgpu: Option<Rc<LayerShellWgpuSurface>>,
+    secondary_wgpu: Option<Rc<LayerShellWgpuSurface>>,
     primary_wgpu_configured: bool,
     secondary_wgpu_configured: bool,
     primary_surface_output: Option<ObjectId>,
@@ -394,12 +394,75 @@ pub struct WlrWaylandEventHandler {
     app_state_initialized: bool,
 }
 
-pub struct WlrCanvasContext {
+pub struct LayerShellCanvasContext {
     pub conn: Connection,
-    pub qh: QueueHandle<WlrWaylandEventHandler>,
+    pub qh: QueueHandle<WaylandEventHandler>,
 }
 
-impl GlobalCanvas for WlrWaylandEventHandler {
+/// Test if Wayland with wlr_layer_shell support is available without full initialization.
+pub fn can_use_wayland() -> bool {
+    use wayland_client::Dispatch;
+    use wayland_client::protocol::wl_registry;
+
+    // Test if we can connect to Wayland
+    let conn = match Connection::connect_to_env() {
+        Ok(conn) => conn,
+        Err(_) => return false,
+    };
+
+    // Get the display and registry
+    let display = conn.display();
+    let mut event_queue = conn.new_event_queue();
+    let qh = event_queue.handle();
+
+    // Simple state to track if we found the layer shell global
+    struct GlobalCheck {
+        has_layer_shell: bool,
+    }
+
+    impl Dispatch<wl_registry::WlRegistry, ()> for GlobalCheck {
+        fn event(
+            state: &mut Self,
+            _registry: &wl_registry::WlRegistry,
+            event: wl_registry::Event,
+            _data: &(),
+            _conn: &Connection,
+            _qhandle: &QueueHandle<Self>,
+        ) {
+            if let wl_registry::Event::Global { interface, .. } = event {
+                if interface == "zwlr_layer_shell_v1" {
+                    state.has_layer_shell = true;
+                }
+            }
+        }
+    }
+
+    impl Dispatch<wayland_client::protocol::wl_display::WlDisplay, ()> for GlobalCheck {
+        fn event(
+            _: &mut Self,
+            _: &wayland_client::protocol::wl_display::WlDisplay,
+            _: wayland_client::protocol::wl_display::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+
+    let mut state = GlobalCheck {
+        has_layer_shell: false,
+    };
+    let _registry = display.get_registry(&qh, ());
+
+    // Roundtrip to get all globals
+    if event_queue.roundtrip(&mut state).is_err() {
+        return false;
+    }
+
+    state.has_layer_shell
+}
+
+impl GlobalCanvas for WaylandEventHandler {
     fn app_state(&mut self) -> &mut ApplicationState {
         &mut self.app_state
     }
@@ -414,7 +477,7 @@ impl GlobalCanvas for WlrWaylandEventHandler {
 
     fn apply_panel_layout(&mut self, context: &GlobalCanvasContext) {
         match context {
-            GlobalCanvasContext::Wlr(WlrCanvasContext { conn, qh }) => {
+            GlobalCanvasContext::LayerShell(LayerShellCanvasContext { conn, qh }) => {
                 self.apply_panel_layout(conn, qh);
             }
             _ => panic!("Incorrect context type"),
@@ -427,7 +490,7 @@ impl GlobalCanvas for WlrWaylandEventHandler {
     }
 }
 
-impl WlrWaylandEventHandler {
+impl WaylandEventHandler {
     #[instrument(skip(self))]
     pub fn apply_panel_layout(&mut self, conn: &Connection, qh: &QueueHandle<Self>) {
         // Already destroy existing layers and wgpu surfaces
@@ -490,7 +553,7 @@ impl WlrWaylandEventHandler {
         anchor: Anchor,
         conn: &Connection,
         qh: &QueueHandle<Self>,
-    ) -> Rc<WlrWgpuSurface> {
+    ) -> Rc<LayerShellWgpuSurface> {
         // A layer surface is created from a surface.
         let surface = self.compositor.create_surface(qh);
         // Let mouse events pass through the surface
@@ -526,7 +589,7 @@ impl WlrWaylandEventHandler {
         layer.commit();
 
         let qh = qh.clone();
-        Rc::new(WlrWgpuSurface::new(conn.clone(), qh, layer))
+        Rc::new(LayerShellWgpuSurface::new(conn.clone(), qh, layer))
     }
 
     #[instrument(skip(self))]
@@ -680,40 +743,40 @@ impl WlrWaylandEventHandler {
     }
 }
 
-delegate_compositor!(WlrWaylandEventHandler);
-delegate_output!(WlrWaylandEventHandler);
+delegate_compositor!(WaylandEventHandler);
+delegate_output!(WaylandEventHandler);
 
-delegate_layer!(WlrWaylandEventHandler);
+delegate_layer!(WaylandEventHandler);
 
-delegate_registry!(WlrWaylandEventHandler);
+delegate_registry!(WaylandEventHandler);
 
-impl ProvidesRegistryState for WlrWaylandEventHandler {
+impl ProvidesRegistryState for WaylandEventHandler {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry_state
     }
     registry_handlers![OutputState];
 }
 
-pub struct WlrWaylandEventLoop {
-    event_queue: EventQueue<WlrWaylandEventHandler>,
-    pub state: WlrWaylandEventHandler,
+pub struct WaylandEventLoop {
+    event_queue: EventQueue<WaylandEventHandler>,
+    pub state: WaylandEventHandler,
 }
 
-impl WlrWaylandEventLoop {
+impl WaylandEventLoop {
     #[instrument(skip(app_state, ui_msg_rx, request_redraw_callback))]
     pub fn new(
         app_state: ApplicationState,
         ui_msg_rx: Receiver<AppMessageCallback>,
         request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
-    ) -> WlrWaylandEventLoop {
+    ) -> WaylandEventLoop {
         // All Wayland apps start by connecting the compositor (server).
         let conn = Connection::connect_to_env().expect(
-            "Failed to connect to a Wayland compositor with wlr_layer_shell support \
-            (X.Org and/or Gnome's Mutter are not supported).",
+            "Wayland compositor connection failed despite pre-check. \
+            This shouldn't happen unless the compositor became unavailable.",
         );
 
         // Enumerate the list of globals to get the protocols the server implements.
-        let (globals, event_queue) = registry_queue_init::<WlrWaylandEventHandler>(&conn).unwrap();
+        let (globals, event_queue) = registry_queue_init::<WaylandEventHandler>(&conn).unwrap();
         let qh = event_queue.handle();
 
         // The compositor (not to be confused with the server which is commonly called the compositor) allows
@@ -722,14 +785,14 @@ impl WlrWaylandEventLoop {
             CompositorState::bind(&globals, &qh).expect("wl_compositor is not available");
         // This app uses the wlr layer shell, which may not be available with every compositor.
         let layer_shell = LayerShell::bind(&globals, &qh).expect(
-            "Only Wayland compositors with wlr_layer_shell are supported. \
-            https://wayland.app/protocols/wlr-layer-shell-unstable-v1#compositor-support",
+            "wlr_layer_shell support lost despite pre-check. \
+            This shouldn't happen unless the compositor became unavailable.",
         );
 
         let registry_state = RegistryState::new(&globals);
         let output_state = OutputState::new(&globals, &qh);
 
-        let mut state = WlrWaylandEventHandler {
+        let mut state = WaylandEventHandler {
             ui_msg_rx,
             compositor,
             layer_shell,
@@ -752,7 +815,7 @@ impl WlrWaylandEventLoop {
         state.apply_panel_layout(&conn, &qh);
         state.update_request_redraw_callback(conn, qh);
 
-        WlrWaylandEventLoop { event_queue, state }
+        WaylandEventLoop { event_queue, state }
     }
 
     #[instrument(skip(self))]

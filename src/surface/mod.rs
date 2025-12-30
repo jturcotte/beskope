@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use wayland::WlrCanvasContext;
+use wayland::LayerShellCanvasContext;
 
 use crate::{ApplicationState, ui};
 
@@ -18,7 +18,7 @@ pub trait WgpuSurface {
 }
 
 pub enum GlobalCanvasContext {
-    Wlr(WlrCanvasContext),
+    LayerShell(LayerShellCanvasContext),
     Slint(()),
 }
 

@@ -456,7 +456,7 @@ impl ApplicationState {
 #[allow(clippy::type_complexity)]
 enum AppMessageCallback {
     ApplicationState(Box<dyn FnOnce(&mut ApplicationState) + Send>),
-    WlrGlobalCanvas(Box<dyn FnOnce(&mut dyn GlobalCanvas, GlobalCanvasContext) + Send>),
+    LayerShellGlobalCanvas(Box<dyn FnOnce(&mut dyn GlobalCanvas, GlobalCanvasContext) + Send>),
     SlintGlobalCanvas(Box<dyn FnOnce(&mut dyn GlobalCanvas, GlobalCanvasContext) + Send>),
 }
 
@@ -466,8 +466,8 @@ impl std::fmt::Debug for AppMessageCallback {
             AppMessageCallback::ApplicationState(_) => {
                 write!(f, "ApplicationState(<closure>)")
             }
-            AppMessageCallback::WlrGlobalCanvas(_) => {
-                write!(f, "WlrGlobalCanvas(<closure>)")
+            AppMessageCallback::LayerShellGlobalCanvas(_) => {
+                write!(f, "LayerShellGlobalCanvas(<closure>)")
             }
             AppMessageCallback::SlintGlobalCanvas(_) => {
                 write!(f, "SlintGlobalCanvas(<closure>)")
@@ -569,27 +569,37 @@ pub fn main() {
             request_redraw_callback.lock().unwrap()();
         }
     };
-    let send_canvas_msg = {
-        let wlr = !args.window;
-        let app_msg_tx = app_msg_tx.clone();
-        let request_redraw_callback = request_redraw_callback.clone();
-        move |f| {
-            let msg = if wlr {
-                AppMessageCallback::WlrGlobalCanvas(f)
-            } else {
-                AppMessageCallback::SlintGlobalCanvas(f)
-            };
-            app_msg_tx.send(msg).unwrap();
-            // FIXME: This queues additional frame requests, this should check if it's stopped or not.
-            request_redraw_callback.lock().unwrap()();
-        }
-    };
 
     let config = match ui::Configuration::load() {
         Ok(config) => config,
         Err(e) => {
             eprintln!("Failed to load configuration: {e}");
             ui::Configuration::default()
+        }
+    };
+
+    // Check if Wayland is available before creating the UI
+    let can_use_wayland_layer_shell = surface::wayland::can_use_wayland();
+    if !args.window && !can_use_wayland_layer_shell {
+        println!(
+            "Wayland compositor with wlr-layer-shell protocol support not available, falling back to windowed mode."
+        );
+    }
+    let use_wayland_layer_shell = !args.window && can_use_wayland_layer_shell;
+
+    // Create the appropriate canvas message sender based on the mode we'll use
+    let send_canvas_msg = {
+        let app_msg_tx = app_msg_tx.clone();
+        let request_redraw_callback = request_redraw_callback.clone();
+        move |f| {
+            let msg = if use_wayland_layer_shell {
+                AppMessageCallback::LayerShellGlobalCanvas(f)
+            } else {
+                AppMessageCallback::SlintGlobalCanvas(f)
+            };
+            app_msg_tx.send(msg).unwrap();
+            // FIXME: This queues additional frame requests, this should check if it's stopped or not.
+            request_redraw_callback.lock().unwrap()();
         }
     };
 
@@ -657,13 +667,13 @@ pub fn main() {
     // Keep the window ownership on the stack, it owns everything else when rendering inside a Slint window.
     let canvas_window = ui::CanvasWindow::new().unwrap();
 
-    if !args.window {
+    if use_wayland_layer_shell {
         let config_window_weak = config_window.as_weak();
         let request_redraw_callback = request_redraw_callback.clone();
         let config = config.clone();
-        // Spawn the wlr panel rendering in a separate thread, this is supported with wayland
+        // Spawn the layer shell panel rendering in a separate thread, this is supported with wayland
         std::thread::Builder::new()
-            .name("wlr-render".into())
+            .name("layer-render".into())
             .spawn(move || {
                 let app_state = ApplicationState::new(
                     config,
@@ -672,7 +682,7 @@ pub fn main() {
                     config_window_weak,
                 );
 
-                let mut layers_even_queue = surface::wayland::WlrWaylandEventLoop::new(
+                let mut layers_even_queue = surface::wayland::WaylandEventLoop::new(
                     app_state,
                     app_msg_rx,
                     request_redraw_callback,
@@ -690,7 +700,7 @@ pub fn main() {
         );
     }
 
-    if args.window {
+    if !use_wayland_layer_shell {
         slint::run_event_loop().unwrap();
     } else {
         // Tie the main thread to the config window, since winit needs to be there on some platforms.

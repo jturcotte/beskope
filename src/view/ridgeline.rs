@@ -500,8 +500,8 @@ impl<M: AudioModel> View for RidgelineView<M> {
     ) {
         // Select the appropriate ridgeline config based on the view's style
         let ridgeline_config = match self.style {
-            ui::Style::Ridgeline => &config.ridgeline,
             ui::Style::RidgelineFrequency => &config.ridgeline_frequency,
+            ui::Style::Ridgeline => &config.ridgeline,
             _ => &config.ridgeline, // Fallback (shouldn't happen)
         };
 

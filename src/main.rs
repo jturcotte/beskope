@@ -204,18 +204,6 @@ impl ApplicationState {
         }
 
         let mut view: Box<dyn View> = match style {
-            ui::Style::Ridgeline => {
-                let model = WaveformModel::new(48_000 / 30);
-                Box::new(RidgelineView::new(
-                    device,
-                    queue,
-                    swapchain_format,
-                    render_surface,
-                    is_left_channel,
-                    ui::Style::Ridgeline,
-                    model,
-                ))
-            }
             ui::Style::RidgelineFrequency => {
                 let model = ConstantQTransformModel::new(self.cqt_left.lock().unwrap().len());
                 Box::new(RidgelineView::new(
@@ -225,6 +213,18 @@ impl ApplicationState {
                     render_surface,
                     is_left_channel,
                     ui::Style::RidgelineFrequency,
+                    model,
+                ))
+            }
+            ui::Style::Ridgeline => {
+                let model = WaveformModel::new(48_000 / 30);
+                Box::new(RidgelineView::new(
+                    device,
+                    queue,
+                    swapchain_format,
+                    render_surface,
+                    is_left_channel,
+                    ui::Style::Ridgeline,
                     model,
                 ))
             }

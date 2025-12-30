@@ -89,16 +89,16 @@ impl GlobalCanvas for SlintGlobalCanvas {
     fn apply_panel_exclusive_ratio_change(&mut self) {
         let app_state = self.app_state.as_ref().unwrap();
         let padding_ratio = match app_state.config.style {
-            ui::Style::Compressed => {
-                app_state.config.compressed.width_ratio
-                    * app_state.config.compressed.exclusive_ratio
+            ui::Style::RidgelineFrequency => {
+                app_state.config.ridgeline_frequency.width_ratio
+                    * app_state.config.ridgeline_frequency.exclusive_ratio
             }
             ui::Style::Ridgeline => {
                 app_state.config.ridgeline.width_ratio * app_state.config.ridgeline.exclusive_ratio
             }
-            ui::Style::RidgelineFrequency => {
-                app_state.config.ridgeline_frequency.width_ratio
-                    * app_state.config.ridgeline_frequency.exclusive_ratio
+            ui::Style::Compressed => {
+                app_state.config.compressed.width_ratio
+                    * app_state.config.compressed.exclusive_ratio
             }
         };
 

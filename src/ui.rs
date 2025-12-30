@@ -33,10 +33,10 @@ fn ridgeline_default() -> RidgelineConfig {
         layer: PanelLayer::Bottom,
         width_ratio: ridgeline_width_ratio_default(),
         exclusive_ratio: 0.6,
-        fill_color: slint::Color::from_argb_u8(205, 64, 112, 172),
-        stroke_color: slint::Color::from_argb_u8(205, 0, 0, 0),
-        highlight_color: slint::Color::from_argb_u8(205, 255, 255, 255),
-        horizon_offset: 0.0,
+        fill_color: slint::Color::from_argb_u8(205, 0, 42, 127),
+        stroke_color: slint::Color::from_argb_u8(230, 255, 255, 255),
+        highlight_color: slint::Color::from_argb_u8(255, 0, 171, 255),
+        horizon_offset: -1.0,
     }
 }
 
@@ -102,19 +102,19 @@ pub const COMPRESSED_TIME_CURVE_CONTROL_POINTS: usize =
 impl Default for Configuration {
     fn default() -> Self {
         Self {
-            style: Style::Ridgeline,
+            style: Style::RidgelineFrequency,
             general: GeneralConfig {
                 channels: RenderChannels::Both,
                 layout: PanelLayout::TwoPanels,
             },
-            ridgeline: ridgeline_default(),
             ridgeline_frequency: ridgeline_default(),
+            ridgeline: ridgeline_default(),
             compressed: CompressedConfig {
                 layer: PanelLayer::Top,
                 width_ratio: compressed_width_ratio_default(),
                 exclusive_ratio: 0.55,
-                fill_color: slint::Color::from_argb_u8(153, 128, 128, 128),
-                stroke_color: slint::Color::from_argb_u8(205, 0, 0, 0),
+                fill_color: slint::Color::from_argb_u8(205, 0, 102, 205),
+                stroke_color: slint::Color::from_argb_u8(230, 255, 255, 255),
                 time_curve: TimeCurveConfig {
                     control_points: vec![
                         ControlPoint { t: -3.0, v: 0.0 },
@@ -263,14 +263,14 @@ pub fn init(
         let send_to_canvas = send_to_canvas.clone();
         move |tab_style, config| {
             send_to_canvas(Box::new(move |handler, _| {
-                if tab_style == Style::Ridgeline {
-                    handler.app_state().config.ridgeline.layer = config;
-                    if handler.app_state().config.style == Style::Ridgeline {
-                        handler.set_panel_layer(config);
-                    }
-                } else if tab_style == Style::RidgelineFrequency {
+                if tab_style == Style::RidgelineFrequency {
                     handler.app_state().config.ridgeline_frequency.layer = config;
                     if handler.app_state().config.style == Style::RidgelineFrequency {
+                        handler.set_panel_layer(config);
+                    }
+                } else if tab_style == Style::Ridgeline {
+                    handler.app_state().config.ridgeline.layer = config;
+                    if handler.app_state().config.style == Style::Ridgeline {
                         handler.set_panel_layer(config);
                     }
                 }
@@ -281,22 +281,22 @@ pub fn init(
         let send_to_canvas = send_to_canvas.clone();
         move |tab_style, config| {
             send_to_canvas(Box::new(move |handler, _| {
-                if tab_style == Style::Ridgeline {
-                    handler.app_state().config.ridgeline.width_ratio = config;
-                    handler
-                        .app_state()
-                        .lazy_config_changes
-                        .insert(RIDGELINE_WIDTH_RATIO);
-                    if handler.app_state().config.style == Style::Ridgeline {
-                        handler.apply_panel_width_change();
-                    }
-                } else if tab_style == Style::RidgelineFrequency {
+                if tab_style == Style::RidgelineFrequency {
                     handler.app_state().config.ridgeline_frequency.width_ratio = config;
                     handler
                         .app_state()
                         .lazy_config_changes
                         .insert(RIDGELINE_WIDTH_RATIO);
                     if handler.app_state().config.style == Style::RidgelineFrequency {
+                        handler.apply_panel_width_change();
+                    }
+                } else if tab_style == Style::Ridgeline {
+                    handler.app_state().config.ridgeline.width_ratio = config;
+                    handler
+                        .app_state()
+                        .lazy_config_changes
+                        .insert(RIDGELINE_WIDTH_RATIO);
+                    if handler.app_state().config.style == Style::Ridgeline {
                         handler.apply_panel_width_change();
                     }
                 }
@@ -307,18 +307,18 @@ pub fn init(
         let send_to_canvas = send_to_canvas.clone();
         move |tab_style, config| {
             send_to_canvas(Box::new(move |handler, _| {
-                if tab_style == Style::Ridgeline {
-                    handler.app_state().config.ridgeline.exclusive_ratio = config;
-                    if handler.app_state().config.style == Style::Ridgeline {
-                        handler.apply_panel_exclusive_ratio_change();
-                    }
-                } else if tab_style == Style::RidgelineFrequency {
+                if tab_style == Style::RidgelineFrequency {
                     handler
                         .app_state()
                         .config
                         .ridgeline_frequency
                         .exclusive_ratio = config;
                     if handler.app_state().config.style == Style::RidgelineFrequency {
+                        handler.apply_panel_exclusive_ratio_change();
+                    }
+                } else if tab_style == Style::Ridgeline {
+                    handler.app_state().config.ridgeline.exclusive_ratio = config;
+                    if handler.app_state().config.style == Style::Ridgeline {
                         handler.apply_panel_exclusive_ratio_change();
                     }
                 }
@@ -329,11 +329,11 @@ pub fn init(
         let send_to_app = send_to_app.clone();
         move |tab_style, config| {
             send_to_app(Box::new(move |app_state| {
-                if tab_style == Style::Ridgeline {
-                    app_state.config.ridgeline.fill_color = config;
-                    app_state.lazy_config_changes.insert(RIDGELINE_FILL_COLOR);
-                } else if tab_style == Style::RidgelineFrequency {
+                if tab_style == Style::RidgelineFrequency {
                     app_state.config.ridgeline_frequency.fill_color = config;
+                    app_state.lazy_config_changes.insert(RIDGELINE_FILL_COLOR);
+                } else if tab_style == Style::Ridgeline {
+                    app_state.config.ridgeline.fill_color = config;
                     app_state.lazy_config_changes.insert(RIDGELINE_FILL_COLOR);
                 }
             }));
@@ -343,11 +343,11 @@ pub fn init(
         let send_to_app = send_to_app.clone();
         move |tab_style, config| {
             send_to_app(Box::new(move |app_state| {
-                if tab_style == Style::Ridgeline {
-                    app_state.config.ridgeline.stroke_color = config;
-                    app_state.lazy_config_changes.insert(RIDGELINE_STROKE_COLOR);
-                } else if tab_style == Style::RidgelineFrequency {
+                if tab_style == Style::RidgelineFrequency {
                     app_state.config.ridgeline_frequency.stroke_color = config;
+                    app_state.lazy_config_changes.insert(RIDGELINE_STROKE_COLOR);
+                } else if tab_style == Style::Ridgeline {
+                    app_state.config.ridgeline.stroke_color = config;
                     app_state.lazy_config_changes.insert(RIDGELINE_STROKE_COLOR);
                 }
             }));
@@ -357,13 +357,13 @@ pub fn init(
         let send_to_app = send_to_app.clone();
         move |tab_style, config| {
             send_to_app(Box::new(move |app_state| {
-                if tab_style == Style::Ridgeline {
-                    app_state.config.ridgeline.highlight_color = config;
+                if tab_style == Style::RidgelineFrequency {
+                    app_state.config.ridgeline_frequency.highlight_color = config;
                     app_state
                         .lazy_config_changes
                         .insert(RIDGELINE_HIGHLIGHT_COLOR);
-                } else if tab_style == Style::RidgelineFrequency {
-                    app_state.config.ridgeline_frequency.highlight_color = config;
+                } else if tab_style == Style::Ridgeline {
+                    app_state.config.ridgeline.highlight_color = config;
                     app_state
                         .lazy_config_changes
                         .insert(RIDGELINE_HIGHLIGHT_COLOR);
@@ -375,13 +375,13 @@ pub fn init(
         let send_to_app = send_to_app.clone();
         move |tab_style, offset| {
             send_to_app(Box::new(move |app_state| {
-                if tab_style == Style::Ridgeline {
-                    app_state.config.ridgeline.horizon_offset = offset;
+                if tab_style == Style::RidgelineFrequency {
+                    app_state.config.ridgeline_frequency.horizon_offset = offset;
                     app_state
                         .lazy_config_changes
                         .insert(RIDGELINE_HORIZON_OFFSET);
-                } else if tab_style == Style::RidgelineFrequency {
-                    app_state.config.ridgeline_frequency.horizon_offset = offset;
+                } else if tab_style == Style::Ridgeline {
+                    app_state.config.ridgeline.horizon_offset = offset;
                     app_state
                         .lazy_config_changes
                         .insert(RIDGELINE_HORIZON_OFFSET);
@@ -500,14 +500,6 @@ impl ConfigurationWindow {
         self.invoke_set_panel_layout(config.general.layout);
 
         // Update both waveform and frequency tabs with their respective configs
-        self.invoke_set_ridgeline_waveform_panel_layer(config.ridgeline.layer);
-        self.invoke_set_ridgeline_waveform_panel_width(config.ridgeline.width_ratio);
-        self.invoke_set_ridgeline_waveform_panel_exclusive_ratio(config.ridgeline.exclusive_ratio);
-        self.invoke_set_ridgeline_waveform_fill_color(config.ridgeline.fill_color);
-        self.invoke_set_ridgeline_waveform_stroke_color(config.ridgeline.stroke_color);
-        self.invoke_set_ridgeline_waveform_highlight_color(config.ridgeline.highlight_color);
-        self.invoke_set_ridgeline_waveform_horizon_offset(config.ridgeline.horizon_offset);
-
         self.invoke_set_ridgeline_frequency_panel_layer(config.ridgeline_frequency.layer);
         self.invoke_set_ridgeline_frequency_panel_width(config.ridgeline_frequency.width_ratio);
         self.invoke_set_ridgeline_frequency_panel_exclusive_ratio(
@@ -521,6 +513,15 @@ impl ConfigurationWindow {
         self.invoke_set_ridgeline_frequency_horizon_offset(
             config.ridgeline_frequency.horizon_offset,
         );
+
+        self.invoke_set_ridgeline_waveform_panel_layer(config.ridgeline.layer);
+        self.invoke_set_ridgeline_waveform_panel_width(config.ridgeline.width_ratio);
+        self.invoke_set_ridgeline_waveform_panel_exclusive_ratio(config.ridgeline.exclusive_ratio);
+        self.invoke_set_ridgeline_waveform_fill_color(config.ridgeline.fill_color);
+        self.invoke_set_ridgeline_waveform_stroke_color(config.ridgeline.stroke_color);
+        self.invoke_set_ridgeline_waveform_highlight_color(config.ridgeline.highlight_color);
+        self.invoke_set_ridgeline_waveform_horizon_offset(config.ridgeline.horizon_offset);
+
         self.invoke_set_compressed_panel_layer(config.compressed.layer);
         self.invoke_set_compressed_panel_width(config.compressed.width_ratio);
         self.invoke_set_compressed_panel_exclusive_ratio(config.compressed.exclusive_ratio);

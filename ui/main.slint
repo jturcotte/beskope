@@ -7,8 +7,8 @@ export * from "canvas.slint";
 
 @rust-attr(derive(serde::Serialize, serde::Deserialize))
 enum Style {
-    Ridgeline,
     RidgelineFrequency,
+    Ridgeline,
     Compressed,
 }
 
@@ -458,15 +458,6 @@ export component ConfigurationWindow inherits Dialog {
     callback set_panel_layout <=> layout_cb.set_panel_layout;
     callback set_panel_channels <=> channels_cb.set_panel_channels;
 
-    // Waveform ridgeline callbacks
-    callback set_ridgeline_waveform_panel_layer <=> ridgeline_waveform_tab.set_panel_layer;
-    callback set_ridgeline_waveform_panel_width <=> ridgeline_waveform_tab.set_panel_width;
-    callback set_ridgeline_waveform_panel_exclusive_ratio <=> ridgeline_waveform_tab.set_panel_exclusive_ratio;
-    callback set_ridgeline_waveform_fill_color <=> ridgeline_waveform_tab.set_fill_color;
-    callback set_ridgeline_waveform_highlight_color <=> ridgeline_waveform_tab.set_highlight_color;
-    callback set_ridgeline_waveform_stroke_color <=> ridgeline_waveform_tab.set_stroke_color;
-    callback set_ridgeline_waveform_horizon_offset <=> ridgeline_waveform_tab.set_horizon_offset;
-
     // Frequency ridgeline callbacks
     callback set_ridgeline_frequency_panel_layer <=> ridgeline_frequency_tab.set_panel_layer;
     callback set_ridgeline_frequency_panel_width <=> ridgeline_frequency_tab.set_panel_width;
@@ -475,6 +466,15 @@ export component ConfigurationWindow inherits Dialog {
     callback set_ridgeline_frequency_highlight_color <=> ridgeline_frequency_tab.set_highlight_color;
     callback set_ridgeline_frequency_stroke_color <=> ridgeline_frequency_tab.set_stroke_color;
     callback set_ridgeline_frequency_horizon_offset <=> ridgeline_frequency_tab.set_horizon_offset;
+
+    // Waveform ridgeline callbacks
+    callback set_ridgeline_waveform_panel_layer <=> ridgeline_waveform_tab.set_panel_layer;
+    callback set_ridgeline_waveform_panel_width <=> ridgeline_waveform_tab.set_panel_width;
+    callback set_ridgeline_waveform_panel_exclusive_ratio <=> ridgeline_waveform_tab.set_panel_exclusive_ratio;
+    callback set_ridgeline_waveform_fill_color <=> ridgeline_waveform_tab.set_fill_color;
+    callback set_ridgeline_waveform_highlight_color <=> ridgeline_waveform_tab.set_highlight_color;
+    callback set_ridgeline_waveform_stroke_color <=> ridgeline_waveform_tab.set_stroke_color;
+    callback set_ridgeline_waveform_horizon_offset <=> ridgeline_waveform_tab.set_horizon_offset;
 
     callback set_compressed_panel_layer <=> compressed_tab.set_panel_layer;
     callback set_compressed_panel_width <=> compressed_tab.set_panel_width;
@@ -505,16 +505,16 @@ export component ConfigurationWindow inherits Dialog {
                 }
                 style_cb := ComboBox {
                     model: [
-                        "Ridgeline Waveform",
                         "Ridgeline Frequency",
+                        "Ridgeline Waveform",
                         "Compressed Line",
                     ];
                     selected(current-value) => {
                         if (self.current-index == 0) {
-                            Backend.style_changed(Style.Ridgeline);
+                            Backend.style_changed(Style.RidgelineFrequency);
                             style_config_tabs.current-index = 0;
                         } else if (self.current-index == 1) {
-                            Backend.style_changed(Style.RidgelineFrequency);
+                            Backend.style_changed(Style.Ridgeline);
                             style_config_tabs.current-index = 1;
                         } else if (self.current-index == 2) {
                             Backend.style_changed(Style.Compressed);
@@ -523,10 +523,10 @@ export component ConfigurationWindow inherits Dialog {
                     }
                     callback set_style(Style);
                     set_style(style) => {
-                        if (style == Style.Ridgeline) {
+                        if (style == Style.RidgelineFrequency) {
                             self.current-index = 0;
                             style_config_tabs.current-index = 0;
-                        } else if (style == Style.RidgelineFrequency) {
+                        } else if (style == Style.Ridgeline) {
                             self.current-index = 1;
                             style_config_tabs.current-index = 1;
                         } else if (style == Style.Compressed) {
@@ -607,12 +607,12 @@ export component ConfigurationWindow inherits Dialog {
                 style_config_tabs := TabWidget {
                     colspan: 2;
                     Tab {
-                        title: "Ridgeline Waveform Settings";
-                        ridgeline_waveform_tab := RidgelineSettings { tab_style: Style.Ridgeline; }
-                    }
-                    Tab {
                         title: "Ridgeline Frequency Settings";
                         ridgeline_frequency_tab := RidgelineSettings { tab_style: Style.RidgelineFrequency; }
+                    }
+                    Tab {
+                        title: "Ridgeline Waveform Settings";
+                        ridgeline_waveform_tab := RidgelineSettings { tab_style: Style.Ridgeline; }
                     }
                     Tab {
                         title: "Compressed Line Settings";

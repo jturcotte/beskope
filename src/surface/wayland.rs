@@ -580,9 +580,9 @@ impl WaylandEventHandler {
         layer.set_anchor(anchor);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         let panel_layer = match self.app_state.config.style {
-            ui::Style::Compressed => self.app_state.config.compressed.layer,
-            ui::Style::Ridgeline => self.app_state.config.ridgeline.layer,
             ui::Style::RidgelineFrequency => self.app_state.config.ridgeline_frequency.layer,
+            ui::Style::Ridgeline => self.app_state.config.ridgeline.layer,
+            ui::Style::Compressed => self.app_state.config.compressed.layer,
         };
 
         // Set width to 1 pixel until we get an output and size assigned by surface_enter
@@ -629,9 +629,9 @@ impl WaylandEventHandler {
     pub fn apply_panel_width_change(&mut self) {
         // Compute panel width (ratio from configuration) into pixels depending on layout
         let panel_width_ratio = match self.app_state.config.style {
-            ui::Style::Compressed => self.app_state.config.compressed.width_ratio,
-            ui::Style::Ridgeline => self.app_state.config.ridgeline.width_ratio,
             ui::Style::RidgelineFrequency => self.app_state.config.ridgeline_frequency.width_ratio,
+            ui::Style::Ridgeline => self.app_state.config.ridgeline.width_ratio,
+            ui::Style::Compressed => self.app_state.config.compressed.width_ratio,
         };
 
         let (width, height) = match self.app_state.config.general.layout {
@@ -660,17 +660,17 @@ impl WaylandEventHandler {
     #[instrument(skip(self))]
     pub fn apply_panel_exclusive_ratio_change(&mut self) {
         let (panel_width_ratio, exclusive_ratio) = match self.app_state.config.style {
-            ui::Style::Compressed => (
-                self.app_state.config.compressed.width_ratio,
-                self.app_state.config.compressed.exclusive_ratio,
+            ui::Style::RidgelineFrequency => (
+                self.app_state.config.ridgeline_frequency.width_ratio,
+                self.app_state.config.ridgeline_frequency.exclusive_ratio,
             ),
             ui::Style::Ridgeline => (
                 self.app_state.config.ridgeline.width_ratio,
                 self.app_state.config.ridgeline.exclusive_ratio,
             ),
-            ui::Style::RidgelineFrequency => (
-                self.app_state.config.ridgeline_frequency.width_ratio,
-                self.app_state.config.ridgeline_frequency.exclusive_ratio,
+            ui::Style::Compressed => (
+                self.app_state.config.compressed.width_ratio,
+                self.app_state.config.compressed.exclusive_ratio,
             ),
         };
 

@@ -55,16 +55,14 @@ struct ApplicationState {
     audio_transform_control: Arc<(Mutex<(ChannelTransformMode, ChannelTransformMode)>, Condvar)>,
     cqt_left: Arc<Mutex<Vec<Complex<f64>>>>,
     cqt_right: Arc<Mutex<Vec<Complex<f64>>>>,
-    request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
     config_window: slint::Weak<ui::ConfigurationWindow>,
 }
 
 impl ApplicationState {
-    #[instrument(skip(request_redraw_callback, config_window))]
+    #[instrument(skip(config_window))]
     fn new(
         config: ui::Configuration,
         window_mode: WindowMode,
-        request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
         config_window: slint::Weak<ui::ConfigurationWindow>,
     ) -> ApplicationState {
         ApplicationState {
@@ -85,7 +83,6 @@ impl ApplicationState {
             )),
             cqt_left: Arc::new(Mutex::new(Vec::new())),
             cqt_right: Arc::new(Mutex::new(Vec::new())),
-            request_redraw_callback,
             config_window,
         }
     }
@@ -104,8 +101,11 @@ impl ApplicationState {
         self.config = config;
     }
 
-    #[instrument(skip(self))]
-    fn initialize_audio_and_transform_thread(&mut self) {
+    #[instrument(skip(self, request_redraw_callback))]
+    fn initialize_audio_and_transform_thread(
+        &mut self,
+        request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
+    ) {
         let (audio_input_ringbuf_prod, audio_input_ringbuf_cons) =
             HeapRb::<f32>::new(48_000 * NUM_CHANNELS).split();
         let (transform_thread_ringbuf_prod, transform_thread_ringbuf_cons) =
@@ -117,7 +117,6 @@ impl ApplicationState {
             .name("pw-capture".into())
             .spawn({
                 let animation_stopped = self.animation_stopped.clone();
-                let request_redraw_callback = self.request_redraw_callback.clone();
                 let audio_transform_control = self.audio_transform_control.clone();
                 let sample_rate_tx = sample_rate_tx.clone();
                 move || {
@@ -681,12 +680,8 @@ pub fn main() {
         std::thread::Builder::new()
             .name("layer-render".into())
             .spawn(move || {
-                let app_state = ApplicationState::new(
-                    config,
-                    WindowMode::WindowPerPanel,
-                    request_redraw_callback.clone(),
-                    config_window_weak,
-                );
+                let app_state =
+                    ApplicationState::new(config, WindowMode::WindowPerPanel, config_window_weak);
 
                 let mut layers_even_queue = surface::wayland::WaylandEventLoop::new(
                     app_state,

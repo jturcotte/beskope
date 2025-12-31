@@ -5,6 +5,7 @@ use std::{
     rc::Rc,
     sync::{
         Arc, Mutex,
+        atomic::Ordering,
         mpsc::{self, Receiver},
     },
 };
@@ -53,11 +54,11 @@ struct SlintGlobalCanvas {
     app_state: Option<ApplicationState>,
     wgpu_surface: Option<Rc<SlintWgpuSurface>>,
     window: slint::Weak<ui::CanvasWindow>,
+    frame_timer: std::time::Instant,
 }
 
 impl SlintGlobalCanvas {
     fn process_messages(&mut self) {
-        // Process UI callbacks here since some require the wayland connection to recreate windows.
         while let Ok(message) = self.ui_msg_rx.try_recv() {
             match message {
                 AppMessageCallback::ApplicationState(closure) => {
@@ -142,6 +143,7 @@ pub fn initialize_slint_surface(
         app_state: None,
         wgpu_surface: None,
         window: canvas_window_weak.clone(),
+        frame_timer: std::time::Instant::now(),
     };
 
     let (mpris_msg_tx, mpris_msg_rx) = mpsc::channel::<MprisMessage>();
@@ -335,6 +337,18 @@ pub fn initialize_slint_surface(
         }
     });
 
+    // When audio restarted after a while, restart the animation notifier loop.
+    *request_redraw_callback.lock().unwrap() = {
+        let window_weak = slint_global_canvas.window.clone();
+        Arc::new(move || {
+            window_weak
+                .upgrade_in_event_loop(move |window| {
+                    window.window().request_redraw();
+                })
+                .unwrap();
+        })
+    };
+
     canvas_window
         .window()
         .set_rendering_notifier(move |state, graphics_api| {
@@ -342,17 +356,16 @@ pub fn initialize_slint_surface(
                 slint::RenderingState::RenderingSetup => {
                     if slint_global_canvas.app_state.is_none() {
                         // Initialize the application state
-                        let request_redraw_callback = request_redraw_callback.clone();
                         let config = config_holder
                             .take()
                             .expect("Can't initialize the app state twice");
                         let mut app_state = ApplicationState::new(
                             config,
                             WindowMode::WindowPerScene,
-                            request_redraw_callback,
                             config_window_weak.clone(),
                         );
-                        app_state.initialize_audio_and_transform_thread();
+                        app_state
+                            .initialize_audio_and_transform_thread(request_redraw_callback.clone());
                         slint_global_canvas.app_state = Some(app_state);
                     }
                 }
@@ -365,6 +378,9 @@ pub fn initialize_slint_surface(
                         ..
                     } = graphics_api
                     {
+                        // First get the tick before spending time on anything else to keep it consistent.
+                        let tick = slint_global_canvas.frame_timer.elapsed().as_millis() as u32;
+
                         slint_global_canvas.process_messages();
 
                         if slint_global_canvas.wgpu_surface.is_none() {
@@ -378,10 +394,7 @@ pub fn initialize_slint_surface(
 
                         let app_state = slint_global_canvas.app_state.as_mut().unwrap();
 
-                        let window = slint_global_canvas.window.upgrade().unwrap();
-                        let tick = window.get_tick();
-
-                        app_state.process_audio(tick as u32);
+                        app_state.process_audio(tick);
 
                         app_state
                             .update_screen_size(surface_texture.width(), surface_texture.height());
@@ -396,6 +409,14 @@ pub fn initialize_slint_surface(
                             a: 1.0,
                         };
                         app_state.render_with_clear_color(&wgpu, surface_texture, clear_color);
+
+                        if !app_state.animation_stopped.load(Ordering::Relaxed) {
+                            // Request a new frame
+                            let window = slint_global_canvas.window.upgrade().unwrap();
+                            window.window().request_redraw();
+                        } else {
+                            app_state.hide_fps_counters();
+                        }
                     }
                 }
                 _ => {}

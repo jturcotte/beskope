@@ -236,7 +236,8 @@ impl LayerShellHandler for WaylandEventHandler {
     ) {
         if !self.app_state_initialized {
             self.app_state_initialized = true;
-            self.app_state.initialize_audio_and_transform_thread();
+            self.app_state
+                .initialize_audio_and_transform_thread(self.request_redraw_callback.clone());
         }
 
         let (new_width, new_height) = configure.new_size;

@@ -14,7 +14,7 @@ use std::collections::HashSet;
 use std::io::prelude::*;
 use std::rc::Rc;
 use std::sync::Mutex;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar};
 use std::thread;
@@ -64,6 +64,7 @@ impl ApplicationState {
         config: ui::Configuration,
         window_mode: WindowMode,
         config_window: slint::Weak<ui::ConfigurationWindow>,
+        animation_stopped: Arc<AtomicBool>,
     ) -> ApplicationState {
         ApplicationState {
             config,
@@ -71,7 +72,7 @@ impl ApplicationState {
             lazy_config_changes: HashSet::new(),
             primary_view_surface: None,
             secondary_view_surface: None,
-            animation_stopped: Arc::new(AtomicBool::new(false)),
+            animation_stopped,
             left_view: None,
             right_view: None,
             screen_size: (1, 1),
@@ -564,22 +565,30 @@ pub fn main() {
     let (app_msg_tx, app_msg_rx) = mpsc::channel::<AppMessageCallback>();
     let request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>> =
         Arc::new(Mutex::new(Arc::new(|| {})));
+    let animation_stopped = Arc::new(AtomicBool::new(false));
 
     let send_msg = {
         let app_msg_tx = app_msg_tx.clone();
         let request_redraw_callback = request_redraw_callback.clone();
+        let animation_stopped = animation_stopped.clone();
         move |msg| {
             let _ = app_msg_tx.send(msg);
-            request_redraw_callback.lock().unwrap()();
+            // Only request a redraw if the animation is currently stopped to avoid double frame requests that would be accumulated by the compositor.
+            if animation_stopped.load(Ordering::Relaxed) {
+                request_redraw_callback.lock().unwrap()();
+            }
         }
     };
     let send_app_msg = {
         let app_msg_tx = app_msg_tx.clone();
         let request_redraw_callback = request_redraw_callback.clone();
+        let animation_stopped = animation_stopped.clone();
         move |f| {
             let msg = AppMessageCallback::ApplicationState(f);
             let _ = app_msg_tx.send(msg);
-            request_redraw_callback.lock().unwrap()();
+            if animation_stopped.load(Ordering::Relaxed) {
+                request_redraw_callback.lock().unwrap()();
+            }
         }
     };
 
@@ -596,6 +605,7 @@ pub fn main() {
     let send_canvas_msg = {
         let app_msg_tx = app_msg_tx.clone();
         let request_redraw_callback = request_redraw_callback.clone();
+        let animation_stopped = animation_stopped.clone();
         move |f| {
             let msg = if use_wayland_layer_shell {
                 AppMessageCallback::LayerShellGlobalCanvas(f)
@@ -603,8 +613,9 @@ pub fn main() {
                 AppMessageCallback::SlintGlobalCanvas(f)
             };
             let _ = app_msg_tx.send(msg);
-            // FIXME: This queues additional frame requests, this should check if it's stopped or not.
-            request_redraw_callback.lock().unwrap()();
+            if animation_stopped.load(Ordering::Relaxed) {
+                request_redraw_callback.lock().unwrap()();
+            }
         }
     };
 
@@ -680,8 +691,12 @@ pub fn main() {
         std::thread::Builder::new()
             .name("layer-render".into())
             .spawn(move || {
-                let app_state =
-                    ApplicationState::new(config, WindowMode::WindowPerPanel, config_window_weak);
+                let app_state = ApplicationState::new(
+                    config,
+                    WindowMode::WindowPerPanel,
+                    config_window_weak,
+                    animation_stopped,
+                );
 
                 let mut layers_even_queue = surface::wayland::WaylandEventLoop::new(
                     app_state,
@@ -698,6 +713,7 @@ pub fn main() {
             canvas_window,
             config_window.as_weak(),
             request_redraw_callback,
+            animation_stopped,
         );
     }
 

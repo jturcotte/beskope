@@ -5,7 +5,7 @@ use std::{
     rc::Rc,
     sync::{
         Arc, Mutex,
-        atomic::Ordering,
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver},
     },
 };
@@ -134,6 +134,7 @@ pub fn initialize_slint_surface(
     canvas_window: ui::CanvasWindow,
     config_window_weak: slint::Weak<ui::ConfigurationWindow>,
     request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>,
+    animation_stopped: Arc<AtomicBool>,
 ) {
     let canvas_window_weak = canvas_window.as_weak();
     let mut config_holder = Some(config);
@@ -363,6 +364,7 @@ pub fn initialize_slint_surface(
                             config,
                             WindowMode::WindowPerScene,
                             config_window_weak.clone(),
+                            animation_stopped.clone(),
                         );
                         app_state
                             .initialize_audio_and_transform_thread(request_redraw_callback.clone());

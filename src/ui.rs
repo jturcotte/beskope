@@ -136,17 +136,18 @@ impl Default for Configuration {
     }
 }
 
-fn get_config_path() -> Option<std::path::PathBuf> {
-    let project_dirs = ProjectDirs::from("", "", "beskope")?;
-    Some(project_dirs.config_dir().join("config.toml"))
+fn get_config_path() -> std::path::PathBuf {
+    let project_dirs = ProjectDirs::from("", "", "beskope")
+        .expect("HOME dir and ProjectDirs::from should be available on supported platforms.");
+    project_dirs.config_dir().join("config.toml")
 }
 
 impl Configuration {
     pub fn save(&self) -> io::Result<()> {
-        let config_path = get_config_path().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "Config directory not found")
-        })?;
-
+        let config_path = get_config_path();
+        if let Some(parent) = config_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
         let toml_str = toml::to_string_pretty(self)
             .map_err(|e| io::Error::other(format!("TOML serialization error: {e}")))?;
         let mut file = fs::File::create(config_path)?;
@@ -154,18 +155,16 @@ impl Configuration {
         Ok(())
     }
 
-    pub fn load() -> io::Result<Configuration> {
-        if let Some(config_path) = get_config_path() {
-            if !config_path.exists() {
-                return Ok(Configuration::default());
-            }
-            let toml_str = fs::read_to_string(config_path)?;
-            let config: Configuration = toml::from_str(&toml_str)
-                .map_err(|e| io::Error::other(format!("TOML deserialization error: {e}")))?;
-            Ok(config)
-        } else {
-            Ok(Configuration::default())
+    /// Returns Ok(None) if no configuration file exists
+    pub fn load() -> io::Result<Option<Configuration>> {
+        let config_path = get_config_path();
+        if !config_path.exists() {
+            return Ok(None);
         }
+        let toml_str = fs::read_to_string(config_path)?;
+        let config: Configuration = toml::from_str(&toml_str)
+            .map_err(|e| io::Error::other(format!("TOML deserialization error: {e}")))?;
+        Ok(Some(config))
     }
 }
 

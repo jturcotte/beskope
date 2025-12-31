@@ -94,7 +94,8 @@ impl ApplicationState {
     #[instrument(skip(self))]
     pub fn reload_configuration(&mut self) {
         let config = match ui::Configuration::load() {
-            Ok(config) => config,
+            Ok(Some(config)) => config,
+            Ok(None) => ui::Configuration::default(),
             Err(e) => {
                 eprintln!("Failed to load configuration, will use default: {e}");
                 ui::Configuration::default()
@@ -548,6 +549,19 @@ pub fn main() {
         }
     }
 
+    let config = match ui::Configuration::load() {
+        Ok(Some(config)) => config,
+        Ok(None) => {
+            println!("No configuration file found, showing the configuration dialog.");
+            show_config = true;
+            ui::Configuration::default()
+        }
+        Err(e) => {
+            eprintln!("Failed to load configuration: {e}");
+            ui::Configuration::default()
+        }
+    };
+
     let (app_msg_tx, app_msg_rx) = mpsc::channel::<AppMessageCallback>();
     let request_redraw_callback: Arc<Mutex<Arc<dyn Fn() + Send + Sync>>> =
         Arc::new(Mutex::new(Arc::new(|| {})));
@@ -567,14 +581,6 @@ pub fn main() {
             let msg = AppMessageCallback::ApplicationState(f);
             app_msg_tx.send(msg).unwrap();
             request_redraw_callback.lock().unwrap()();
-        }
-    };
-
-    let config = match ui::Configuration::load() {
-        Ok(config) => config,
-        Err(e) => {
-            eprintln!("Failed to load configuration: {e}");
-            ui::Configuration::default()
         }
     };
 

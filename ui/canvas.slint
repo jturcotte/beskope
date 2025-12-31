@@ -62,6 +62,16 @@ export component CanvasWindow inherits Window {
     preferred-width: 1600px;
     preferred-height: 800px;
 
+    forward-focus: focus;
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.F11 {
+                root.full-screen = !root.full-screen;
+            }
+            accept
+        }
+    }
+
     VerticalBox {
         x: parent.width * horizontal_padding_ratio;
         y: parent.height * top_padding_ratio;

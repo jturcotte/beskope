@@ -569,7 +569,7 @@ pub fn main() {
         let app_msg_tx = app_msg_tx.clone();
         let request_redraw_callback = request_redraw_callback.clone();
         move |msg| {
-            app_msg_tx.send(msg).unwrap();
+            let _ = app_msg_tx.send(msg);
             request_redraw_callback.lock().unwrap()();
         }
     };
@@ -578,7 +578,7 @@ pub fn main() {
         let request_redraw_callback = request_redraw_callback.clone();
         move |f| {
             let msg = AppMessageCallback::ApplicationState(f);
-            app_msg_tx.send(msg).unwrap();
+            let _ = app_msg_tx.send(msg);
             request_redraw_callback.lock().unwrap()();
         }
     };
@@ -602,7 +602,7 @@ pub fn main() {
             } else {
                 AppMessageCallback::SlintGlobalCanvas(f)
             };
-            app_msg_tx.send(msg).unwrap();
+            let _ = app_msg_tx.send(msg);
             // FIXME: This queues additional frame requests, this should check if it's stopped or not.
             request_redraw_callback.lock().unwrap()();
         }

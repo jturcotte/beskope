@@ -67,7 +67,7 @@ panic = 'abort'
 panic = 'abort'
 
 [package.metadata.deb]
-depends = ["libpipewire-0.3-0"]
+depends = ["libpipewire-0.3-0", "libfontconfig1", "libfreetype6"]
 assets = [
     [
         "target/release/beskope",
@@ -76,6 +76,11 @@ assets = [
     ],
     [
         "res/io.github.jturcotte.Beskope.desktop",
+        "usr/share/applications/",
+        "644",
+    ],
+    [
+        "res/io.github.jturcotte.BeskopeWindowed.desktop",
         "usr/share/applications/",
         "644",
     ],

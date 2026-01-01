@@ -633,8 +633,17 @@ pub fn main() {
 
     let config_window = ui::init(send_app_msg, send_canvas_msg);
     config_window.update_from_configuration(&config);
-    if show_config {
-        config_window.show().unwrap();
+
+    // Work around https://github.com/slint-ui/slint/issues/10341
+    // Otherwise show should only be called if show_config is true.
+    config_window.show().unwrap();
+    if !show_config {
+        config_window
+            .as_weak()
+            .upgrade_in_event_loop(move |window| {
+                window.hide().unwrap();
+            })
+            .unwrap();
     }
 
     // Listen for toggle commands on the local socket in a background thread

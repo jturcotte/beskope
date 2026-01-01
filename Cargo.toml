@@ -20,7 +20,7 @@ pollster = "0.4"
 raw-window-handle = "0.6"
 ringbuf = "0.4"
 rustfft = "6"
-qdft = { git = "https://github.com/jurihock/qdft", rev = "fa1ea037dacdf40d5b40d678bc7519303775a91a" }
+qdft = { git = "https://github.com/jturcotte/qdft", rev = "9dbd5beffff88c76347cd4ca7a4bc2afd696f279" }
 serde = { version = "1", features = ["derive"] }
 smithay-client-toolkit = "0.19"
 splines = "4"

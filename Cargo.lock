@@ -4117,7 +4117,7 @@ dependencies = [
 [[package]]
 name = "qdft"
 version = "0.1.0"
-source = "git+https://github.com/jurihock/qdft?rev=fa1ea037dacdf40d5b40d678bc7519303775a91a#fa1ea037dacdf40d5b40d678bc7519303775a91a"
+source = "git+https://github.com/jturcotte/qdft?rev=9dbd5beffff88c76347cd4ca7a4bc2afd696f279#9dbd5beffff88c76347cd4ca7a4bc2afd696f279"
 dependencies = [
  "num",
 ]

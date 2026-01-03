@@ -79,18 +79,26 @@ export component CanvasWindow inherits Window {
         height: parent.height - parent.height * (bottom_padding_ratio + top_padding_ratio);
         cache-rendering-hint: true;
 
-        Rectangle {}
+        Rectangle { min-height: 20px;}
 
         Rectangle {
             Rectangle {
-                width: cover.width;
-                height: cover.height;
+                // The Image doesn't really tell us much how the actual image is render within its boundary.
+                // This works but assumes a lot of details that could chang, it would be nicer to get those dimensions directly.
+                width: cover.image-fit == ImageFit.contain ? cover.height * cover.source.width / cover.source.height : cover.source.width * 1px;
+                height: cover.image-fit == ImageFit.contain ? cover.height : cover.source.height * 1px;
+                y: (parent.height - self.height);
                 drop-shadow-blur: 20px;
                 drop-shadow-color: black;
             }
             cover := Image {
+                width: 100%;
+                height: 100%;
                 source: art_image;
-                image-fit: preserve;
+                // contain also stretches when the image is too small, but this looks bad for very small image.
+                // preserve is fine when the image is smaller but it clips when it's larger.
+                // So select based on the size.
+                image-fit: self.width < self.source.width * 1px || self.height < self.source.height * 1px ? contain : preserve;
                 vertical-alignment: bottom;
             }
         }

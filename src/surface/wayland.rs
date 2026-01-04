@@ -766,7 +766,7 @@ impl WaylandEventHandler {
             width: ((new_width.max(1) as f64 * scale).ceil() as u32).max(1),
             height: ((new_height.max(1) as f64 * scale).ceil() as u32).max(1),
             present_mode: wgpu::PresentMode::AutoVsync,
-            desired_maximum_frame_latency: 1,
+            desired_maximum_frame_latency: 2,
             alpha_mode: wgpu::CompositeAlphaMode::PreMultiplied,
             view_formats: vec![],
         };

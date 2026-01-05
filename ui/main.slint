@@ -50,6 +50,7 @@ export global Backend {
     callback ridgeline_highlight_color_changed(Style, color);
     callback ridgeline_stroke_color_changed(Style, color);
     callback ridgeline_horizon_offset_changed(Style, float);
+    callback ridgeline_num_instances_changed(Style, int);
     callback compressed_panel_layer_changed(PanelLayer);
     callback compressed_panel_width_changed(float);
     callback compressed_panel_exclusive_ratio_changed(float);
@@ -69,20 +70,24 @@ export global TimeCurveEditor {
 
 component LabeledSlider {
     in-out property<float> value <=> slider.value;
-    in property<string> label <=> text.text;
+    in property<string> label;
     in property<float> step <=> slider.step;
     in property<float> minimum <=> slider.minimum;
     in property<float> maximum <=> slider.maximum;
     in property<float> precision: 100;
     in property<string> unit: "";
     callback changed <=> slider.changed;
-    HorizontalBox {
-        text := Text {
+    HorizontalLayout {
+        spacing: 8px;
+        if !label.is-empty:
+        Text {
+            width: 12px;
+            text: label;
             vertical-alignment: TextVerticalAlignment.center;
         }
         slider := Slider { }
         Text {
-            width: 10%;
+            width: 48px;
             text: round(value*precision)/precision + root.unit;
             vertical-alignment: TextVerticalAlignment.center;
             horizontal-alignment: TextHorizontalAlignment.left;
@@ -102,6 +107,7 @@ component HsvColorSelection inherits GroupBox {
 
     callback changed(color);
     VerticalBox {
+        spacing: 2px;
         h := LabeledSlider {
             label: "H";
             maximum: 359.999;
@@ -137,6 +143,7 @@ component RidgelineSettings inherits GridBox {
     callback set_highlight_color <=> highlight_color.set_color;
     callback set_stroke_color <=> stroke_color.set_color;
     callback set_horizon_offset <=> horizon_offset_slider.set_horizon_offset;
+    callback set_num_instances <=> num_instances_slider.set_num_instances;
 
     Row {
         Text {
@@ -176,7 +183,29 @@ component RidgelineSettings inherits GridBox {
         }
     }
     Row {
-        Text { text: "Height/Width"; }
+        Text {
+            text: "Num Lines";
+            vertical-alignment: TextVerticalAlignment.center;
+        }
+        num_instances_slider := LabeledSlider {
+            minimum: 1;
+            maximum: 180;
+            precision: 1;
+            unit: "";
+            changed(value) => {
+                Backend.ridgeline_num_instances_changed(tab_style, value);
+            }
+            callback set_num_instances(int);
+            set_num_instances(instances) => {
+                self.value = instances;
+            }
+        }
+    }
+    Row {
+        Text {
+            text: "Height/Width";
+            vertical-alignment: TextVerticalAlignment.center;
+        }
         panel_width_slider := LabeledSlider {
             minimum: 1;
             maximum: 49;
@@ -192,7 +221,10 @@ component RidgelineSettings inherits GridBox {
         }
     }
     Row {
-        Text { text: "Height/Width Exclusive"; }
+        Text {
+            text: "Height/Width Exclusive";
+            vertical-alignment: TextVerticalAlignment.center;
+        }
         panel_exclusive_ratio_slider := LabeledSlider {
             minimum: 0;
             maximum: 100;
@@ -208,7 +240,10 @@ component RidgelineSettings inherits GridBox {
         }
     }
     Row {
-        Text { text: "Horizon Offset"; }
+        Text {
+            text: "Horizon Offset";
+            vertical-alignment: TextVerticalAlignment.center;
+        }
         horizon_offset_slider := LabeledSlider {
             minimum: -100;
             maximum: 100;
@@ -466,6 +501,7 @@ export component ConfigurationWindow inherits Dialog {
     callback set_ridgeline_frequency_highlight_color <=> ridgeline_frequency_tab.set_highlight_color;
     callback set_ridgeline_frequency_stroke_color <=> ridgeline_frequency_tab.set_stroke_color;
     callback set_ridgeline_frequency_horizon_offset <=> ridgeline_frequency_tab.set_horizon_offset;
+    callback set_ridgeline_frequency_num_instances <=> ridgeline_frequency_tab.set_num_instances;
 
     // Waveform ridgeline callbacks
     callback set_ridgeline_waveform_panel_layer <=> ridgeline_waveform_tab.set_panel_layer;
@@ -475,6 +511,7 @@ export component ConfigurationWindow inherits Dialog {
     callback set_ridgeline_waveform_highlight_color <=> ridgeline_waveform_tab.set_highlight_color;
     callback set_ridgeline_waveform_stroke_color <=> ridgeline_waveform_tab.set_stroke_color;
     callback set_ridgeline_waveform_horizon_offset <=> ridgeline_waveform_tab.set_horizon_offset;
+    callback set_ridgeline_waveform_num_instances <=> ridgeline_waveform_tab.set_num_instances;
 
     callback set_compressed_panel_layer <=> compressed_tab.set_panel_layer;
     callback set_compressed_panel_width <=> compressed_tab.set_panel_width;

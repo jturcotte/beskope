@@ -218,6 +218,7 @@ impl ApplicationState {
                 ))
             }
             ui::Style::Ridgeline => {
+                // 1/30th second per instance
                 let model = WaveformModel::new(48_000 / 30);
                 Box::new(RidgelineView::new(
                     device,

@@ -27,6 +27,9 @@ const fn ridgeline_width_ratio_default() -> f32 {
 const fn compressed_width_ratio_default() -> f32 {
     0.05
 }
+const fn ridgeline_num_instances_default() -> u32 {
+    30
+}
 
 fn ridgeline_default() -> RidgelineConfig {
     RidgelineConfig {
@@ -37,6 +40,7 @@ fn ridgeline_default() -> RidgelineConfig {
         stroke_color: slint::Color::from_argb_u8(230, 255, 255, 255),
         highlight_color: slint::Color::from_argb_u8(255, 0, 171, 255),
         horizon_offset: -1.0,
+        num_instances: ridgeline_num_instances_default(),
     }
 }
 
@@ -52,6 +56,9 @@ pub struct RidgelineConfig {
     pub stroke_color: slint::Color,
     pub highlight_color: slint::Color,
     pub horizon_offset: f32,
+    /// Number of stride instances (history depth)
+    #[serde(default = "ridgeline_num_instances_default")]
+    pub num_instances: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -93,6 +100,7 @@ pub const RIDGELINE_FILL_COLOR: usize = offset_of!(Configuration, ridgeline.fill
 pub const RIDGELINE_STROKE_COLOR: usize = offset_of!(Configuration, ridgeline.stroke_color);
 pub const RIDGELINE_HIGHLIGHT_COLOR: usize = offset_of!(Configuration, ridgeline.highlight_color);
 pub const RIDGELINE_HORIZON_OFFSET: usize = offset_of!(Configuration, ridgeline.horizon_offset);
+pub const RIDGELINE_NUM_INSTANCES: usize = offset_of!(Configuration, ridgeline.num_instances);
 pub const COMPRESSED_WIDTH_RATIO: usize = offset_of!(Configuration, compressed.width_ratio);
 pub const COMPRESSED_FILL_COLOR: usize = offset_of!(Configuration, compressed.fill_color);
 pub const COMPRESSED_STROKE_COLOR: usize = offset_of!(Configuration, compressed.stroke_color);
@@ -388,6 +396,24 @@ pub fn init(
             }));
         }
     });
+    backend.on_ridgeline_num_instances_changed({
+        let send_to_app = send_to_app.clone();
+        move |tab_style, num_instances| {
+            send_to_app(Box::new(move |app_state| {
+                if tab_style == Style::RidgelineFrequency {
+                    app_state.config.ridgeline_frequency.num_instances = num_instances as u32;
+                    app_state
+                        .lazy_config_changes
+                        .insert(RIDGELINE_NUM_INSTANCES);
+                } else if tab_style == Style::Ridgeline {
+                    app_state.config.ridgeline.num_instances = num_instances as u32;
+                    app_state
+                        .lazy_config_changes
+                        .insert(RIDGELINE_NUM_INSTANCES);
+                }
+            }));
+        }
+    });
     backend.on_compressed_panel_layer_changed({
         let send_to_canvas = send_to_canvas.clone();
         move |config| {
@@ -512,6 +538,9 @@ impl ConfigurationWindow {
         self.invoke_set_ridgeline_frequency_horizon_offset(
             config.ridgeline_frequency.horizon_offset,
         );
+        self.invoke_set_ridgeline_frequency_num_instances(
+            config.ridgeline_frequency.num_instances as i32,
+        );
 
         self.invoke_set_ridgeline_waveform_panel_layer(config.ridgeline.layer);
         self.invoke_set_ridgeline_waveform_panel_width(config.ridgeline.width_ratio);
@@ -520,6 +549,7 @@ impl ConfigurationWindow {
         self.invoke_set_ridgeline_waveform_stroke_color(config.ridgeline.stroke_color);
         self.invoke_set_ridgeline_waveform_highlight_color(config.ridgeline.highlight_color);
         self.invoke_set_ridgeline_waveform_horizon_offset(config.ridgeline.horizon_offset);
+        self.invoke_set_ridgeline_waveform_num_instances(config.ridgeline.num_instances as i32);
 
         self.invoke_set_compressed_panel_layer(config.compressed.layer);
         self.invoke_set_compressed_panel_width(config.compressed.width_ratio);

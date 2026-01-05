@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 struct AudioSync {
-    y_value_offsets: array<u32, 32>,
+    y_value_offsets: array<u32, 180>,
     progress: f32,
     num_instances: f32,
     highlight_threshold: f32,

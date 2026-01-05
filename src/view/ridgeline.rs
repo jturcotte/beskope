@@ -14,7 +14,7 @@ use wgpu::{BufferUsages, CommandEncoder, TextureView};
 
 use super::{Vertex, View};
 
-const NUM_INSTANCES: usize = 30;
+const NUM_INSTANCES_MAX: usize = 180;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct WaveformConfigUniform {
@@ -28,7 +28,7 @@ struct WaveformConfigUniform {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct AudioSync {
-    y_value_offsets: [u32; 32],
+    y_value_offsets: [u32; NUM_INSTANCES_MAX],
     progress: f32,
     num_instances: f32,
     highlight_threshold: f32,
@@ -110,7 +110,7 @@ impl<M: AudioModel> RidgelineView<M> {
             })
             .collect();
 
-        let y_values_buffer_size = stride_len.saturating_mul(NUM_INSTANCES);
+        let y_values_buffer_size = stride_len.saturating_mul(NUM_INSTANCES_MAX);
         let y_values: Vec<f32> = vec![0.0; y_values_buffer_size];
 
         let fill_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -131,12 +131,17 @@ impl<M: AudioModel> RidgelineView<M> {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        // Create the y_value_offset buffer
-        let audio_sync_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let audio_sync = AudioSync {
+            y_value_offsets: [0; NUM_INSTANCES_MAX],
+            progress: 0.0,
+            num_instances: NUM_INSTANCES_MAX as f32,
+            highlight_threshold: 0.0,
+        };
+
+        let audio_sync_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Audio Sync Buffer"),
-            size: std::mem::size_of::<AudioSync>() as wgpu::BufferAddress,
+            contents: bytemuck::cast_slice(&[audio_sync]),
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
         });
 
         // Must be updated by apply_lazy_config_changes
@@ -316,14 +321,6 @@ impl<M: AudioModel> RidgelineView<M> {
                 multiview: None,
                 cache: None,
             });
-
-        // Initialize audio_sync offsets; offsets will be populated as data arrives.
-        let audio_sync = AudioSync {
-            y_value_offsets: [0; 32],
-            progress: 0.0,
-            num_instances: NUM_INSTANCES as f32,
-            highlight_threshold: 0.0,
-        };
 
         RidgelineView {
             render_surface,
@@ -509,6 +506,16 @@ impl<M: AudioModel> View for RidgelineView<M> {
             _ => &config.ridgeline, // Fallback (shouldn't happen)
         };
 
+        if config_changes.is_none_or(|c| c.contains(&ui::RIDGELINE_NUM_INSTANCES)) {
+            self.audio_sync.num_instances =
+                (ridgeline_config.num_instances as usize).min(NUM_INSTANCES_MAX) as f32;
+            self.wgpu_queue.write_buffer(
+                &self.audio_sync_buffer,
+                0,
+                bytemuck::cast_slice(&[self.audio_sync]),
+            );
+        }
+
         if config_changes.is_none_or(|c| {
             c.contains(&ui::RIDGELINE_FILL_COLOR)
                 || c.contains(&ui::RIDGELINE_HIGHLIGHT_COLOR)
@@ -582,6 +589,7 @@ impl<M: AudioModel> View for RidgelineView<M> {
         depth_texture_view: &TextureView,
         clear_color: Option<wgpu::Color>,
     ) {
+        let num_instances = self.audio_sync.num_instances as u32;
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
@@ -613,7 +621,7 @@ impl<M: AudioModel> View for RidgelineView<M> {
             render_pass.set_pipeline(&self.fill_render_pipeline);
             render_pass.set_vertex_buffer(0, self.fill_vertex_buffer.slice(..));
             render_pass.set_bind_group(0, &self.bind_group, &[]);
-            render_pass.draw(0..(self.stride_len * 2) as u32, 0..NUM_INSTANCES as u32);
+            render_pass.draw(0..(self.stride_len * 2) as u32, 0..num_instances);
         }
 
         {
@@ -642,7 +650,7 @@ impl<M: AudioModel> View for RidgelineView<M> {
             render_pass.set_pipeline(&self.stroke_render_pipeline);
             render_pass.set_vertex_buffer(0, self.stroke_vertex_buffer.slice(..));
             render_pass.set_bind_group(0, &self.bind_group, &[]);
-            render_pass.draw(0..self.stride_len as u32, 0..NUM_INSTANCES as u32);
+            render_pass.draw(0..self.stride_len as u32, 0..num_instances);
         }
     }
 
@@ -651,8 +659,8 @@ impl<M: AudioModel> View for RidgelineView<M> {
         fn to_progress(t: u32) -> f64 {
             // t is in milliseconds, convert to seconds
             let t = t as f64 / 1000.0;
-            // t is in seconds, convert to the number of sample strides
-            t * NUM_INSTANCES as f64
+            // t is in seconds, convert to the current stride index with 30 strides per second
+            t * 30.0
         }
 
         // Convert the monotonic timestamp from the compositor to a
@@ -671,18 +679,21 @@ impl<M: AudioModel> View for RidgelineView<M> {
         // On rotation: advance write_offset to start a new stride in the ring buffer.
         if wraps > 0 {
             // Rotate right: shift historical offsets to make room for new frozen stride.
-            let offsets = &mut self.audio_sync.y_value_offsets[..NUM_INSTANCES];
-            let effective_wraps = (wraps as usize).min(NUM_INSTANCES);
-            if effective_wraps > 0 {
-                offsets.rotate_right(effective_wraps);
-            }
+            let num_instances = self.audio_sync.num_instances as usize;
+            let effective_wraps = (wraps as usize).min(num_instances);
+            self.audio_sync
+                .y_value_offsets
+                .rotate_right(effective_wraps);
             // Advance write_offset by one stride to start writing the new front stride.
             self.write_offset = (self.write_offset + self.stride_len) % self.y_values_buffer_size;
             self.virtual_stride_index = full_progress;
 
             // Instance 0 always points to write_offset (the actively updating front stride).
             // Historical instances (1+) point to successively older frozen strides via rotated offsets.
-            self.audio_sync.y_value_offsets[0] = self.write_offset as u32;
+            // When we wrap over multiple strides, freeze all of them to the same time point.
+            for i in 0..effective_wraps {
+                self.audio_sync.y_value_offsets[i] = self.write_offset as u32;
+            }
         }
 
         // Process audio with callback to write values directly to GPU buffer

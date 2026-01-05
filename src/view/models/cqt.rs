@@ -53,16 +53,23 @@ impl AudioModel for ConstantQTransformModel {
         ValuesRange::ZeroToOne
     }
 
-    fn process_audio<I, W>(
+    fn process_audio<I, W, T>(
         &mut self,
         _samples: I,
         cqt: Arc<Mutex<Vec<Complex<f64>>>>,
         write_values: W,
+        update_threshold: T,
     ) where
         I: IntoIterator<Item = f32>,
         W: FnOnce(&[f32]),
+        T: FnOnce(f32),
     {
         self.update_magnitudes_db_scaled(cqt);
         write_values(&self.y_values);
+
+        // Calculate RMS from the magnitude values for highlight threshold
+        let sum_squares: f32 = self.y_values.iter().map(|&v| v * v).sum();
+        let rms = (sum_squares / self.y_values.len() as f32).sqrt();
+        update_threshold(rms);
     }
 }

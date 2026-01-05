@@ -5,6 +5,7 @@ struct AudioSync {
     y_value_offsets: array<u32, 32>,
     progress: f32,
     num_instances: f32,
+    highlight_threshold: f32,
 }
 
 @group(0) @binding(0)
@@ -46,8 +47,10 @@ fn compute_fill_color(y: f32, should_offset: f32, instance_index: u32) -> vec4<f
         return mix(waveform_config.fill_color, waveform_config.highlight_color, 0.5);
     }
 
-    // Mix fill_color.rgb with the highlight_color based on abs(y)
-    let t = clamp(abs(y), 0.0, 1.0);
+    // Mix fill_color.rgb with the highlight based on abs(y), starting from dynamic RMS threshold
+    let threshold = audio_sync.highlight_threshold;
+    let range = 1.0 - threshold;
+    let t = clamp((abs(y) - threshold) / range, 0.0, 1.0);
     return mix(waveform_config.fill_color, waveform_config.highlight_color, t);
 }
 

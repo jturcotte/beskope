@@ -100,14 +100,16 @@ impl AudioModel for WaveformModel {
         ValuesRange::NegativeOneToOne
     }
 
-    fn process_audio<I, W>(
+    fn process_audio<I, W, T>(
         &mut self,
         samples: I,
         _cqt: Arc<Mutex<Vec<Complex<f64>>>>,
         write_values: W,
+        _update_threshold: T,
     ) where
         I: IntoIterator<Item = f32>,
         W: FnOnce(&[f32]),
+        T: FnOnce(f32),
     {
         self.samples_ring.push_iter_overwrite(samples.into_iter());
 

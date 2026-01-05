@@ -31,6 +31,7 @@ struct AudioSync {
     y_value_offsets: [u32; 32],
     progress: f32,
     num_instances: f32,
+    highlight_threshold: f32,
 }
 
 pub struct RidgelineView<M: AudioModel> {
@@ -39,6 +40,7 @@ pub struct RidgelineView<M: AudioModel> {
     style: ui::Style,
     view_transform: Option<ViewTransform>,
     wgpu_queue: Arc<wgpu::Queue>,
+    highlight_rms_avg: f32,
     y_value_buffer: wgpu::Buffer,
     audio_sync: AudioSync,
     audio_sync_buffer: wgpu::Buffer,
@@ -132,7 +134,7 @@ impl<M: AudioModel> RidgelineView<M> {
         // Create the y_value_offset buffer
         let audio_sync_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Audio Sync Buffer"),
-            size: (std::mem::size_of::<u32>() * 32 + 8) as wgpu::BufferAddress,
+            size: std::mem::size_of::<AudioSync>() as wgpu::BufferAddress,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -320,6 +322,7 @@ impl<M: AudioModel> RidgelineView<M> {
             y_value_offsets: [0; 32],
             progress: 0.0,
             num_instances: NUM_INSTANCES as f32,
+            highlight_threshold: 0.0,
         };
 
         RidgelineView {
@@ -328,6 +331,7 @@ impl<M: AudioModel> RidgelineView<M> {
             style,
             view_transform: None,
             wgpu_queue: queue.clone(),
+            highlight_rms_avg: 0.0,
             y_value_buffer,
             audio_sync,
             audio_sync_buffer,
@@ -699,15 +703,28 @@ impl<M: AudioModel> View for RidgelineView<M> {
             audio_input.cqt_right.clone()
         };
 
-        self.model.process_audio(channel_samples, cqt, |values| {
-            // Since the write_offset is aligned, we can write in one chunk.
-            assert!(write_offset + values.len() <= self.y_values_buffer_size);
-            wgpu_queue.write_buffer(
-                y_value_buffer,
-                (write_offset * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
-                bytemuck::cast_slice(values),
-            );
-        });
+        self.model.process_audio(
+            channel_samples,
+            cqt,
+            |values| {
+                // Since the write_offset is aligned, we can write in one chunk.
+                assert!(write_offset + values.len() <= self.y_values_buffer_size);
+                wgpu_queue.write_buffer(
+                    y_value_buffer,
+                    (write_offset * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
+                    bytemuck::cast_slice(values),
+                );
+            },
+            |threshold| {
+                // Smooth across history so the threshold does not jump each frame.
+                // Use an EMA of 30 frames for a stable average of half the recent strides, currently covering 1 second.
+                let alpha = 1.0 / 30.0;
+                self.highlight_rms_avg = self.highlight_rms_avg * (1.0 - alpha) + threshold * alpha;
+                let highlight_threshold = self.highlight_rms_avg.clamp(0.0, 1.0);
+
+                self.audio_sync.highlight_threshold = highlight_threshold;
+            },
+        );
 
         self.wgpu_queue.write_buffer(
             &self.audio_sync_buffer,

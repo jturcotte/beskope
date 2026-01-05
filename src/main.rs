@@ -139,7 +139,7 @@ impl ApplicationState {
         //        For now I haven't seen PipeWire do that even when changing audio devices.
         let sample_rate = sample_rate_rx.recv().unwrap() as f64;
         let bandwidth = (30.0, sample_rate / 2.0);
-        let resolution = 36.0; // third-semitone resolution
+        let resolution = 36.0; // 1/3 semitone resolution
         let guessed_cqt_size =
             f64::ceil(resolution * f64::log2(bandwidth.1 / bandwidth.0)) as usize;
         self.cqt_left

@@ -1,5 +1,5 @@
 [Desktop Entry]
-Version=0.1
+Version=1.5
 Type=Application
 Name=Beskope (Windowed)
 Comment=Desktop Music Visualizer
@@ -8,6 +8,7 @@ Terminal=false
 Icon=io.github.jturcotte.Beskope
 Categories=AudioVideo;Audio;
 Actions=Configuration;Quit;
+SingleMainWindow=true
 
 [Desktop Action Configuration]
 Exec=beskope -c
